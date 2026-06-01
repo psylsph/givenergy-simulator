@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sim-core",
+    "crates/sim-models",
+    "crates/sim-registers",
+    "crates/sim-modbus",
+    "crates/sim-scenarios",
+    "crates/sim-faults",
+    "crates/sim-recording",
+    "crates/sim-api",
+    "crates/sim-storage",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+sim-core = { path = "crates/sim-core" }
+sim-models = { path = "crates/sim-models" }
+sim-registers = { path = "crates/sim-registers" }
+sim-modbus = { path = "crates/sim-modbus" }
+sim-scenarios = { path = "crates/sim-scenarios" }
+sim-faults = { path = "crates/sim-faults" }
+sim-recording = { path = "crates/sim-recording" }
+sim-api = { path = "crates/sim-api" }
+sim-storage = { path = "crates/sim-storage" }
+
+# External deps
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }

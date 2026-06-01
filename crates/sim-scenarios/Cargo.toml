@@ -1,0 +1,12 @@
+[package]
+name = "sim-scenarios"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-models = { workspace = true }
+sim-core = { workspace = true }
+sim-faults = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }

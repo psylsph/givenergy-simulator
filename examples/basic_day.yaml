@@ -1,0 +1,21 @@
+# Example: basic day cycle
+08:00:
+  solar: 500
+09:00:
+  solar: 2000
+10:00:
+  solar: 3500
+  expect:
+    soc_gt: 50
+12:00:
+  solar: 4000
+14:00:
+  solar: 3000
+16:00:
+  solar: 1000
+  load: 2000
+18:00:
+  solar: 200
+  load: 3500
+  expect:
+    soc_lt: 80

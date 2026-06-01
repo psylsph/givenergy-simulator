@@ -1,0 +1,11 @@
+[package]
+name = "sim-recording"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-models = { workspace = true }
+sim-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

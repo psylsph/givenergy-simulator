@@ -1,0 +1,21 @@
+[package]
+name = "sim-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-core = { workspace = true }
+sim-models = { workspace = true }
+sim-registers = { workspace = true }
+sim-faults = { workspace = true }
+sim-scenarios = { workspace = true }
+sim-recording = { workspace = true }
+sim-modbus = { workspace = true }
+sim-storage = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }

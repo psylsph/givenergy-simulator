@@ -1,0 +1,8 @@
+[package]
+name = "sim-models"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }

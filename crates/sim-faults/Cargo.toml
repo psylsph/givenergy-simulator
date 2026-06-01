@@ -1,0 +1,8 @@
+[package]
+name = "sim-faults"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-models = { workspace = true }
+serde = { workspace = true }

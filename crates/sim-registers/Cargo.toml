@@ -1,0 +1,14 @@
+[package]
+name = "sim-registers"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-models = { workspace = true }
+sim-core = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+sim-core = { workspace = true }
+chrono = { workspace = true }

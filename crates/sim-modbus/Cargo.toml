@@ -1,0 +1,11 @@
+[package]
+name = "sim-modbus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-models = { workspace = true }
+sim-core = { workspace = true }
+sim-registers = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
