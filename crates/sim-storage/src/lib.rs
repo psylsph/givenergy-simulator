@@ -27,7 +27,7 @@ pub fn load_recording(path: &Path) -> Result<Vec<sim_recording::RecordingFrame>,
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use sim_core::PlantState;
+    use sim_models::PlantState;
     use sim_recording::RecordingFrame;
     use std::collections::HashMap;
 

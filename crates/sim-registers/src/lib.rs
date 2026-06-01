@@ -1,6 +1,6 @@
 //! Register catalogue and mapping layer.
 //!
-//! Registers are projections of [`PlantState`](sim_core::PlantState).
+//! Registers are projections of [`PlantState`](sim_models::PlantState).
 //! Each register definition specifies address, type, scaling, and R/W capability.
 
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ impl RegisterStore {
     }
 
     /// Update all register values from plant state.
-    pub fn project_from_state(&mut self, state: &sim_core::PlantState) {
+    pub fn project_from_state(&mut self, state: &sim_models::PlantState) {
         // MVP: hand-code key projections. Phase 3 will auto-generate from real GivEnergy map.
         for def in &self.defs {
             let raw = match def.name.as_str() {
@@ -103,11 +103,11 @@ impl RegisterStore {
                 }
                 "load_power" => state.load.demand_w as u16,
                 "inverter_mode" => match state.inverter.mode {
-                    sim_core::InverterMode::Normal => 0,
-                    sim_core::InverterMode::Eco => 1,
-                    sim_core::InverterMode::ForceCharge => 2,
-                    sim_core::InverterMode::ForceDischarge => 3,
-                    sim_core::InverterMode::ExportLimit => 4,
+                    sim_models::InverterMode::Normal => 0,
+                    sim_models::InverterMode::Eco => 1,
+                    sim_models::InverterMode::ForceCharge => 2,
+                    sim_models::InverterMode::ForceDischarge => 3,
+                    sim_models::InverterMode::ExportLimit => 4,
                 },
                 _ => continue,
             };
@@ -182,7 +182,7 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::PlantState;
+    use sim_models::PlantState;
     use chrono::NaiveDate;
 
     fn test_ts() -> chrono::NaiveDateTime {

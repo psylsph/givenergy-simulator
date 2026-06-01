@@ -61,7 +61,7 @@ pub fn parse_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::Error>
 /// Evaluate assertions from the `expect` map against plant state.
 pub fn check_assertions(
     expect: &HashMap<String, serde_yaml::Value>,
-    state: &sim_core::PlantState,
+    state: &sim_models::PlantState,
 ) -> Result<(), Vec<String>> {
     let mut failures = Vec::new();
 
@@ -109,7 +109,7 @@ pub fn check_assertions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::PlantState;
+    use sim_models::PlantState;
     use chrono::NaiveDate;
 
     fn test_ts() -> chrono::NaiveDateTime {

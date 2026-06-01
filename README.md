@@ -30,11 +30,15 @@ UI / CLI → Application Services → Simulation Core → Device Models → Regi
 # Build everything
 cargo build
 
-# Run tests
+# Run tests (23 tests)
 cargo test
 
 # Run a scenario
 cargo run --bin sim-api -- run examples/basic_day.yaml
+
+# Run with options
+cargo run --bin sim-api -- run examples/basic_day.yaml \
+  --peak-watts 5000 --latitude 51.5 --profile family --weather clear
 
 # Run with Modbus server
 cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020

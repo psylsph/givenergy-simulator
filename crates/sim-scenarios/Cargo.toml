@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 sim-models = { workspace = true }
-sim-core = { workspace = true }
 sim-faults = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

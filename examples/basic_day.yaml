@@ -1,21 +1,24 @@
-# Example: basic day cycle
-08:00:
-  solar: 500
+# Example: clear summer day with family load profile
+# 5kW peak solar, 9.5kWh battery, 51.5° latitude
+06:00:
+  load: 800
 09:00:
-  solar: 2000
-10:00:
   solar: 3500
+10:00:
   expect:
-    soc_gt: 50
+    soc_gt: 70
 12:00:
-  solar: 4000
+  solar: 4400
 14:00:
-  solar: 3000
+  solar: 3800
 16:00:
-  solar: 1000
-  load: 2000
-18:00:
-  solar: 200
-  load: 3500
+  solar: 2000
+  load: 2500
+19:00:
+  load: 3000
   expect:
-    soc_lt: 80
+    soc_gt: 75
+22:00:
+  load: 800
+  expect:
+    soc_lt: 50

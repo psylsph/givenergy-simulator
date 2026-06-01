@@ -4,50 +4,13 @@
 
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
-use sim_core::{Command, PlantState, SimulationEngine};
+use sim_core::{
+    BatteryEngine, Command, InverterEngine, LoadEngine, LoadProfile, PlantState,
+    SimulationEngine, SolarEngine, WeatherCondition,
+};
 use sim_models::DeviceModel;
 use sim_scenarios::parse_scenario;
 use std::net::SocketAddr;
-
-// ---------------------------------------------------------------------------
-// Device model stubs for Phase 1
-// ---------------------------------------------------------------------------
-
-/// Solar engine stub.
-struct SolarEngineStub;
-
-impl DeviceModel for SolarEngineStub {
-    fn update(&mut self, _ctx: &sim_models::TickContext) {
-        // Phase 2: real PV curve calculation from lat/lon/date/weather
-    }
-}
-
-/// Load engine stub.
-struct LoadEngineStub;
-
-impl DeviceModel for LoadEngineStub {
-    fn update(&mut self, _ctx: &sim_models::TickContext) {
-        // Phase 2: load profile time series
-    }
-}
-
-/// Battery engine stub — applies the SOC formula from design docs.
-struct BatteryEngineStub;
-
-impl DeviceModel for BatteryEngineStub {
-    fn update(&mut self, _ctx: &sim_models::TickContext) {
-        // Phase 2: full SOC tracking. Stub does nothing.
-    }
-}
-
-/// Inverter engine stub — priority logic: Solar → Load → Battery → Grid.
-struct InverterEngineStub;
-
-impl DeviceModel for InverterEngineStub {
-    fn update(&mut self, _ctx: &sim_models::TickContext) {
-        // Phase 2: real power-flow priority logic
-    }
-}
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -73,10 +36,40 @@ enum Commands {
         /// Start date (YYYY-MM-DD).
         #[arg(long, default_value = "2025-06-01")]
         date: String,
+        /// Solar peak capacity in watts.
+        #[arg(long, default_value = "5000")]
+        peak_watts: f64,
+        /// Site latitude (degrees, positive = north).
+        #[arg(long, default_value = "51.5")]
+        latitude: f64,
+        /// Load profile: minimal, family, ev, heatpump.
+        #[arg(long, default_value = "family")]
+        profile: String,
+        /// Weather: clear, partly-cloudy, overcast, storm.
+        #[arg(long, default_value = "clear")]
+        weather: String,
         /// Also launch a Modbus TCP server on this address.
         #[arg(long)]
         modbus: Option<SocketAddr>,
     },
+}
+
+fn parse_weather(s: &str) -> WeatherCondition {
+    match s.to_lowercase().as_str() {
+        "partly-cloudy" | "partly_cloudy" | "partlycloudy" => WeatherCondition::PartlyCloudy,
+        "overcast" => WeatherCondition::Overcast,
+        "storm" => WeatherCondition::Storm,
+        _ => WeatherCondition::Clear,
+    }
+}
+
+fn parse_profile(s: &str) -> LoadProfile {
+    match s.to_lowercase().as_str() {
+        "minimal" => LoadProfile::Minimal,
+        "ev" => LoadProfile::EV,
+        "heatpump" | "heat-pump" | "heat_pump" => LoadProfile::HeatPump,
+        _ => LoadProfile::Family,
+    }
 }
 
 #[tokio::main]
@@ -95,31 +88,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scenario,
             tick_interval,
             date,
+            peak_watts,
+            latitude,
+            profile,
+            weather,
             modbus,
         } => {
             let yaml = std::fs::read_to_string(&scenario)?;
             let scen = parse_scenario(&yaml)?;
 
             let start_date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")?;
-            let start_ts = start_date
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
+            let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap();
 
             let state = PlantState::new(start_ts);
+
+            let mut solar = SolarEngine::new(peak_watts, latitude);
+            solar.weather = parse_weather(&weather);
+
+            let load_profile = parse_profile(&profile);
+
             let devices: Vec<Box<dyn DeviceModel>> = vec![
-                Box::new(SolarEngineStub),
-                Box::new(LoadEngineStub),
-                Box::new(BatteryEngineStub),
-                Box::new(InverterEngineStub),
+                Box::new(solar),
+                Box::new(LoadEngine::new(load_profile)),
+                Box::new(InverterEngine::new()),
+                Box::new(BatteryEngine::new()),
             ];
 
             let mut engine = SimulationEngine::new(state, devices, tick_interval);
 
             tracing::info!(
-                "Running scenario '{}' ({} events, tick={}s)",
+                "Running scenario '{}' ({} events, tick={}s, profile={}, weather={:?})",
                 scen.name,
                 scen.events.len(),
                 tick_interval,
+                profile,
+                parse_weather(&weather),
             );
 
             // Optional: launch Modbus server in background
@@ -137,7 +140,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Run ticks, applying scenario events at matching times
             for (time, event) in &scen.events {
-                // Advance simulation to the event time
                 let target = start_date.and_time(*time);
                 while engine.state.timestamp < target {
                     engine.tick();

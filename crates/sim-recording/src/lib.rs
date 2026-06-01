@@ -10,7 +10,7 @@ use std::io::{BufRead, Write};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingFrame {
     pub timestamp: NaiveDateTime,
-    pub plant_state: sim_core::PlantState,
+    pub plant_state: sim_models::PlantState,
     /// Register address → raw value at this instant.
     pub register_snapshot: std::collections::HashMap<u16, u16>,
 }
@@ -64,7 +64,7 @@ pub fn diff_recordings(a: &[RecordingFrame], b: &[RecordingFrame]) -> Vec<usize>
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use sim_core::PlantState;
+    use sim_models::PlantState;
 
     fn test_ts(hour: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2025, 6, 1)
