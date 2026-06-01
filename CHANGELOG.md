@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-01
+
+### Added
+
+- **FaultEngine** device model: applies fault effects every tick
+  - `grid_loss` disconnects grid, restored when fault clears
+  - `inverter_trip` zeros inverter output and battery power
+  - `battery_over_temp` blocks charging, allows discharging
+- **Recording during simulation**: captures every tick to JSONL
+- **CI output formats**: `--output <dir>` generates JSONL, CSV traces, JUnit XML, JSON report
+- **Expanded scenario DSL**: `mode`, `export_limit`, `weather` event fields
+- **Expanded assertions**: `solar_gt`, `solar_lt`, `grid_import_gt`, `grid_export_gt`, `battery_charging`, `no_faults`, `fault_active`
+- **Named scenarios**: `name:` top-level key in YAML, parsed via `parse_named_scenario()`
+- **ScenarioResult / AssertionResult** types for machine-readable test reports
+- Example scenarios: `grid_outage.yaml`, `force_charge.yaml`
+- Device update order: Solar → Load → Inverter → **Faults** → Battery
+
+### Changed
+
+- CLI exits with code 1 on assertion failures (CI-friendly)
+- `FaultEngine` tracks previously-active faults to restore state on clear
+- `sim-recording` now depends on `sim-scenarios` for report types
+
 ## [0.2.0] - 2026-06-01
 
 ### Added

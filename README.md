@@ -40,8 +40,16 @@ cargo run --bin sim-api -- run examples/basic_day.yaml
 cargo run --bin sim-api -- run examples/basic_day.yaml \
   --peak-watts 5000 --latitude 51.5 --profile family --weather clear
 
+# Run with CI outputs (JSONL, CSV, JUnit XML, JSON report)
+cargo run --bin sim-api -- run examples/grid_outage.yaml --output /tmp/results
+
 # Run with Modbus server
 cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020
+
+# All example scenarios
+cargo run --bin sim-api -- run examples/basic_day.yaml        # clear summer day
+cargo run --bin sim-api -- run examples/grid_outage.yaml       # grid fault & restore
+cargo run --bin sim-api -- run examples/force_charge.yaml      # force charge from grid
 ```
 
 ## Scenario DSL

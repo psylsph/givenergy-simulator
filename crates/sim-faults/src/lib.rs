@@ -1,9 +1,16 @@
-//! Fault framework: categories, triggers, lifecycle.
+//! Fault framework: categories, triggers, lifecycle, and effects.
 //!
 //! Faults may be manual, scheduled, or randomised.
 //! Categories: Communication, Electrical, Sensor, Battery, Inverter.
+//!
+//! The [`FaultEngine`] device model applies fault effects to [`PlantState`]
+//! every tick based on the active fault set.
 
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 /// Broad fault category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,11 +25,11 @@ pub enum FaultCategory {
 /// How a fault is triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FaultTrigger {
-    /// Injected manually by user / test.
+    /// Injected manually by user / test / scenario.
     Manual,
     /// Fires at a specific simulation time.
     Scheduled,
-    /// Fires probabilistically.
+    /// Fires probabilistically each tick.
     Randomised,
 }
 
@@ -35,11 +42,18 @@ pub struct FaultDef {
     pub trigger: FaultTrigger,
     /// Human-readable description.
     pub description: String,
+    /// For Randomised faults: probability of firing per tick (0.0–1.0).
+    #[serde(default)]
+    pub probability: f64,
 }
 
-/// Well-known fault IDs used across crates.
+// ---------------------------------------------------------------------------
+// Well-known fault IDs
+// ---------------------------------------------------------------------------
+
 pub mod well_known {
     pub const GRID_LOSS: &str = "grid_loss";
+    pub const GRID_RESTORE: &str = "grid_restore";
     pub const BATTERY_OVER_TEMP: &str = "battery_over_temp";
     pub const INVERTER_TRIP: &str = "inverter_trip";
     pub const COMM_TIMEOUT: &str = "comm_timeout";
@@ -57,37 +71,124 @@ pub fn default_fault_catalogue() -> Vec<FaultDef> {
             category: C::Electrical,
             trigger: T::Manual,
             description: "Grid connection lost".into(),
+            probability: 0.0,
         },
         FaultDef {
             id: well_known::BATTERY_OVER_TEMP.to_string(),
             category: C::Battery,
             trigger: T::Manual,
-            description: "Battery thermal limit exceeded".into(),
+            description: "Battery thermal limit exceeded — charging disabled".into(),
+            probability: 0.0,
         },
         FaultDef {
             id: well_known::INVERTER_TRIP.to_string(),
             category: C::Inverter,
             trigger: T::Manual,
-            description: "Inverter protective trip".into(),
+            description: "Inverter protective trip — output zeroed".into(),
+            probability: 0.0,
         },
         FaultDef {
             id: well_known::COMM_TIMEOUT.to_string(),
             category: C::Communication,
             trigger: T::Manual,
             description: "Communication bus timeout".into(),
+            probability: 0.0,
         },
         FaultDef {
             id: well_known::SENSOR_DRIFT.to_string(),
             category: C::Sensor,
             trigger: T::Manual,
             description: "Sensor reading drift detected".into(),
+            probability: 0.0,
         },
     ]
+}
+
+// ---------------------------------------------------------------------------
+// FaultEngine — device model that applies fault effects
+// ---------------------------------------------------------------------------
+
+/// A device model that reads `state.active_faults` and applies consequences.
+///
+/// Must be registered **after** the inverter engine but **before** the battery
+/// engine so that fault effects (e.g. zeroing inverter output) are reflected
+/// in the battery SOC calculation.
+///
+/// Recommended order: Solar → Load → Inverter → **Faults** → Battery.
+pub struct FaultEngine {
+    /// Faults that were active last tick — used to detect cleared faults.
+    prev_faults: Vec<String>,
+}
+
+impl FaultEngine {
+    pub fn new() -> Self {
+        Self {
+            prev_faults: Vec::new(),
+        }
+    }
+}
+
+impl Default for FaultEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl sim_models::DeviceModel for FaultEngine {
+    fn update(&mut self, _ctx: &sim_models::TickContext, state: &mut sim_models::PlantState) {
+        // Detect cleared faults and restore state
+        for prev in &self.prev_faults {
+            if !state.active_faults.contains(prev) {
+                match prev.as_str() {
+                    well_known::GRID_LOSS => {
+                        state.grid.connected = true;
+                    }
+                    well_known::INVERTER_TRIP | well_known::BATTERY_OVER_TEMP => {
+                        // Inverter/battery will naturally resume on next tick
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Apply active fault effects
+        for fault_id in &state.active_faults {
+            match fault_id.as_str() {
+                well_known::GRID_LOSS => {
+                    state.grid.connected = false;
+                    state.grid.power_w = 0.0;
+                }
+                well_known::INVERTER_TRIP => {
+                    state.inverter.ac_power_w = 0.0;
+                    state.battery.power_kw = 0.0;
+                }
+                well_known::BATTERY_OVER_TEMP => {
+                    if state.battery.power_kw > 0.0 {
+                        state.battery.power_kw = 0.0;
+                    }
+                }
+                well_known::COMM_TIMEOUT | well_known::SENSOR_DRIFT => {}
+                _ => {}
+            }
+        }
+
+        // Snapshot current faults for next tick
+        self.prev_faults = state.active_faults.clone();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
+    use sim_models::{DeviceModel, PlantState, TickContext};
+
+    fn ts(hour: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+    }
 
     #[test]
     fn catalogue_contains_all_well_known() {
@@ -95,5 +196,94 @@ mod tests {
         let ids: Vec<&str> = cat.iter().map(|f| f.id.as_str()).collect();
         assert!(ids.contains(&well_known::GRID_LOSS));
         assert!(ids.contains(&well_known::BATTERY_OVER_TEMP));
+        assert!(ids.contains(&well_known::INVERTER_TRIP));
+    }
+
+    #[test]
+    fn grid_loss_disconnects_grid() {
+        let mut state = PlantState::new(ts(12));
+        state.grid.connected = true;
+        state.active_faults.push(well_known::GRID_LOSS.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert!(!state.grid.connected);
+        assert_eq!(state.grid.power_w, 0.0);
+    }
+
+    #[test]
+    fn inverter_trip_zeros_output() {
+        let mut state = PlantState::new(ts(12));
+        state.inverter.ac_power_w = 3000.0;
+        state.battery.power_kw = 2.0;
+        state.active_faults.push(well_known::INVERTER_TRIP.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert_eq!(state.inverter.ac_power_w, 0.0);
+        assert_eq!(state.battery.power_kw, 0.0);
+    }
+
+    #[test]
+    fn battery_over_temp_blocks_charging() {
+        let mut state = PlantState::new(ts(12));
+        state.battery.power_kw = 3.0; // charging
+        state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert_eq!(state.battery.power_kw, 0.0);
+    }
+
+    #[test]
+    fn battery_over_temp_allows_discharging() {
+        let mut state = PlantState::new(ts(12));
+        state.battery.power_kw = -2.0; // discharging
+        state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert_eq!(state.battery.power_kw, -2.0);
+    }
+
+    #[test]
+    fn grid_restore_clears_grid_loss() {
+        let mut state = PlantState::new(ts(12));
+        state.grid.connected = true;
+        state.active_faults.push(well_known::GRID_LOSS.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        // Tick 1: fault active, grid disconnected
+        engine.update(&ctx, &mut state);
+        assert!(!state.grid.connected);
+
+        // Tick 2: fault cleared
+        state.active_faults.clear();
+        engine.update(&ctx, &mut state);
+        assert!(state.grid.connected);
     }
 }

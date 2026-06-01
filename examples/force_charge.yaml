@@ -1,0 +1,16 @@
+# Force charge from grid
+name: force charge test
+
+00:00:
+  load: 300
+
+06:00:
+  mode: ForceCharge
+  expect:
+    battery_charging: true
+    grid_import_gt: 2000
+
+09:00:
+  mode: Normal
+  expect:
+    soc_gt: 80

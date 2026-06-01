@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "sim-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -580,15 +580,16 @@ dependencies = [
 
 [[package]]
 name = "sim-faults"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "chrono",
  "serde",
  "sim-models",
 ]
 
 [[package]]
 name = "sim-modbus"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sim-core",
  "sim-models",
@@ -599,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "sim-models"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -607,17 +608,18 @@ dependencies = [
 
 [[package]]
 name = "sim-recording"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
  "serde_json",
  "sim-models",
+ "sim-scenarios",
 ]
 
 [[package]]
 name = "sim-registers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -626,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "sim-scenarios"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -637,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "sim-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",

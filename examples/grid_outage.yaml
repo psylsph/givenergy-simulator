@@ -1,0 +1,19 @@
+# Grid outage scenario
+name: grid outage test
+
+08:00:
+  solar: 3000
+  load: 500
+
+10:00:
+  fault: grid_loss
+  expect:
+    grid_connected: 0
+    battery_discharging: true
+
+12:00:
+  clear_fault: grid_loss
+  expect:
+    grid_connected: 1
+    soc_gt: 40
+    no_faults: true
