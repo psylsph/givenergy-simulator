@@ -1,0 +1,25 @@
+# Example: Two clear summer days
+# Battery starts at 50%, runs through two full charge/discharge cycles
+name: two day clear
+days: 2
+06:00:
+  load: 800
+09:00:
+  solar: 3500
+  expect:
+    soc_gt: 50
+12:00:
+  solar: 4400
+  expect:
+    soc_gt: 70
+14:00:
+  solar: 3800
+18:00:
+  load: 2500
+  expect:
+    soc_gt: 75
+22:00:
+  load: 800
+  expect:
+    soc_lt: 50
+    solar_kwh_gt: 20

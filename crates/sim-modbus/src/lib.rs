@@ -1,32 +1,163 @@
-//! Modbus TCP emulation: TCP listener, session manager, register store bridge.
+//! Modbus TCP emulation for GivEnergy data-adapter protocol.
 //!
-//! Phase 1 MVP: basic TCP skeleton that serves register values.
-//! Phase 3 will match real GivEnergy timing and register scaling.
+//! Implements the proprietary GivEnergy MBAP variant used by the Wi-Fi dongle.
+//! Standard Modbus frames are wrapped inside a transparent-message envelope:
+//!
+//! ```text
+//! Bytes 0-1:    Transaction ID      — fixed 0x5959
+//! Bytes 2-3:    Protocol ID         — fixed 0x0001
+//! Bytes 4-5:    Length              — bytes after this field
+//! Byte  6:      Unit ID             — fixed 0x01
+//! Byte  7:      Function ID         — 0x02 (transparent message)
+//! Bytes 8-17:   Data-adapter serial — 10 bytes, Latin-1, space-padded
+//! Bytes 18-25:  Padding             — big-endian u64 value 8
+//! Byte  26:     Slave address       — 0x32 (reads), 0x11 (writes)
+//! Byte  27:     Inner function code — 0x03/0x04 (read), 0x06 (write)
+//! Bytes 28+:    Inner payload       — register address + count/values
+//! Last 2 bytes: CRC-16/Modbus over bytes 26..end-2
+//! ```
+//!
+//! Supports:
+//! - Inner function 0x03 — Read Holding Registers
+//! - Inner function 0x04 — Read Input Registers
+//! - Inner function 0x06 — Write Single Register
 
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// MBAP header size for Modbus TCP.
-const MBAP_HEADER_SIZE: usize = 7;
+// ---------------------------------------------------------------------------
+// GivEnergy frame constants
+// ---------------------------------------------------------------------------
 
-/// Run a basic Modbus TCP server that serves register values.
+/// Fixed transaction ID for GivEnergy frames.
+pub const TRANSACTION_ID: u16 = 0x5959;
+
+/// Fixed protocol ID for GivEnergy frames.
+pub const PROTOCOL_ID: u16 = 0x0001;
+
+/// Fixed unit ID for GivEnergy frames.
+pub const UNIT_ID: u8 = 0x01;
+
+/// Transparent-message function code used by the GivEnergy data adapter.
+pub const FUNC_TRANSPARENT: u8 = 0x02;
+
+/// Length of the serial field (Latin-1, space-padded).
+pub const SERIAL_LEN: usize = 10;
+
+/// GivEnergy header size: tx_id(2) + proto_id(2) + length(2) + unit_id(1)
+/// + func_id(1) + serial(10) + padding(8) = 26 bytes.
+pub const HEADER_SIZE: usize = 2 + 2 + 2 + 1 + 1 + SERIAL_LEN + 8;
+
+// ---------------------------------------------------------------------------
+// Inner Modbus function codes
+// ---------------------------------------------------------------------------
+
+pub const FC_READ_HOLDING: u8 = 0x03;
+pub const FC_READ_INPUT: u8 = 0x04;
+pub const FC_WRITE_SINGLE: u8 = 0x06;
+
+// ---------------------------------------------------------------------------
+// Exception codes
+// ---------------------------------------------------------------------------
+
+pub const EC_ILLEGAL_FUNCTION: u8 = 0x01;
+pub const EC_ILLEGAL_DATA_ADDRESS: u8 = 0x02;
+
+// ---------------------------------------------------------------------------
+// CRC
+// ---------------------------------------------------------------------------
+
+/// CRC-16/Modbus lookup table.
+const CRC_TABLE: crc::Crc<u16> = crc::Crc::<u16>::new(&crc::CRC_16_MODBUS);
+
+/// Calculate CRC-16/Modbus.
+pub fn crc16(data: &[u8]) -> u16 {
+    CRC_TABLE.checksum(data)
+}
+
+// ---------------------------------------------------------------------------
+// Command type
+// ---------------------------------------------------------------------------
+
+/// A sender for commands produced by Modbus writes.
+pub type CommandSender = tokio::sync::mpsc::UnboundedSender<ModbusCommand>;
+
+/// A command originating from a Modbus write operation.
+#[derive(Debug, Clone)]
+pub struct ModbusCommand {
+    /// The register address that was written.
+    pub address: u16,
+    /// The value that was written.
+    pub value: u16,
+}
+
+// ---------------------------------------------------------------------------
+// Frame helpers
+// ---------------------------------------------------------------------------
+
+/// Build a GivEnergy response frame wrapping an inner Modbus PDU.
 ///
-/// For MVP this handles Read Holding Registers (function code 0x03) only.
+/// The inner PDU = slave_address + function_code + payload.
+/// CRC-16/Modbus is appended over the inner PDU.
+pub fn build_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, payload: &[u8]) -> Vec<u8> {
+    // Inner PDU: slave + func + payload + CRC
+    let mut inner = Vec::with_capacity(2 + payload.len() + 2);
+    inner.push(slave);
+    inner.push(func);
+    inner.extend_from_slice(payload);
+    let crc = crc16(&inner);
+    inner.extend_from_slice(&crc.to_le_bytes());
+
+    // GivEnergy header
+    let length = (1 + 1 + SERIAL_LEN + 8 + inner.len()) as u16;
+    let mut frame = Vec::with_capacity(HEADER_SIZE + inner.len());
+    frame.extend_from_slice(&TRANSACTION_ID.to_be_bytes());
+    frame.extend_from_slice(&PROTOCOL_ID.to_be_bytes());
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.push(UNIT_ID);
+    frame.push(FUNC_TRANSPARENT);
+    frame.extend_from_slice(serial);
+    frame.extend_from_slice(&8u64.to_be_bytes());
+    frame.extend_from_slice(&inner);
+    frame
+}
+
+/// Build a GivEnergy error response frame.
+pub fn build_error_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, exception: u8) -> Vec<u8> {
+    build_response(serial, slave, func | 0x80, &[exception])
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+/// Run a GivEnergy-compatible Modbus TCP server.
+///
+/// Listens for GivEnergy proprietary frames and responds in kind.
+/// Supports multi-slave addressing for battery BMS modules:
+/// - Slave 0x32: inverter registers + battery #1 BMS (IR 60-119)
+/// - Slave 0x33-0x37: battery modules 2-5 BMS (IR 60-119)
 pub async fn run_modbus_server(
     addr: SocketAddr,
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
+    command_tx: CommandSender,
+    battery_state: std::sync::Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("Modbus TCP server listening on {addr}");
+    tracing::info!("GivEnergy Modbus TCP server listening on {addr}");
 
     loop {
         let (mut stream, peer) = listener.accept().await?;
-        tracing::debug!("Modbus connection from {peer}");
+        tracing::info!("Modbus connection from {peer}");
         let store = register_store.clone();
+        let cmd_tx = command_tx.clone();
+        let batt_state = battery_state.clone();
 
         tokio::spawn(async move {
-            let mut buf = [0u8; 260];
+            let mut buf = [0u8; 512];
+            let mut pending: Vec<u8> = Vec::new();
+
             loop {
                 let n = match stream.read(&mut buf).await {
                     Ok(0) => break,
@@ -37,49 +168,233 @@ pub async fn run_modbus_server(
                     }
                 };
 
-                if n < MBAP_HEADER_SIZE {
-                    continue;
-                }
+                pending.extend_from_slice(&buf[..n]);
 
-                // Parse function code
-                let func = buf[7];
-                if func == 0x03 {
-                    // Read Holding Registers
-                    let start_addr = u16::from_be_bytes([buf[8], buf[9]]);
-                    let count = u16::from_be_bytes([buf[10], buf[11]]);
-
-                    let store = store.lock().await;
-                    let mut response_bytes = Vec::with_capacity(count as usize * 2);
-                    for i in 0..count {
-                        let val = store.read(start_addr + i).unwrap_or(0);
-                        response_bytes.extend_from_slice(&val.to_be_bytes());
+                // Process complete frames
+                loop {
+                    // Need at least the GivEnergy header (26 bytes)
+                    if pending.len() < HEADER_SIZE {
+                        break;
                     }
 
-                    // Build response: reuse transaction ID from request
-                    let byte_count = response_bytes.len() as u8;
-                    let mut resp = Vec::with_capacity(MBAP_HEADER_SIZE + 2 + response_bytes.len());
-                    // MBAP header (7 bytes)
-                    resp.extend_from_slice(&buf[0..4]); // transaction ID + protocol ID
-                    let length = (2 + 1 + 1 + response_bytes.len()) as u16;
-                    resp.extend_from_slice(&length.to_be_bytes()); // length
-                    resp.push(buf[6]); // unit ID
-                    resp.push(func);   // function code
-                    resp.push(byte_count);
-                    resp.extend_from_slice(&response_bytes);
+                    // Validate envelope
+                    let tx_id = u16::from_be_bytes([pending[0], pending[1]]);
+                    if tx_id != TRANSACTION_ID {
+                        tracing::warn!("Invalid transaction ID 0x{tx_id:04X}, dropping connection");
+                        return;
+                    }
 
-                    let _ = stream.write_all(&resp).await;
+                    let proto_id = u16::from_be_bytes([pending[2], pending[3]]);
+                    if proto_id != PROTOCOL_ID {
+                        tracing::warn!("Invalid protocol ID 0x{proto_id:04X}, dropping connection");
+                        return;
+                    }
+
+                    let func_id = pending[7];
+                    if func_id != FUNC_TRANSPARENT {
+                        tracing::warn!("Invalid function ID 0x{func_id:02X}, dropping connection");
+                        return;
+                    }
+
+                    let length = u16::from_be_bytes([pending[4], pending[5]]) as usize;
+                    let frame_len = 6 + length; // bytes 0-5 + everything after
+
+                    if pending.len() < frame_len {
+                        break; // incomplete frame, wait for more data
+                    }
+
+                    let frame = &pending[..frame_len];
+
+                    // Extract serial (bytes 8-17)
+                    let mut serial = [b' '; SERIAL_LEN];
+                    serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
+
+                    // Inner PDU starts at byte 26 (HEADER_SIZE)
+                    let inner_pdu = &frame[HEADER_SIZE..];
+
+                    // Inner PDU: slave(1) + func(1) + payload + CRC(2)
+                    if inner_pdu.len() < 4 {
+                        // Need at least slave + func + CRC
+                        tracing::warn!("Inner PDU too short: {} bytes", inner_pdu.len());
+                        pending.drain(..frame_len);
+                        continue;
+                    }
+
+                    let slave = inner_pdu[0];
+                    let inner_func = inner_pdu[1];
+                    let inner_payload = &inner_pdu[2..inner_pdu.len() - 2]; // strip CRC
+
+                    // Verify CRC
+                    let crc_received = u16::from_le_bytes([
+                        inner_pdu[inner_pdu.len() - 2],
+                        inner_pdu[inner_pdu.len() - 1],
+                    ]);
+                    let crc_calc = crc16(&inner_pdu[..inner_pdu.len() - 2]);
+                    if crc_received != crc_calc {
+                        tracing::warn!(
+                            "CRC mismatch: received 0x{crc_received:04X}, calculated 0x{crc_calc:04X}"
+                        );
+                        // Continue processing — lenient like the reference library
+                    }
+
+                    match inner_func {
+                        FC_READ_HOLDING | FC_READ_INPUT => {
+                            if inner_payload.len() < 4 {
+                                tracing::warn!("Read request payload too short");
+                                let resp = build_error_response(
+                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+                            let start_addr =
+                                u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
+                            let count = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
+
+                            if count == 0 || count > 125 {
+                                let resp = build_error_response(
+                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+
+                            // Check if this is a battery BMS read (IR 60-119 on battery slaves)
+                            let battery_index = if slave == 0x32 {
+                                // Battery #1 BMS: IR 60-119 on inverter slave
+                                if inner_func == FC_READ_INPUT && start_addr >= 60 && start_addr < 120 {
+                                    Some(0usize)
+                                } else {
+                                    None
+                                }
+                            } else if slave >= 0x33 && slave <= 0x37 {
+                                // Additional batteries: all IR reads are BMS
+                                if inner_func == FC_READ_INPUT {
+                                    Some((slave - 0x33 + 1) as usize)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            let reg_data = if let Some(batt_idx) = battery_index {
+                                // Serve BMS data from battery state
+                                let batts = batt_state.lock().await;
+                                if let Some(battery) = batts.get(batt_idx) {
+                                    let store_guard = store.lock().await;
+                                    let bms = store_guard.project_battery_bms(battery, batt_idx);
+                                    drop(store_guard);
+                                    let mut data = Vec::with_capacity(count as usize * 2);
+                                    for i in 0..count {
+                                        let idx = (start_addr - 60 + i) as usize;
+                                        let val = if idx < 60 { bms[idx] } else { 0 };
+                                        data.extend_from_slice(&val.to_be_bytes());
+                                    }
+                                    data
+                                } else {
+                                    // No battery at this index — return zeros
+                                    vec![0u8; count as usize * 2]
+                                }
+                            } else {
+                                // Normal register read from store
+                                let space = if inner_func == FC_READ_INPUT {
+                                    sim_registers::RegisterSpace::Input
+                                } else {
+                                    sim_registers::RegisterSpace::Holding
+                                };
+                                let store_guard = store.lock().await;
+                                let mut data = Vec::with_capacity(count as usize * 2);
+                                for i in 0..count {
+                                    let val = store_guard.read_by_space(start_addr + i, space).unwrap_or(0);
+                                    data.extend_from_slice(&val.to_be_bytes());
+                                }
+                                data
+                            };
+
+                            // Build read response payload:
+                            // serial(10) + base_register(2) + register_count(2) + data(N×2)
+                            let mut resp_payload =
+                                Vec::with_capacity(SERIAL_LEN + 4 + reg_data.len());
+                            resp_payload.extend_from_slice(&serial);
+                            resp_payload.extend_from_slice(&start_addr.to_be_bytes());
+                            resp_payload.extend_from_slice(&count.to_be_bytes());
+                            resp_payload.extend_from_slice(&reg_data);
+
+                            let resp = build_response(&serial, slave, inner_func, &resp_payload);
+                            tracing::debug!(
+                                "Read response: slave=0x{:02X} fn=0x{:02X} start={} count={}",
+                                slave, inner_func, start_addr, count
+                            );
+                            let _ = stream.write_all(&resp).await;
+                        }
+
+                        FC_WRITE_SINGLE => {
+                            if inner_payload.len() < 4 {
+                                let resp = build_error_response(
+                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+                            let address =
+                                u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
+                            let value =
+                                u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
+
+                            let success = {
+                                let mut store = store.lock().await;
+                                store.write(address, value)
+                            };
+
+                            if success {
+                                // Write response: serial(10) + register(2) + value(2)
+                                let resp_payload = {
+                                    let mut p = Vec::with_capacity(SERIAL_LEN + 4);
+                                    p.extend_from_slice(&serial);
+                                    p.extend_from_slice(&address.to_be_bytes());
+                                    p.extend_from_slice(&value.to_be_bytes());
+                                    p
+                                };
+                                let resp =
+                                    build_response(&serial, slave, inner_func, &resp_payload);
+                                let _ = stream.write_all(&resp).await;
+                                let _ = cmd_tx.send(ModbusCommand { address, value });
+                                tracing::info!(
+                                    "Modbus write: addr={address}, value={value}"
+                                );
+                            } else {
+                                let resp = build_error_response(
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                tracing::warn!(
+                                    "Modbus write rejected: addr={address} (read-only)"
+                                );
+                            }
+                        }
+
+                        _ => {
+                            tracing::warn!(
+                                "Unsupported inner function code 0x{inner_func:02X}"
+                            );
+                            let resp = build_error_response(
+                                &serial, slave, inner_func, EC_ILLEGAL_FUNCTION,
+                            );
+                            let _ = stream.write_all(&resp).await;
+                        }
+                    }
+
+                    pending.drain(..frame_len);
                 }
-                // Other function codes: silently ignored in MVP
             }
         });
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {
-        // Integration tests for Modbus will use real TCP connections
-        // in the test matrix (see docs/14-testing-matrix.md).
-    }
-}

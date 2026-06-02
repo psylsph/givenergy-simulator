@@ -8,3 +8,7 @@ sim-models = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+sim-faults = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GivEnergy Plant Simulator</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --orange: #f97316;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+    }
+
+    /* Header */
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 20px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 { font-size: 16px; font-weight: 600; }
+
+    .header-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+    }
+
+    /* Sidebar */
+    aside {
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      padding: 12px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+
+    .sidebar-section { margin-bottom: 12px; }
+
+    .sidebar-section h3 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    /* Buttons */
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    button:hover { background: #2d3b4f; }
+    button.primary { background: var(--accent); border-color: var(--accent); }
+    button.primary:hover { background: #2563eb; }
+    button.danger { border-color: var(--red); color: var(--red); }
+    button.danger:hover { background: #1c1111; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.full-width { width: 100%; justify-content: center; }
+
+    /* Select / Input */
+    select, input {
+      width: 100%;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2394a3b8' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      background-size: 10px;
+      padding-right: 22px;
+    }
+
+    select option { background: #1e293b; color: #f8fafc; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+      margin-top: 6px;
+    }
+
+    /* Main content — horizontal layout */
+    main {
+      padding: 12px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Top row: Energy Flow + Battery Modules side-by-side */
+    .top-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    /* Energy flow diagram */
+    .flow-diagram {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .flow-diagram h2 { font-size: 12px; margin-bottom: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .flow-nodes {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .flow-node {
+      background: var(--bg);
+      border: 2px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .flow-node.active { border-color: var(--green); }
+    .flow-node.exporting { border-color: var(--yellow); }
+    .flow-node.importing { border-color: var(--orange); }
+    .flow-node.charging { border-color: var(--accent); }
+    .flow-node.discharging { border-color: var(--orange); }
+
+    .flow-node-label { font-size: 10px; color: var(--text-muted); margin-bottom: 2px; }
+    .flow-node-value { font-size: 16px; font-weight: 600; }
+
+    /* Battery modules panel */
+    .battery-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .battery-panel h2 { font-size: 12px; margin-bottom: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .battery-modules {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+    }
+
+    .batt-module {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .batt-module-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .batt-module-title { font-size: 12px; font-weight: 600; }
+    .batt-module-soc { font-size: 14px; font-weight: 700; }
+
+    .batt-stat {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 2px 0;
+      color: var(--text-muted);
+    }
+    .batt-stat span:last-child { color: var(--text); }
+
+    .soc-gauge {
+      width: 100%;
+      height: 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 6px 0;
+    }
+
+    .soc-gauge-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.3s, background 0.3s;
+    }
+
+    /* Middle row: Dashboard cards */
+    .dashboard {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .card-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .card-value { font-size: 20px; font-weight: 700; line-height: 1; }
+    .card-unit { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+
+    /* Bottom row: Faults + Timeline */
+    .bottom-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .charts {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      min-height: 140px;
+    }
+
+    .charts h2 { font-size: 12px; margin-bottom: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .timeline {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .timeline canvas { width: 100%; height: 100%; }
+
+    /* Footer */
+    footer {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 20px;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+
+    .status-dot.idle { background: var(--text-muted); }
+    .status-dot.running { background: var(--green); }
+    .status-dot.paused { background: var(--yellow); }
+
+    /* Fault indicators */
+    .faults { margin-top: 4px; }
+
+    .fault-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--red);
+      font-size: 10px;
+      margin: 2px;
+    }
+
+    /* Scenario */
+    .scenario-events { max-height: 120px; overflow-y: auto; }
+
+    .scenario-event {
+      padding: 4px 6px;
+      border-left: 3px solid var(--border);
+      margin-bottom: 3px;
+      font-size: 11px;
+    }
+
+    .scenario-event.passed { border-color: var(--green); }
+    .scenario-event.failed { border-color: var(--red); }
+
+    #scenario-input { display: none; }
+
+    /* Compact row helpers */
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row > * { flex: 1; }
+    .row > button { height: 32px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>GivEnergy Plant Simulator
+      <h1>⚡ GivEnergy Plant Simulator</h1>
+      <div class="header-controls">
+        <span id="status-indicator">
+          <span class="status-dot idle"></span>
+          <span id="status-text">Idle</span>
+        </span>
+        <span id="timestamp-display">—</span>
+      </div>
+    </header>
+
+    <aside>
+      <div class="sidebar-section">
+        <h3>Plant Setup</h3>
+        <label>Inverter Type</label>
+        <select id="inverter-type">
+          <option value="Gen3Hybrid">Gen3 Hybrid (0x2001)</option>
+          <option value="Gen3Hybrid8kW">Gen3 Hybrid 8kW (0x2101)</option>
+          <option value="Gen3Hybrid10kW">Gen3 Hybrid 10kW (0x2102)</option>
+          <option value="ACCoupled">AC Coupled (0x3001)</option>
+          <option value="ACCoupled2">AC Coupled Mk2 (0x3002)</option>
+          <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
+          <option value="AllInOne">All-in-One (0x8002)</option>
+          <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
+          <option value="AIO8kW">AIO 8kW (0x8102)</option>
+          <option value="AIO10kW">AIO 10kW (0x8103)</option>
+          <option value="ThreePhase">Three Phase (0x4001)</option>
+        </select>
+
+        <label>Battery Modules</label>
+        <select id="battery-count">
+          <option value="1">1 Module</option>
+          <option value="2">2 Modules</option>
+          <option value="3">3 Modules</option>
+        </select>
+        <div id="battery-modules-container"></div>
+
+        <label>PV1 Peak (W)</label>
+        <input type="number" id="peak-watts" value="5000" min="0" step="500">
+
+        <label>PV2 Peak (W, 0 = off)</label>
+        <input type="number" id="pv2-peak-watts" value="0" min="0" step="500">
+
+        <label>Load Profile</label>
+        <select id="load-profile">
+          <option value="family">Family</option>
+          <option value="minimal">Minimal</option>
+          <option value="ev">EV Charging</option>
+          <option value="heatpump">Heat Pump</option>
+        </select>
+
+        <label>Tick Speed (ticks/sec)</label>
+        <input type="number" id="tick-speed" value="1" min="1" max="1000" step="1">
+
+        <button class="full-width primary" id="btn-create" style="margin-top: 8px">Create Plant</button>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Simulation</h3>
+        <div class="row">
+          <button id="btn-start">▶ Start</button>
+          <button id="btn-pause" disabled>⏸ Pause</button>
+        </div>
+        <button class="full-width danger" id="btn-reset" style="margin-top: 4px">↺ Reset</button>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Controls</h3>
+        <label>Inverter Mode</label>
+        <select id="inverter-mode">
+          <option value="Normal">Normal</option>
+          <option value="Eco">Eco</option>
+          <option value="ForceCharge">Force Charge</option>
+          <option value="ForceDischarge">Force Discharge</option>
+          <option value="ExportLimit">Export Limit</option>
+        </select>
+
+        <label>Weather</label>
+        <select id="weather">
+          <option value="Clear">☀️ Clear</option>
+          <option value="PartlyCloudy">⛅ Partly Cloudy</option>
+          <option value="Overcast">☁️ Overcast</option>
+          <option value="Storm">⛈️ Storm</option>
+        </select>
+
+        <div class="row" style="margin-top: 6px">
+          <button id="btn-set-mode">Apply Mode</button>
+          <button id="btn-set-weather">Weather</button>
+        </div>
+
+        <label style="margin-top:8px">PV Override (W) <span style="color:var(--text-muted)">auto if empty</span></label>
+        <input type="number" id="override-solar" placeholder="auto" min="0" step="100">
+        <label>Load Override (W) <span style="color:var(--text-muted)">auto if empty</span></label>
+        <input type="number" id="override-load" placeholder="auto" min="0" step="100">
+        <div class="row" style="margin-top:4px">
+          <button id="btn-apply-overrides">Apply</button>
+          <button id="btn-clear-overrides">Clear</button>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Faults</h3>
+        <button class="full-width" id="btn-grid-loss">⚡ Grid Loss</button>
+        <button class="full-width" id="btn-inverter-trip" style="margin-top: 3px">🔌 Inverter Trip</button>
+        <button class="full-width" id="btn-battery-temp" style="margin-top: 3px">🌡️ Battery Over Temp</button>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Scenario</h3>
+        <input type="file" id="scenario-input" accept=".yaml,.yml">
+        <button class="full-width" id="btn-load-scenario">📂 Load Scenario</button>
+        <div id="scenario-info" class="scenario-events"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>Persistence</h3>
+        <div class="row">
+          <button id="btn-save-plant">💾 Save</button>
+          <button id="btn-load-plant">📂 Load</button>
+        </div>
+        <div class="row" style="margin-top:4px">
+          <button id="btn-export-csv">📊 CSV</button>
+          <button id="btn-export-jsonl">💾 JSONL</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <!-- Top row: Energy Flow + Battery Modules -->
+      <div class="top-row">
+        <div class="flow-diagram">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h2 style="margin:0">Energy Flow</h2>
+            <div id="inverter-clock" style="font-size:14px;font-weight:600;color:var(--green);font-variant-numeric:tabular-nums">
+              🕐 —
+            </div>
+          </div>
+          <div class="flow-nodes">
+            <div class="flow-node active" id="flow-solar">
+              <div class="flow-node-label">☀️ PV1</div>
+              <div class="flow-node-value" id="val-solar">0 W</div>
+            </div>
+            <div class="flow-node" id="flow-solar2" style="display:none">
+              <div class="flow-node-label">☀️ PV2</div>
+              <div class="flow-node-value" id="val-solar2">0 W</div>
+            </div>
+            <div class="flow-node" id="flow-inverter">
+              <div class="flow-node-label">⚡ Inverter</div>
+              <div class="flow-node-value" id="val-inverter">0 W</div>
+              <div class="flow-node-label" id="val-mode" style="margin-top: 2px">Normal</div>
+              <div class="flow-node-label" id="val-batt-mode" style="margin-top: 1px;font-size:9px;color:var(--yellow)">—</div>
+            </div>
+            <div class="flow-node importing" id="flow-grid">
+              <div class="flow-node-label">🌐 Grid</div>
+              <div class="flow-node-value" id="val-grid">0 W</div>
+              <div class="flow-node-label" id="val-grid-status" style="margin-top: 2px">Idle</div>
+            </div>
+            <div class="flow-node charging" id="flow-battery">
+              <div class="flow-node-label">🔋 Battery</div>
+              <div class="flow-node-value" id="val-battery">0 kW</div>
+              <div class="soc-gauge"><div class="soc-gauge-fill" id="soc-gauge-fill" style="width:50%;background:var(--accent)"></div></div>
+              <div class="flow-node-label" id="val-soc">50.0%</div>
+            </div>
+            <div class="flow-node" id="flow-load">
+              <div class="flow-node-label">🏠 Load</div>
+              <div class="flow-node-value" id="val-load">0 W</div>
+            </div>
+            <div class="flow-node" id="flow-temp">
+              <div class="flow-node-label">🌡️ Temp</div>
+              <div class="flow-node-value" id="val-temp">25.0°C</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="battery-panel">
+          <h2 style="display:flex;justify-content:space-between">
+            <span>Battery Modules</span>
+            <span id="override-indicator" style="font-size:10px;color:var(--text-muted)"></span>
+          </h2>
+          <div class="battery-modules" id="battery-modules-display">
+            <!-- populated dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Dashboard cards row -->
+      <div class="dashboard">
+        <div class="card">
+          <div class="card-label">PV Today</div>
+          <div class="card-value" id="dash-solar-kwh">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Grid Import</div>
+          <div class="card-value" id="dash-grid-import">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Grid Export</div>
+          <div class="card-value" id="dash-grid-export">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Charged</div>
+          <div class="card-value" id="dash-batt-charge">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Discharged</div>
+          <div class="card-value" id="dash-batt-discharge">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Consumed</div>
+          <div class="card-value" id="dash-load-kwh">0.0 <span class="card-unit">kWh</span></div>
+        </div>
+      </div>
+
+      <!-- Schedule info -->
+      <div class="card" id="schedule-card">
+        <div class="card-label">Charge / Discharge Schedule</div>
+        <div id="schedule-display" style="font-size:12px;color:var(--text-muted)">Initialising...</div>
+      </div>
+
+      <!-- Faults (hidden when empty) -->
+      <div class="card" id="faults-card" style="display: none">
+        <div class="card-label">Active Faults</div>
+        <div class="faults" id="faults-list"></div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="bottom-row">
+        <div class="charts">
+          <h2>Power Timeline</h2>
+          <div class="timeline">
+            <canvas id="timeline-canvas"></canvas>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer>GivEnergy Plant Simulator
+      <span id="footer-info">GivEnergy Simulator v0.7.0 — No plant created</span>
+      <span id="footer-modules">—</span>
+    </footer>
+  </div>
+
+  <script type="module">
+    const invoke = window.__TAURI__?.core?.invoke;
+    const listen = window.__TAURI__?.event?.listen;
+    const save = window.__TAURI__?.dialog?.save;
+
+    const MAX_POINTS = 200;
+    const timelineData = { solar: [], load: [], grid: [], battery: [], soc: [] };
+
+    const el = (id) => document.getElementById(id);
+
+    const BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0];
+
+    // Inverter type presets: [max_ac_watts, default_export_limit]
+    const INVERTER_PRESETS = {
+      Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',     maxBattW: 3600, nomV: 51.2 },
+      Gen3Hybrid8kW:   { dtc: 0x2101, label: 'Gen3 Hybrid 8kW', maxBattW: 8000, nomV: 51.2 },
+      Gen3Hybrid10kW:  { dtc: 0x2102, label: 'Gen3 Hybrid 10kW',maxBattW: 10000,nomV: 51.2 },
+      ACCoupled:       { dtc: 0x3001, label: 'AC Coupled',      maxBattW: 3000, nomV: 51.2 },
+      ACCoupled2:      { dtc: 0x3002, label: 'AC Coupled Mk2',  maxBattW: 3000, nomV: 51.2 },
+      AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',  maxBattW: 6000, nomV: 307.0 },
+      AllInOne:        { dtc: 0x8002, label: 'All-in-One',       maxBattW: 6000, nomV: 307.0 },
+      AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',  maxBattW: 5000, nomV: 307.0 },
+      AIO8kW:          { dtc: 0x8102, label: 'AIO 8kW',         maxBattW: 8000, nomV: 307.0 },
+      AIO10kW:         { dtc: 0x8103, label: 'AIO 10kW',       maxBattW: 10000,nomV: 307.0 },
+      ThreePhase:      { dtc: 0x4001, label: 'Three Phase',     maxBattW: 6000, nomV: 76.8 },
+    };
+
+    function fmt(w) {
+      const abs = Math.abs(w);
+      if (abs >= 1000) return `${(w/1000).toFixed(1)} kW`;
+      return `${Math.round(w)} W`;
+    }
+
+    function fmtKwh(kwh) { return kwh < 10 ? kwh.toFixed(2) : kwh.toFixed(1); }
+
+    // ---- Battery module config dropdowns ----
+    function updateBatteryModuleDropdowns() {
+      const count = parseInt(el('battery-count').value);
+      const container = el('battery-modules-container');
+      while (container.querySelectorAll('.battery-module').length < count) {
+        const idx = container.querySelectorAll('.battery-module').length;
+        const div = document.createElement('div');
+        div.className = 'battery-module';
+        div.style.cssText = 'margin-top:6px;';
+        div.innerHTML = `
+          <div style="display:flex;align-items:center;gap:4px;">
+            <span style="font-size:10px;color:var(--text-muted);min-width:16px">M${idx+1}</span>
+            <select class="battery-size" data-idx="${idx}">
+              ${BATTERY_SIZES.map(s => `<option value="${s}" ${s===9.5?'selected':''}>${s} kWh</option>`).join('')}
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-top:2px;">
+            <span style="font-size:9px;color:var(--text-muted);min-width:28px">SoH</span>
+            <input type="range" class="battery-soh" data-idx="${idx}" min="50" max="100" value="100" step="1"
+              style="flex:1;height:14px;accent-color:var(--accent)">
+            <span class="soh-label" data-idx="${idx}" style="font-size:10px;min-width:30px;text-align:right">100%</span>
+          </div>`;
+        container.appendChild(div);
+        // Wire SoH slider
+        const slider = div.querySelector('.battery-soh');
+        const label = div.querySelector('.soh-label');
+        slider.addEventListener('input', async () => {
+          const pct = parseInt(slider.value);
+          label.textContent = pct + '%';
+          if (invoke) {
+            try { await invoke('set_battery_soh', { params: { module: idx, soh: pct / 100.0 } }); }
+            catch (e) { console.error('set_battery_soh failed:', e); }
+          }
+        });
+      }
+      while (container.querySelectorAll('.battery-module').length > count) {
+        container.removeChild(container.lastElementChild);
+      }
+    }
+    updateBatteryModuleDropdowns();
+    el('battery-count').addEventListener('change', updateBatteryModuleDropdowns);
+
+    // ---- Update battery module display in main panel ----
+    function updateBatteryDisplay(batteries) {
+      const container = el('battery-modules-display');
+      if (!batteries || batteries.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No battery data</div>';
+        return;
+      }
+      container.innerHTML = batteries.map((b, i) => {
+        const socColor = b.soc_percent < 20 ? 'var(--red)' : b.soc_percent < 50 ? 'var(--yellow)' : 'var(--green)';
+        const powerLabel = b.power_kw > 0.01 ? 'Charging' : b.power_kw < -0.01 ? 'Discharging' : 'Idle';
+        const powerColor = b.power_kw > 0.01 ? 'var(--accent)' : b.power_kw < -0.01 ? 'var(--orange)' : 'var(--text-muted)';
+        return `<div class="batt-module">
+          <div class="batt-module-header">
+            <span class="batt-module-title">Module ${i+1}</span>
+            <span class="batt-module-soc" style="color:${socColor}">${b.soc_percent.toFixed(1)}%</span>
+          </div>
+          <div class="soc-gauge"><div class="soc-gauge-fill" style="width:${b.soc_percent}%;background:${socColor}"></div></div>
+          <div class="batt-stat" style="gap:4px">
+            <span style="font-size:10px">Set SOC</span>
+            <input type="range" min="0" max="100" step="1" value="${Math.round(b.soc_percent)}"
+              data-batt-idx="${i}" class="batt-soc-slider"
+              style="flex:1;height:14px;accent-color:var(--accent);cursor:pointer">
+            <span class="batt-soc-label" data-batt-idx="${i}" style="font-size:10px;min-width:28px;text-align:right">${Math.round(b.soc_percent)}%</span>
+          </div>
+          <div class="batt-stat"><span>Power</span><span style="color:${powerColor}">${powerLabel} ${Math.abs(b.power_kw).toFixed(2)} kW</span></div>
+          <div class="batt-stat"><span>Voltage</span><span>${b.voltage_v.toFixed(1)} V</span></div>
+          <div class="batt-stat"><span>Current</span><span>${b.current_a.toFixed(1)} A</span></div>
+          <div class="batt-stat"><span>Temp</span><span>${b.temperature_celsius.toFixed(1)}°C</span></div>
+          <div class="batt-stat"><span>Capacity</span><span>${b.capacity_kwh.toFixed(1)} / ${b.nominal_capacity_kwh.toFixed(1)} kWh</span></div>
+          <div class="batt-stat"><span>SoH</span><span>${(b.soh * 100).toFixed(0)}%</span></div>
+          <div class="batt-stat"><span>Cycles</span><span>${b.cycle_count.toFixed(0)}</span></div>
+        </div>`;
+      }).join('');
+    }
+
+    // Event delegation for battery SOC sliders (survives innerHTML rebuilds)
+    el('battery-modules-display').addEventListener('input', (e) => {
+      if (e.target.classList.contains('batt-soc-slider')) {
+        const idx = parseInt(e.target.dataset.battIdx);
+        const val = parseFloat(e.target.value);
+        const label = el('battery-modules-display').querySelector(`.batt-soc-label[data-batt-idx="${idx}"]`);
+        if (label) label.textContent = val + '%';
+      }
+    });
+    el('battery-modules-display').addEventListener('change', (e) => {
+      if (e.target.classList.contains('batt-soc-slider')) {
+        const idx = parseInt(e.target.dataset.battIdx);
+        const val = parseFloat(e.target.value);
+        if (invoke) invoke('set_battery_soc', { params: { module: idx, soc: val } });
+      }
+    });
+
+    // ---- Event listeners ----
+    if (listen) {
+      listen('state_changed', (event) => {
+        const s = event.payload;
+        updateDashboard(s);
+        pushTimeline(s);
+      });
+
+      listen('scenario_completed', () => {
+        el('status-text').textContent = 'Scenario Complete';
+        el('btn-start').disabled = false;
+        el('btn-pause').disabled = true;
+      });
+
+      listen('recording_saved', (event) => {
+        el('footer-info').textContent = `Recording saved: ${event.payload}`;
+      });
+    }
+
+    function syncSidebarControls(s) {
+      // Inverter type
+      if (s.inverter_type) el('inverter-type').value = s.inverter_type;
+      // Battery module count + capacity dropdowns
+      if (s.battery_module_count) {
+        el('battery-count').value = String(s.battery_module_count);
+      }
+      updateBatteryModuleDropdowns();
+      if (s.battery_modules) {
+        s.battery_modules.forEach((m, i) => {
+          const sel = document.querySelector(`.battery-size[data-idx="${i}"]`);
+          if (sel) {
+            // Match to nearest battery size (float comparison is unreliable)
+            const cap = m.capacity_kwh;
+            let best = BATTERY_SIZES[0], bestDiff = Math.abs(cap - best);
+            for (const sz of BATTERY_SIZES) { if (Math.abs(cap - sz) < bestDiff) { best = sz; bestDiff = Math.abs(cap - sz); } }
+            sel.value = best;
+          }
+          // Restore SoH slider
+          const slider = document.querySelector(`.battery-soh[data-idx="${i}"]`);
+          const label = document.querySelector(`.soh-label[data-idx="${i}"]`);
+          if (slider && m.soh !== undefined) {
+            const pct = Math.round(m.soh * 100);
+            slider.value = pct;
+            if (label) label.textContent = pct + '%';
+          }
+        });
+      }
+      // Inverter mode
+      if (s.inverter_mode) el('inverter-mode').value = s.inverter_mode;
+      // Weather
+      if (s.weather) el('weather').value = s.weather;
+      // Schedule fields (if present as form elements)
+      const sch = s.schedule || {};
+      const setChecked = (id, val) => { const e = document.getElementById(id); if (e && val !== undefined) e.checked = val; };
+      const setVal = (id, val) => { const e = document.getElementById(id); if (e && val !== undefined) e.value = val; };
+      setChecked('enable-charge', sch.enable_charge);
+      setChecked('enable-discharge', sch.enable_discharge);
+      setVal('soc-reserve', sch.soc_reserve);
+      setVal('charge-target-soc', sch.charge_target_soc);
+      // Override inputs (IDs are override-solar / override-load)
+      if (s.solar_override !== null && s.solar_override !== undefined) el('override-solar').value = s.solar_override;
+      else el('override-solar').value = '';
+      if (s.load_override !== null && s.load_override !== undefined) el('override-load').value = s.load_override;
+      else el('override-load').value = '';
+    }
+
+    function updateDashboard(s, fullSync) {
+      // Sync sidebar controls from state only on explicit load (not every tick)
+      if (fullSync) syncSidebarControls(s);
+
+      // Inverter clock display
+      el('inverter-clock').textContent = '\uD83D\uDD50 ' + (s.timestamp || '—');
+
+      el('timestamp-display').textContent = s.timestamp;
+      el('val-solar').textContent = fmt(s.solar_pv1_w);
+      // PV2 display (show/hide based on whether PV2 is configured)
+      const pv2Configured = s.pv2_peak_watts > 0;
+      const pv2El = document.getElementById('flow-solar2');
+      if (pv2Configured) {
+        pv2El.style.display = '';
+        el('val-solar2').textContent = fmt(s.solar_pv2_w || 0);
+      } else {
+        pv2El.style.display = 'none';
+      }
+      el('val-inverter').textContent = fmt(s.inverter_ac_power_w);
+      el('val-mode').textContent = s.inverter_mode;
+      el('val-batt-mode').textContent = s.battery_mode || '—';
+
+      const gridW = s.grid_power_w;
+      if (gridW > 0) {
+        el('val-grid').textContent = `+${fmt(gridW)}`;
+        el('val-grid-status').textContent = 'Importing';
+        el('flow-grid').className = 'flow-node importing';
+      } else if (gridW < 0) {
+        el('val-grid').textContent = fmt(gridW);
+        el('val-grid-status').textContent = 'Exporting';
+        el('flow-grid').className = 'flow-node exporting';
+      } else {
+        el('val-grid').textContent = '0 W';
+        el('val-grid-status').textContent = s.grid_connected ? 'Idle' : 'Off';
+        el('flow-grid').className = 'flow-node';
+      }
+
+      const battKw = s.battery_power_kw;
+      if (battKw > 0.01) {
+        el('val-battery').textContent = `+${battKw.toFixed(2)} kW`;
+        el('flow-battery').className = 'flow-node charging';
+      } else if (battKw < -0.01) {
+        el('val-battery').textContent = `${battKw.toFixed(2)} kW`;
+        el('flow-battery').className = 'flow-node discharging';
+      } else {
+        el('val-battery').textContent = '0 kW';
+        el('flow-battery').className = 'flow-node';
+      }
+
+      const soc = s.aggregate_soc;
+      el('val-soc').textContent = `${soc.toFixed(1)}%`;
+      const gauge = el('soc-gauge-fill');
+      gauge.style.width = `${soc}%`;
+      gauge.style.background = soc < 20 ? 'var(--red)' : soc < 50 ? 'var(--yellow)' : 'var(--green)';
+
+      el('val-load').textContent = fmt(s.load_demand_w);
+      el('val-temp').textContent = `${s.battery_temperature_celsius.toFixed(1)}°C`;
+
+      // Battery module detail panel
+      updateBatteryDisplay(s.battery_modules);
+
+      // Dashboard cards
+      el('dash-solar-kwh').innerHTML = `${fmtKwh(s.energy_totals.solar_generation_kwh)} <span class="card-unit">kWh</span>`;
+      el('dash-grid-import').innerHTML = `${fmtKwh(s.energy_totals.grid_import_kwh)} <span class="card-unit">kWh</span>`;
+      el('dash-grid-export').innerHTML = `${fmtKwh(s.energy_totals.grid_export_kwh)} <span class="card-unit">kWh</span>`;
+      el('dash-batt-charge').innerHTML = `${fmtKwh(s.energy_totals.battery_charge_kwh)} <span class="card-unit">kWh</span>`;
+      el('dash-batt-discharge').innerHTML = `${fmtKwh(s.energy_totals.battery_discharge_kwh)} <span class="card-unit">kWh</span>`;
+      el('dash-load-kwh').innerHTML = `${fmtKwh(s.energy_totals.load_consumption_kwh)} <span class="card-unit">kWh</span>`;
+
+      // Faults
+      if (s.active_faults.length > 0) {
+        el('faults-card').style.display = '';
+        el('faults-list').innerHTML = s.active_faults.map(f => `<span class="fault-badge">⚠️ ${f}</span>`).join('');
+      } else {
+        el('faults-card').style.display = 'none';
+      }
+
+      // Override indicator
+      const overrideParts = [];
+      if (s.solar_override !== null && s.solar_override !== undefined) overrideParts.push('☀️ PV override ' + s.solar_override + 'W');
+      if (s.load_override !== null && s.load_override !== undefined) overrideParts.push('🏠 override ' + s.load_override + 'W');
+      el('override-indicator').textContent = overrideParts.join(' | ');
+
+            // Schedule display — all slots
+      const sch = s.schedule || {};
+      const hhmm = (v) => v === 60 || v === undefined ? '—' : String(v).padStart(4, '0').replace(/^(\d{2})(\d{2})$/, '$1:$2');
+      const slotHtml = (title, start, end, enabled) => `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">${title}</div>
+          <div style="font-size:13px;font-weight:600">${hhmm(start)}–${hhmm(end)}</div>
+          <div style="font-size:10px;color:${enabled ? 'var(--green)' : 'var(--text-muted)'}">${enabled ? '✅ On' : '⛔ Off'}</div>
+        </div>`;
+      el('schedule-display').innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(5,1fr) 180px;gap:8px;margin-top:6px">
+          ${slotHtml('Charge Slot 1', sch.charge_slot_1_start, sch.charge_slot_1_end, sch.enable_charge)}
+          ${slotHtml('Charge Slot 2', sch.charge_slot_2_start, sch.charge_slot_2_end, sch.enable_charge)}
+          ${slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge)}
+          ${slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, sch.enable_discharge)}
+          ${slotHtml('Pause Slot', sch.pause_slot_start, sch.pause_slot_end, sch.battery_pause_mode !== 0)}
+          <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
+            <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
+            <div style="font-size:11px;color:var(--text-muted)">Charge ${(sch.charge_target_soc || 100).toFixed(0)}%</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Mode: ${s.battery_mode || '—'}</div>
+          </div>
+        </div>
+      `;
+
+      // Footer// Footer
+      el('footer-info').textContent = `v0.7.0 — ${s.inverter_mode} mode`;
+      el('footer-modules').textContent = `${s.battery_module_count} module(s)`;
+    }
+
+    // ---- Timeline ----
+    function pushTimeline(s) {
+      timelineData.solar.push(s.solar_generation_w);
+      timelineData.load.push(s.load_demand_w);
+      timelineData.grid.push(s.grid_power_w);
+      timelineData.battery.push(s.battery_power_kw);
+      timelineData.soc.push(s.aggregate_soc);
+      if (timelineData.solar.length > MAX_POINTS) {
+        for (const k of Object.keys(timelineData)) timelineData[k].shift();
+      }
+      drawTimeline();
+    }
+
+    function drawTimeline() {
+      const canvas = el('timeline-canvas');
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      const w = rect.width, h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const n = timelineData.solar.length;
+      if (n < 2) return;
+
+      const allVals = [...timelineData.solar, ...timelineData.load, ...timelineData.grid.map(Math.abs)];
+      const maxVal = Math.max(...allVals, 1);
+      const pad = { top: 10, bottom: 20, left: 40, right: 10 };
+      const plotW = w - pad.left - pad.right;
+      const plotH = h - pad.top - pad.bottom;
+
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 3; i++) {
+        const y = pad.top + (plotH * i / 3);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#64748b'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(`${Math.round(maxVal * (1 - i / 3))}W`, pad.left - 4, y + 3);
+      }
+
+      function drawLine(data, color) {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const x = pad.left + (i / (n - 1)) * plotW;
+          const y = pad.top + plotH - (Math.abs(data[i]) / maxVal) * plotH;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      drawLine(timelineData.solar, '#eab308');
+      drawLine(timelineData.load, '#3b82f6');
+      drawLine(timelineData.grid.map(Math.abs), '#f97316');
+      drawLine(timelineData.battery.map(v => Math.abs(v) * 1000), '#22c55e');
+
+      const legendY = h - 4;
+      const legends = [
+        { c: '#eab308', l: 'PV' }, { c: '#3b82f6', l: 'Load' },
+        { c: '#f97316', l: 'Grid' }, { c: '#22c55e', l: 'Battery' },
+      ];
+      ctx.font = '10px sans-serif';
+      let lx = pad.left;
+      for (const l of legends) {
+        ctx.fillStyle = l.c; ctx.fillRect(lx, legendY - 7, 10, 7);
+        ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'left'; ctx.fillText(l.l, lx + 14, legendY);
+        lx += 60;
+      }
+    }
+
+    // ---- Button Handlers ----
+    el('btn-create').addEventListener('click', async () => {
+      try {
+        const moduleSelects = document.querySelectorAll('.battery-size');
+        const batteryModules = Array.from(moduleSelects).map(sel => ({
+          capacity_kwh: parseFloat(sel.value)
+        }));
+        const inverterType = el('inverter-type').value;
+
+        const state = await invoke('create_plant', {
+          params: {
+            battery_count: parseInt(el('battery-count').value),
+            battery_modules: batteryModules.length > 0 ? batteryModules : undefined,
+            peak_watts: parseFloat(el('peak-watts').value),
+            pv2_peak_watts: (el('pv2-peak-watts') ? parseFloat(el('pv2-peak-watts').value) : 0) || 0,
+            load_profile: el('load-profile').value,
+            tick_interval: 1,
+            inverter_type: inverterType,
+          }
+        });
+        updateDashboard(state);
+        el('btn-start').disabled = false;
+        el('footer-info').textContent = 'Plant created — ready to simulate';
+      } catch (e) { console.error('create_plant failed:', e); }
+    });
+
+    el('btn-start').addEventListener('click', async () => {
+      try {
+        const speed = parseFloat(el('tick-speed').value) || 1;
+        await invoke('start_simulation', { params: { speed } });
+        el('status-text').textContent = 'Running';
+        document.querySelector('.status-dot').className = 'status-dot running';
+        el('btn-start').disabled = true;
+        el('btn-pause').disabled = false;
+      } catch (e) { console.error('start_simulation failed:', e); }
+    });
+
+    el('btn-pause').addEventListener('click', async () => {
+      try {
+        await invoke('pause_simulation');
+        el('status-text').textContent = 'Paused';
+        document.querySelector('.status-dot').className = 'status-dot paused';
+        el('btn-start').disabled = false;
+        el('btn-pause').disabled = true;
+      } catch (e) { console.error('pause_simulation failed:', e); }
+    });
+
+    el('btn-reset').addEventListener('click', () => location.reload());
+
+    el('btn-save-plant').addEventListener('click', async () => {
+      try { await invoke('save_plant'); el('footer-info').textContent = 'Plant saved'; }
+      catch (e) { console.error('save_plant failed:', e); }
+    });
+
+    el('btn-load-plant').addEventListener('click', async () => {
+      try {
+        const state = await invoke('load_plant');
+        updateDashboard(state, true);
+        el('btn-start').disabled = false;
+        el('footer-info').textContent = 'Plant loaded';
+      } catch (e) { console.error('load_plant failed:', e); }
+    });
+
+    if (invoke) {
+      invoke('has_saved_plant').then(has => {
+        if (has) el('footer-info').textContent = 'Saved plant found — click Load';
+      }).catch(() => {});
+    }
+
+    el('btn-set-mode').addEventListener('click', async () => {
+      try { await invoke('set_mode', { params: { mode: el('inverter-mode').value } }); }
+      catch (e) { console.error('set_mode failed:', e); }
+    });
+
+    el('btn-set-weather').addEventListener('click', async () => {
+      try { await invoke('set_weather', { params: { weather: el('weather').value } }); }
+      catch (e) { console.error('set_weather failed:', e); }
+    });
+
+    el('btn-apply-overrides').addEventListener('click', async () => {
+      try {
+        const sv = el('override-solar').value;
+        const lv = el('override-load').value;
+        await invoke('set_solar_override', { params: { watts: sv ? parseFloat(sv) : null } });
+        await invoke('set_load_override', { params: { watts: lv ? parseFloat(lv) : null } });
+      } catch (e) { console.error('override failed:', e); }
+    });
+
+    el('btn-clear-overrides').addEventListener('click', async () => {
+      try {
+        el('override-solar').value = '';
+        el('override-load').value = '';
+        await invoke('set_solar_override', { params: { watts: null } });
+        await invoke('set_load_override', { params: { watts: null } });
+        el('footer-info').textContent = 'Overrides cleared';
+      } catch (e) { console.error('clear overrides failed:', e); }
+    });
+
+    // Faults
+    const faultButtons = [
+      { id: 'btn-grid-loss', fault: 'grid_loss', label: '⚡ Grid Loss' },
+      { id: 'btn-inverter-trip', fault: 'inverter_trip', label: '🔌 Inverter Trip' },
+      { id: 'btn-battery-temp', fault: 'battery_over_temp', label: '🌡️ Battery Over Temp' },
+    ];
+
+    // Track active fault state per button
+    const faultActive = {};
+
+    faultButtons.forEach(({ id, fault, label }) => {
+      faultActive[fault] = false;
+      el(id).addEventListener('click', async () => {
+        try {
+          if (faultActive[fault]) {
+            await invoke('clear_fault', { params: { fault_id: fault } });
+            faultActive[fault] = false;
+            el(id).textContent = label;
+            el(id).style.borderColor = '';
+          } else {
+            await invoke('inject_fault', { params: { fault_id: fault } });
+            faultActive[fault] = true;
+            el(id).textContent = '✓ Clear: ' + label;
+            el(id).style.borderColor = 'var(--red)';
+          }
+        } catch (e) { console.error('fault failed:', e); }
+      });
+    });
+
+    // Scenario
+    el('btn-load-scenario').addEventListener('click', () => el('scenario-input').click());
+
+    el('scenario-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const info = await invoke('load_scenario', { params: { path: file.path } });
+        el('scenario-info').innerHTML = `<div style="font-size:11px;margin-bottom:4px">
+          <strong>${info.name}</strong> (${info.days}d, ${info.events.length} events)</div>` +
+          info.events.map(ev => `<div class="scenario-event">${ev.time} — ${ev.mode||''} ${ev.weather||''}</div>`).join('');
+      } catch (err) { console.error('load_scenario failed:', err); }
+    });
+
+    // Export
+    el('btn-export-csv').addEventListener('click', async () => {
+      try {
+        const path = await save({ defaultPath: 'recording.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+        if (path) await invoke('export_recording', { params: { path, format: 'csv' } });
+      } catch (e) { console.error('export failed:', e); }
+    });
+
+    el('btn-export-jsonl').addEventListener('click', async () => {
+      try {
+        const path = await save({ defaultPath: 'recording.jsonl', filters: [{ name: 'JSONL', extensions: ['jsonl'] }] });
+        if (path) await invoke('export_recording', { params: { path, format: 'jsonl' } });
+      } catch (e) { console.error('export failed:', e); }
+    });
+
+    window.addEventListener('resize', drawTimeline);
+  </script>
+</body>
+</html>

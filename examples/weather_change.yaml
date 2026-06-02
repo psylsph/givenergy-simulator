@@ -1,0 +1,13 @@
+# Example: weather change during the day
+name: weather change test
+06:00:
+  load: 500
+12:00:
+  expect:
+    solar_gt: 1000
+13:00:
+  weather: Storm
+14:00:
+  load: 3000
+  expect:
+    solar_lt: 1000

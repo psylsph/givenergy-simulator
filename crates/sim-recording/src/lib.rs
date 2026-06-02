@@ -22,7 +22,7 @@ pub struct RecordingFrame {
     pub timestamp: NaiveDateTime,
     pub plant_state: sim_models::PlantState,
     /// Register address → raw value at this instant.
-    pub register_snapshot: std::collections::HashMap<u16, u16>,
+    pub register_snapshot: std::collections::HashMap<u32, u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,22 +80,37 @@ pub fn diff_recordings(a: &[RecordingFrame], b: &[RecordingFrame]) -> Vec<usize>
 pub fn write_csv<W: Write>(writer: &mut W, frames: &[RecordingFrame]) -> std::io::Result<()> {
     writeln!(
         writer,
-        "timestamp,soc_percent,battery_power_kw,solar_w,load_w,grid_w,grid_connected,inverter_mode,active_faults"
+        "timestamp,aggregate_soc,module1_soc,module2_soc,module3_soc,total_capacity,total_battery_power_kw,solar_w,load_w,grid_w,grid_connected,inverter_mode,active_faults,grid_import_kwh,grid_export_kwh,battery_charge_kwh,battery_discharge_kwh,solar_kwh,load_kwh"
     )?;
     for frame in frames {
         let faults = frame.plant_state.active_faults.join(";");
+        let b2 = frame.plant_state.batteries.get(1).map(|b| b.soc_percent).unwrap_or(-1.0);
+        let b3 = frame.plant_state.batteries.get(2).map(|b| b.soc_percent).unwrap_or(-1.0);
+        let total_cap = frame.plant_state.total_battery_capacity();
+        let total_pwr = frame.plant_state.total_battery_power_kw();
+        let e = &frame.plant_state.energy_totals;
         writeln!(
             writer,
-            "{},{:.2},{:.2},{:.0},{:.0},{:.0},{},{:?},\"{}\"",
+            "{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.0},{:.0},{:.0},{},{:?},\"{}\",{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             frame.timestamp,
-            frame.plant_state.battery.soc_percent,
-            frame.plant_state.battery.power_kw,
+            frame.plant_state.aggregate_soc(),
+            frame.plant_state.batteries.first().map(|b| b.soc_percent).unwrap_or(-1.0),
+            b2,
+            b3,
+            total_cap,
+            total_pwr,
             frame.plant_state.solar.generation_w,
             frame.plant_state.load.demand_w,
             frame.plant_state.grid.power_w,
             frame.plant_state.grid.connected as u8,
-            frame.plant_state.inverter.mode,
+            frame.plant_state.inverter.mode_state.effective,
             faults,
+            e.grid_import_kwh,
+            e.grid_export_kwh,
+            e.battery_charge_kwh,
+            e.battery_discharge_kwh,
+            e.solar_generation_kwh,
+            e.load_consumption_kwh,
         )?;
     }
     Ok(())
@@ -210,7 +225,10 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         let first_line = output.lines().next().unwrap();
         assert!(first_line.starts_with("timestamp"));
-        assert!(first_line.contains("soc_percent"));
+        assert!(first_line.contains("aggregate_soc"));
+        assert!(first_line.contains("module1_soc"));
+        assert!(first_line.contains("module2_soc"));
+        assert!(first_line.contains("module3_soc"));
     }
 
     #[test]

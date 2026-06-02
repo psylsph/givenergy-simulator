@@ -1,0 +1,19 @@
+# Custom load profile: shift worker (night-time peak usage)
+- hour: 0.0
+  watts: 2500
+- hour: 5.0
+  watts: 3000
+- hour: 6.0
+  watts: 500
+- hour: 8.0
+  watts: 200
+- hour: 12.0
+  watts: 400
+- hour: 15.0
+  watts: 300
+- hour: 17.0
+  watts: 800
+- hour: 20.0
+  watts: 1500
+- hour: 22.0
+  watts: 2000

@@ -1,5 +1,5 @@
 [workspace]
-resolver = "3"
+resolver = "2"
 members = [
     "crates/sim-core",
     "crates/sim-models",
@@ -10,10 +10,11 @@ members = [
     "crates/sim-recording",
     "crates/sim-api",
     "crates/sim-storage",
+    "crates/sim-tauri",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 
@@ -28,6 +29,7 @@ sim-faults = { path = "crates/sim-faults" }
 sim-recording = { path = "crates/sim-recording" }
 sim-api = { path = "crates/sim-api" }
 sim-storage = { path = "crates/sim-storage" }
+sim-tauri = { path = "crates/sim-tauri" }
 
 # External deps
 serde = { version = "1", features = ["derive"] }
@@ -39,3 +41,5 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+tauri = { version = "2", features = ["devtools"] }
+tauri-build = "2"

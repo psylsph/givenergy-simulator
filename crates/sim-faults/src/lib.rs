@@ -136,9 +136,12 @@ impl Default for FaultEngine {
 
 impl sim_models::DeviceModel for FaultEngine {
     fn update(&mut self, _ctx: &sim_models::TickContext, state: &mut sim_models::PlantState) {
+        // Collect active fault IDs first to avoid borrow conflicts
+        let active: Vec<String> = state.active_faults.clone();
+
         // Detect cleared faults and restore state
         for prev in &self.prev_faults {
-            if !state.active_faults.contains(prev) {
+            if !active.contains(prev) {
                 match prev.as_str() {
                     well_known::GRID_LOSS => {
                         state.grid.connected = true;
@@ -152,7 +155,7 @@ impl sim_models::DeviceModel for FaultEngine {
         }
 
         // Apply active fault effects
-        for fault_id in &state.active_faults {
+        for fault_id in &active {
             match fault_id.as_str() {
                 well_known::GRID_LOSS => {
                     state.grid.connected = false;
@@ -160,12 +163,19 @@ impl sim_models::DeviceModel for FaultEngine {
                 }
                 well_known::INVERTER_TRIP => {
                     state.inverter.ac_power_w = 0.0;
+                    for b in &mut state.batteries {
+                        b.power_kw = 0.0;
+                    }
                     state.battery.power_kw = 0.0;
                 }
                 well_known::BATTERY_OVER_TEMP => {
-                    if state.battery.power_kw > 0.0 {
-                        state.battery.power_kw = 0.0;
+                    // Block charging on all battery modules
+                    for b in &mut state.batteries {
+                        if b.power_kw > 0.0 {
+                            b.power_kw = 0.0;
+                        }
                     }
+                    state.sync_battery_from_vec();
                 }
                 well_known::COMM_TIMEOUT | well_known::SENSOR_DRIFT => {}
                 _ => {}
@@ -173,7 +183,7 @@ impl sim_models::DeviceModel for FaultEngine {
         }
 
         // Snapshot current faults for next tick
-        self.prev_faults = state.active_faults.clone();
+        self.prev_faults = active;
     }
 }
 
@@ -220,7 +230,8 @@ mod tests {
     fn inverter_trip_zeros_output() {
         let mut state = PlantState::new(ts(12));
         state.inverter.ac_power_w = 3000.0;
-        state.battery.power_kw = 2.0;
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
         state.active_faults.push(well_known::INVERTER_TRIP.to_string());
 
         let mut engine = FaultEngine::new();
@@ -231,13 +242,14 @@ mod tests {
         engine.update(&ctx, &mut state);
 
         assert_eq!(state.inverter.ac_power_w, 0.0);
-        assert_eq!(state.battery.power_kw, 0.0);
+        assert_eq!(state.total_battery_power_kw(), 0.0);
     }
 
     #[test]
     fn battery_over_temp_blocks_charging() {
         let mut state = PlantState::new(ts(12));
-        state.battery.power_kw = 3.0; // charging
+        state.batteries[0].power_kw = 3.0; // charging
+        state.sync_battery_from_vec();
         state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
 
         let mut engine = FaultEngine::new();
@@ -247,13 +259,14 @@ mod tests {
         };
         engine.update(&ctx, &mut state);
 
-        assert_eq!(state.battery.power_kw, 0.0);
+        assert_eq!(state.total_battery_power_kw(), 0.0);
     }
 
     #[test]
     fn battery_over_temp_allows_discharging() {
         let mut state = PlantState::new(ts(12));
-        state.battery.power_kw = -2.0; // discharging
+        state.batteries[0].power_kw = -2.0; // discharging
+        state.sync_battery_from_vec();
         state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
 
         let mut engine = FaultEngine::new();
@@ -263,7 +276,7 @@ mod tests {
         };
         engine.update(&ctx, &mut state);
 
-        assert_eq!(state.battery.power_kw, -2.0);
+        assert_eq!(state.total_battery_power_kw(), -2.0);
     }
 
     #[test]

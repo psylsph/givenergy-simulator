@@ -1,4 +1,4 @@
-//! GivEnergy Simulator — headless CLI.
+//! GivEnergy Plant Simulator — headless CLI.
 //!
 //! `giv-sim run scenario.yaml`
 //!
@@ -16,13 +16,13 @@ use sim_recording::{RecordingFrame, write_csv, write_frame, write_json_report, w
 use sim_scenarios::{AssertionResult, ScenarioResult, parse_named_scenario};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-
+use std::sync::Arc;
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "giv-sim", version, about = "GivEnergy hardware simulator")]
+#[command(name = "giv-sim", version, about = "GivEnergy Plant simulator")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -36,7 +36,7 @@ enum Commands {
         #[arg(value_name = "SCENARIO")]
         scenario: PathBuf,
         /// Tick interval in seconds.
-        #[arg(long, default_value = "30")]
+        #[arg(long, default_value = "1")]
         tick_interval: u64,
         /// Start date (YYYY-MM-DD).
         #[arg(long, default_value = "2025-06-01")]
@@ -56,9 +56,23 @@ enum Commands {
         /// Output directory for reports and traces.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Number of battery modules (1–3).
+        #[arg(long, default_value = "1")]
+        battery_count: usize,
         /// Also launch a Modbus TCP server on this address.
         #[arg(long)]
         modbus: Option<SocketAddr>,
+    },
+    /// Replay a recording or diff two recordings.
+    Replay {
+        /// Path to recording file (JSON Lines format).
+        recording: PathBuf,
+        /// Optional second recording for diff.
+        #[arg(long)]
+        diff: Option<PathBuf>,
+        /// Output format: summary, csv, json.
+        #[arg(long, default_value = "summary")]
+        format: String,
     },
 }
 
@@ -76,8 +90,41 @@ fn parse_profile(s: &str) -> LoadProfile {
         "minimal" => LoadProfile::Minimal,
         "ev" => LoadProfile::EV,
         "heatpump" | "heat-pump" | "heat_pump" => LoadProfile::HeatPump,
-        _ => LoadProfile::Family,
+        other => {
+            // Try loading as a custom profile file
+            let path = std::path::Path::new(other);
+            if path.exists() {
+                match load_custom_profile(path) {
+                    Ok(profile) => profile,
+                    Err(e) => {
+                        tracing::warn!("Failed to load custom profile '{other}': {e}");
+                        LoadProfile::Family
+                    }
+                }
+            } else {
+                LoadProfile::Family
+            }
+        }
     }
+}
+
+/// Load a custom load profile from a YAML file.
+/// Format: list of `{hour: 0.0, watts: 200}` entries.
+fn load_custom_profile(path: &std::path::Path) -> Result<LoadProfile, Box<dyn std::error::Error>> {
+    let yaml = std::fs::read_to_string(path)?;
+    let entries: Vec<LoadProfileEntry> = serde_yaml::from_str(&yaml)?;
+    let mut points: Vec<(f64, f64)> = entries
+        .into_iter()
+        .map(|e| (e.hour, e.watts))
+        .collect();
+    points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(LoadProfile::Custom(points))
+}
+
+#[derive(serde::Deserialize)]
+struct LoadProfileEntry {
+    hour: f64,
+    watts: f64,
 }
 
 fn parse_mode_cmd(s: &str) -> Option<sim_models::InverterMode> {
@@ -93,11 +140,56 @@ fn parse_mode_cmd(s: &str) -> Option<sim_models::InverterMode> {
 }
 
 fn _parse_weather_cmd(s: &str) -> Option<WeatherCondition> {
-    match s {
-        "Clear" => Some(WeatherCondition::Clear),
-        "PartlyCloudy" => Some(WeatherCondition::PartlyCloudy),
-        "Overcast" => Some(WeatherCondition::Overcast),
-        "Storm" => Some(WeatherCondition::Storm),
+    let w = sim_core::parse_weather_from_str(s);
+    // Return None only if it looks like garbage; our parser defaults to Clear
+    // so check if the input matches a known variant
+    match s.to_lowercase().as_str() {
+        "clear" | "partlycloudy" | "partly-cloudy" | "partly_cloudy" | "overcast" | "storm" => Some(w),
+        _ => None,
+    }
+}
+
+/// Translate a Modbus register write into a simulation Command.
+fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
+    match cmd.address {
+        // HR 35-40: system time (year, month, day, hour, minute, second)
+        // Handled separately via time register accumulation in the tick loop
+        35..=40 => None,
+        100 => {
+            // inverter_mode: 0=Normal, 1=Eco, 2=ForceCharge, 3=ForceDischarge, 4=ExportLimit
+            let mode = match cmd.value {
+                0 => Some(sim_models::InverterMode::Normal),
+                1 => Some(sim_models::InverterMode::Eco),
+                2 => Some(sim_models::InverterMode::ForceCharge),
+                3 => Some(sim_models::InverterMode::ForceDischarge),
+                4 => Some(sim_models::InverterMode::ExportLimit),
+                _ => None,
+            }?;
+            Some(Command::SetInverterMode(mode))
+        }
+        102 => {
+            // inverter_export_limit_w
+            Some(Command::SetExportLimit(cmd.value as f64))
+        }
+        210 => {
+            // battery_min_soc
+            Some(Command::SetMinSoc(cmd.value as f64))
+        }
+        211 => {
+            // battery_max_soc
+            Some(Command::SetMaxSoc(cmd.value as f64))
+        }
+        602 => {
+            // config_weather: 0=Clear, 1=PartlyCloudy, 2=Overcast, 3=Storm
+            let w = match cmd.value {
+                0 => Some(WeatherCondition::Clear),
+                1 => Some(WeatherCondition::PartlyCloudy),
+                2 => Some(WeatherCondition::Overcast),
+                3 => Some(WeatherCondition::Storm),
+                _ => None,
+            }?;
+            Some(Command::SetWeather(w))
+        }
         _ => None,
     }
 }
@@ -107,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "giv_sim=info".into()),
+                .unwrap_or_else(|_| "giv_sim=info,sim_api=info".into()),
         )
         .init();
 
@@ -124,6 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             weather,
             output,
             modbus,
+            battery_count,
         } => {
             run_scenario(
                 &scenario,
@@ -135,8 +228,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &weather,
                 output.as_deref(),
                 modbus,
+                battery_count,
             )
             .await
+        }
+        Commands::Replay {
+            recording,
+            diff,
+            format,
+        } => {
+            replay_recording(&recording, diff.as_ref(), &format).await
         }
     }
 }
@@ -151,6 +252,7 @@ async fn run_scenario(
     weather: &str,
     output_dir: Option<&std::path::Path>,
     modbus: Option<SocketAddr>,
+    battery_count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let yaml = std::fs::read_to_string(scenario_path)?;
     let scen = parse_named_scenario(&yaml)?;
@@ -158,23 +260,31 @@ async fn run_scenario(
     let start_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
     let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap();
 
-    let state = PlantState::new(start_ts);
+    let mut state = PlantState::with_battery_count(start_ts, battery_count);
+    state.config.solar_peak_watts = peak_watts;
+    state.config.latitude = latitude;
+    state.config.tick_interval_secs = tick_interval;
+    state.weather = format!("{:?}", parse_weather(weather));
 
-    let mut solar = SolarEngine::new(peak_watts, latitude);
-    solar.weather = parse_weather(weather);
+    let solar = SolarEngine::new(peak_watts, latitude);
 
     let load_profile = parse_profile(profile);
 
-    // Order: Solar → Load → Inverter → Faults → Battery
+    // Order: Solar → Load → Inverter → Faults → Battery → EnergyTracker
     let devices: Vec<Box<dyn DeviceModel>> = vec![
         Box::new(solar),
         Box::new(LoadEngine::new(load_profile)),
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
+        Box::new(sim_core::EnergyTracker::new()),
     ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
+
+    // Register store for Modbus and recording
+    let reg_cat = sim_registers::default_register_catalogue();
+    let mut reg_store = sim_registers::RegisterStore::new(reg_cat);
 
     // Create output directory if needed
     if let Some(dir) = output_dir {
@@ -191,100 +301,173 @@ async fn run_scenario(
     };
 
     tracing::info!(
-        "Running scenario '{}' ({} events, tick={}s, profile={}, weather={:?})",
+        "Running scenario '{}' ({} events, {} days, tick={}s, profile={}, weather={:?}, batteries={})",
         scen.name,
         scen.events.len(),
+        scen.days,
         tick_interval,
         profile,
         parse_weather(weather),
+        battery_count,
     );
 
     // Optional: launch Modbus server in background
-    if let Some(addr) = modbus {
-        let reg_cat = sim_registers::default_register_catalogue();
-        let store = sim_registers::RegisterStore::new(reg_cat);
-        let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
+    let (modbus_store, mut modbus_rx) = if let Some(addr) = modbus {
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
+        let server_store = store.clone();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            if let Err(e) = sim_modbus::run_modbus_server(addr, store).await {
+            if let Err(e) = sim_modbus::run_modbus_server(addr, server_store, cmd_tx, Arc::new(tokio::sync::Mutex::new(Vec::new()))).await {
                 tracing::error!("Modbus server error: {e}");
             }
         });
         tracing::info!("Modbus TCP server starting on {addr}");
-    }
+        (Some(store), Some(cmd_rx))
+    } else {
+        (None, None)
+    };
 
-    // Run ticks, applying scenario events at matching times
-    for (time, event) in &scen.events {
-        let target = start_date.and_time(*time);
-        while engine.state.timestamp < target {
+    // Run ticks, applying scenario events at matching times (repeat for each day)
+    let num_days = scen.days.max(1);
+    let mut time_regs: [Option<u16>; 6] = [None; 6];
+    for day in 0..num_days {
+        let day_offset = chrono::TimeDelta::days(day as i64);
+        let day_label = if num_days > 1 {
+            format!(" (day {})", day + 1)
+        } else {
+            String::new()
+        };
+
+        for (time, event) in &scen.events {
+            let target = start_date.and_time(*time) + day_offset;
+            while engine.state.timestamp < target {
+                // Drain Modbus write commands
+                if let Some(ref mut rx) = modbus_rx {
+                    while let Ok(cmd) = rx.try_recv() {
+                        if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                            engine.enqueue(sim_cmd);
+                        }
+                    }
+                }
+
+                engine.tick();
+
+                // Project state into registers and record frame
+                reg_store.project_from_state(&engine.state);
+                if let Some(ref modbus_store) = modbus_store {
+                    if let Ok(mut ms) = modbus_store.try_lock() {
+                        ms.project_from_state(&engine.state);
+                    }
+                }
+                recording.push(RecordingFrame {
+                    timestamp: engine.state.timestamp,
+                    plant_state: engine.state.clone(),
+                    register_snapshot: reg_store.snapshot(),
+                });
+            }
+
+            // Apply event overrides
+            if let Some(solar_w) = event.solar {
+                engine.state.solar.generation_w = solar_w;
+            }
+            if let Some(load_w) = event.load {
+                engine.state.load.demand_w = load_w;
+            }
+            if let Some(fault) = &event.fault {
+                engine.enqueue(Command::InjectFault(fault.clone()));
+            }
+            if let Some(fault) = &event.clear_fault {
+                engine.enqueue(Command::ClearFault(fault.clone()));
+            }
+            if let Some(mode_str) = &event.mode {
+                if let Some(mode) = parse_mode_cmd(mode_str) {
+                    engine.enqueue(Command::SetInverterMode(mode));
+                }
+            }
+            if let Some(limit) = event.export_limit {
+                engine.enqueue(Command::SetExportLimit(limit));
+            }
+            if let Some(weather_str) = &event.weather {
+                if let Some(w) = _parse_weather_cmd(weather_str) {
+                    engine.enqueue(Command::SetWeather(w));
+                }
+            }
+
+            // Tick once to let the event take effect
+            // Also drain any pending Modbus commands
+            if let Some(ref mut rx) = modbus_rx {
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd.address {
+                        35 => time_regs[0] = Some(cmd.value),
+                        36 => time_regs[1] = Some(cmd.value),
+                        37 => time_regs[2] = Some(cmd.value),
+                        38 => time_regs[3] = Some(cmd.value),
+                        39 => time_regs[4] = Some(cmd.value),
+                        40 => time_regs[5] = Some(cmd.value),
+                        _ => {}
+                    }
+                    if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                        engine.enqueue(sim_cmd);
+                    }
+                }
+                if time_regs.iter().all(|r| r.is_some()) {
+                    let y = time_regs[0].unwrap() as i32;
+                    let m = time_regs[1].unwrap() as u32;
+                    let d = time_regs[2].unwrap() as u32;
+                    let h = time_regs[3].unwrap() as u32;
+                    let min = time_regs[4].unwrap() as u32;
+                    let s = time_regs[5].unwrap() as u32;
+                    if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
+                        .and_then(|date| date.and_hms_opt(h, min, s))
+                    {
+                        engine.enqueue(Command::SetSimulationTime(dt));
+                    }
+                    time_regs = [None; 6];
+                }
+            }
             engine.tick();
-
-            // Record frame
+            reg_store.project_from_state(&engine.state);
+            if let Some(ref modbus_store) = modbus_store {
+                if let Ok(mut ms) = modbus_store.try_lock() {
+                    ms.project_from_state(&engine.state);
+                }
+            }
             recording.push(RecordingFrame {
                 timestamp: engine.state.timestamp,
                 plant_state: engine.state.clone(),
-                register_snapshot: std::collections::HashMap::new(),
+                register_snapshot: reg_store.snapshot(),
             });
-        }
 
-        // Apply event overrides
-        if let Some(solar_w) = event.solar {
-            engine.state.solar.generation_w = solar_w;
-        }
-        if let Some(load_w) = event.load {
-            engine.state.load.demand_w = load_w;
-        }
-        if let Some(fault) = &event.fault {
-            engine.enqueue(Command::InjectFault(fault.clone()));
-        }
-        if let Some(fault) = &event.clear_fault {
-            engine.enqueue(Command::ClearFault(fault.clone()));
-        }
-        if let Some(mode_str) = &event.mode {
-            if let Some(mode) = parse_mode_cmd(mode_str) {
-                engine.enqueue(Command::SetInverterMode(mode));
-            }
-        }
-        if let Some(limit) = event.export_limit {
-            engine.enqueue(Command::SetExportLimit(limit));
-        }
-
-        // Tick once to let the event take effect
-        engine.tick();
-        recording.push(RecordingFrame {
-            timestamp: engine.state.timestamp,
-            plant_state: engine.state.clone(),
-            register_snapshot: std::collections::HashMap::new(),
-        });
-
-        // Check assertions
-        if let Some(expect) = &event.expect {
-            let time_str = format!("{}", time);
-            match sim_scenarios::check_assertions(expect, &engine.state) {
-                Ok(()) => {
-                    tracing::info!(
-                        "[{}] ✓ assertions passed (SOC={:.1}%)",
-                        time,
-                        engine.state.battery.soc_percent,
-                    );
-                    scenario_result.passed += 1;
-                    scenario_result.assertions.push(AssertionResult {
-                        time: time_str,
-                        passed: true,
-                        messages: vec![],
-                    });
-                }
-                Err(failures) => {
-                    tracing::error!(
-                        "[{}] ✗ assertion failures: {:?}",
-                        time,
-                        failures,
-                    );
-                    scenario_result.failed += 1;
-                    scenario_result.assertions.push(AssertionResult {
-                        time: time_str,
-                        passed: false,
-                        messages: failures,
-                    });
+            // Check assertions
+            if let Some(expect) = &event.expect {
+                let time_str = format!("{}{day_label}", time);
+                match sim_scenarios::check_assertions(expect, &engine.state) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "[{}] ✓ assertions passed (SOC={:.1}%)",
+                            time_str,
+                            engine.state.aggregate_soc(),
+                        );
+                        scenario_result.passed += 1;
+                        scenario_result.assertions.push(AssertionResult {
+                            time: time_str,
+                            passed: true,
+                            messages: vec![],
+                        });
+                    }
+                    Err(failures) => {
+                        tracing::error!(
+                            "[{}] ✗ assertion failures: {:?}",
+                            time_str,
+                            failures,
+                        );
+                        scenario_result.failed += 1;
+                        scenario_result.assertions.push(AssertionResult {
+                            time: time_str,
+                            passed: false,
+                            messages: failures,
+                        });
+                    }
                 }
             }
         }
@@ -293,7 +476,7 @@ async fn run_scenario(
     tracing::info!("Scenario complete.");
     tracing::info!(
         "Final state: SOC={:.1}%, solar={:.0}W, load={:.0}W, grid={:.0}W",
-        engine.state.battery.soc_percent,
+        engine.state.aggregate_soc(),
         engine.state.solar.generation_w,
         engine.state.load.demand_w,
         engine.state.grid.power_w,
@@ -335,6 +518,86 @@ async fn run_scenario(
 
     if scenario_result.failed > 0 {
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Replay a recording or diff two recordings.
+async fn replay_recording(
+    path: &PathBuf,
+    diff_path: Option<&PathBuf>,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let frames = sim_storage::load_recording(path)?;
+    tracing::info!("Loaded recording: {} ({} frames)", path.display(), frames.len());
+
+    if let Some(diff) = diff_path {
+        let other = sim_storage::load_recording(diff)?;
+        tracing::info!("Loaded diff recording: {} ({} frames)", diff.display(), other.len());
+
+        let diffs = sim_recording::diff_recordings(&frames, &other);
+
+        if diffs.is_empty() {
+            tracing::info!("Recordings are identical");
+        } else {
+            tracing::info!("Recordings differ at {} frame(s):", diffs.len());
+            for idx in diffs.iter().take(10) {
+                let a = &frames[*idx.min(&(frames.len() - 1))];
+                let b = &other[*idx.min(&(other.len() - 1))];
+                tracing::info!(
+                    "  Frame {}: a={} (SOC={:.1}%) vs b={} (SOC={:.1}%)",
+                    idx,
+                    a.timestamp,
+                    a.plant_state.aggregate_soc(),
+                    b.timestamp,
+                    b.plant_state.aggregate_soc(),
+                );
+            }
+            if diffs.len() > 10 {
+                tracing::info!("  ... and {} more", diffs.len() - 10);
+            }
+        }
+    } else {
+        match format {
+            "csv" => {
+                let csv_path = path.with_extension("replay.csv");
+                let mut f = std::fs::File::create(&csv_path)?;
+                write_csv(&mut f, &frames)?;
+                tracing::info!("CSV output: {}", csv_path.display());
+            }
+            "json" => {
+                let json = serde_json::to_string_pretty(&frames)?;
+                let json_path = path.with_extension("replay.json");
+                std::fs::write(&json_path, json)?;
+                tracing::info!("JSON output: {}", json_path.display());
+            }
+            _ => {
+                // Summary
+                let first = frames.first().map(|f| f.timestamp.to_string()).unwrap_or_default();
+                let last = frames.last().map(|f| f.timestamp.to_string()).unwrap_or_default();
+                let first_soc = frames.first().map(|f| f.plant_state.aggregate_soc()).unwrap_or(0.0);
+                let last_soc = frames.last().map(|f| f.plant_state.aggregate_soc()).unwrap_or(0.0);
+                let first_solar = frames.first().map(|f| f.plant_state.solar.generation_w).unwrap_or(0.0);
+                let last_solar = frames.last().map(|f| f.plant_state.solar.generation_w).unwrap_or(0.0);
+
+                let totals = frames.last().map(|f| &f.plant_state.energy_totals);
+
+                println!("=== Recording Summary ===");
+                println!("Frames:     {}", frames.len());
+                println!("Duration:   {} → {}", first, last);
+                println!("SOC:        {:.1}% → {:.1}%", first_soc, last_soc);
+                println!("Solar:      {:.0}W → {:.0}W", first_solar, last_solar);
+                if let Some(et) = totals {
+                    println!("Grid import:  {:.2} kWh", et.grid_import_kwh);
+                    println!("Grid export:  {:.2} kWh", et.grid_export_kwh);
+                    println!("Solar gen:    {:.2} kWh", et.solar_generation_kwh);
+                    println!("Load cons:    {:.2} kWh", et.load_consumption_kwh);
+                    println!("Batt charge:  {:.2} kWh", et.battery_charge_kwh);
+                    println!("Batt disch:   {:.2} kWh", et.battery_discharge_kwh);
+                }
+            }
+        }
     }
 
     Ok(())

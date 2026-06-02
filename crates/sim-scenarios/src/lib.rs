@@ -34,6 +34,10 @@ pub struct ScenarioEvent {
     pub export_limit: Option<f64>,
     pub weather: Option<String>,
     pub expect: Option<HashMap<String, serde_yaml::Value>>,
+    /// Number of days to run (for multi-day scenarios). Events repeat daily.
+    /// If not set, scenario runs for 1 day.
+    #[serde(default)]
+    pub days: Option<u32>,
 }
 
 /// A parsed scenario.
@@ -42,16 +46,23 @@ pub struct Scenario {
     pub name: String,
     /// Events sorted by time.
     pub events: Vec<(NaiveTime, ScenarioEvent)>,
+    /// Number of days to simulate. Defaults to 1.
+    pub days: u32,
 }
 
 /// Parse a scenario from YAML string (no name support).
 pub fn parse_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::Error>> {
-    let raw: HashMap<String, ScenarioEvent> = serde_yaml::from_str(yaml)?;
+    let raw: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(yaml)?;
+
+    let days = raw.get("days")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u32;
 
     let mut events: Vec<(NaiveTime, ScenarioEvent)> = raw
         .into_iter()
-        .filter_map(|(time_str, evt)| {
+        .filter_map(|(time_str, value)| {
             let t = NaiveTime::parse_from_str(&time_str, "%H:%M").ok()?;
+            let evt: ScenarioEvent = serde_yaml::from_value(value.clone()).ok()?;
             Some((t, evt))
         })
         .collect();
@@ -61,6 +72,7 @@ pub fn parse_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::Error>
     Ok(Scenario {
         name: "unnamed".into(),
         events,
+        days,
     })
 }
 
@@ -74,6 +86,10 @@ pub fn parse_named_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::
         .unwrap_or("unnamed")
         .to_string();
 
+    let days = raw.get("days")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u32;
+
     let mut events: Vec<(NaiveTime, ScenarioEvent)> = raw
         .iter()
         .filter_map(|(key, value)| {
@@ -85,7 +101,7 @@ pub fn parse_named_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::
 
     events.sort_by_key(|(t, _)| *t);
 
-    Ok(Scenario { name, events })
+    Ok(Scenario { name, events, days })
 }
 
 /// Result of running a full scenario.
@@ -152,8 +168,8 @@ pub fn check_assertions(
         };
     }
 
-    check_gt!("soc_gt", state.battery.soc_percent);
-    check_lt!("soc_lt", state.battery.soc_percent);
+    check_gt!("soc_gt", state.aggregate_soc());
+    check_lt!("soc_lt", state.aggregate_soc());
     check_gt!("solar_gt", state.solar.generation_w);
     check_lt!("solar_lt", state.solar.generation_w);
 
@@ -180,11 +196,11 @@ pub fn check_assertions(
 
     // battery_charging
     if let Some(serde_yaml::Value::Bool(expected)) = expect.get("battery_charging") {
-        let is_charging = state.battery.power_kw > 0.0;
+        let is_charging = state.total_battery_power_kw() > 0.0;
         if is_charging != *expected {
             failures.push(format!(
-                "battery_charging: expected {}, got {} (power_kw={:.2})",
-                expected, is_charging, state.battery.power_kw
+                "battery_charging: expected {}, got {} (total_power_kw={:.2})",
+                expected, is_charging, state.total_battery_power_kw()
             ));
         }
     }
@@ -209,6 +225,19 @@ pub fn check_assertions(
             ));
         }
     }
+
+    // ---- Energy totals assertions ----
+    let grid_import_kwh = state.energy_totals.grid_import_kwh;
+    check_gt!("grid_import_kwh_gt", grid_import_kwh);
+
+    let grid_export_kwh = state.energy_totals.grid_export_kwh;
+    check_gt!("grid_export_kwh_gt", grid_export_kwh);
+
+    let solar_kwh = state.energy_totals.solar_generation_kwh;
+    check_gt!("solar_kwh_gt", solar_kwh);
+
+    let load_kwh = state.energy_totals.load_consumption_kwh;
+    check_gt!("load_kwh_gt", load_kwh);
 
     if failures.is_empty() {
         Ok(())
@@ -279,6 +308,7 @@ name: grid outage test
     fn assertion_soc_gt_passes() {
         let mut state = PlantState::new(test_ts());
         state.battery.soc_percent = 75.0;
+        state.sync_vec_from_battery();
         let mut expect = HashMap::new();
         expect.insert("soc_gt".into(), serde_yaml::Value::Number(50.into()));
         assert!(check_assertions(&expect, &state).is_ok());
@@ -296,6 +326,7 @@ name: grid outage test
     fn assertion_battery_charging() {
         let mut state = PlantState::new(test_ts());
         state.battery.power_kw = 2.5;
+        state.sync_vec_from_battery();
         let mut expect = HashMap::new();
         expect.insert("battery_charging".into(), serde_yaml::Value::Bool(true));
         assert!(check_assertions(&expect, &state).is_ok());
@@ -324,6 +355,34 @@ name: grid outage test
         state.grid.power_w = -2000.0;
         let mut expect = HashMap::new();
         expect.insert("grid_export_gt".into(), serde_yaml::Value::Number(1000.into()));
+        assert!(check_assertions(&expect, &state).is_ok());
+    }
+
+    #[test]
+    fn parse_multi_day_scenario() {
+        let yaml = r#"
+name: two day test
+days: 2
+08:00:
+  solar: 3000
+20:00:
+  expect:
+    soc_lt: 50
+"#;
+        let scenario = parse_named_scenario(yaml).unwrap();
+        assert_eq!(scenario.name, "two day test");
+        assert_eq!(scenario.days, 2);
+        assert_eq!(scenario.events.len(), 2);
+    }
+
+    #[test]
+    fn energy_totals_assertions() {
+        let mut state = PlantState::new(test_ts());
+        state.energy_totals.solar_generation_kwh = 30.0;
+        state.energy_totals.grid_export_kwh = 15.0;
+        let mut expect = HashMap::new();
+        expect.insert("solar_kwh_gt".into(), serde_yaml::Value::Number(25.into()));
+        expect.insert("grid_export_kwh_gt".into(), serde_yaml::Value::Number(10.into()));
         assert!(check_assertions(&expect, &state).is_ok());
     }
 }

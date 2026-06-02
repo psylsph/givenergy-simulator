@@ -1,0 +1,28 @@
+[package]
+name = "sim-tauri"
+version.workspace = true
+edition = "2021"
+
+[lib]
+name = "sim_tauri_lib"
+crate-type = ["lib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+sim-models = { workspace = true }
+sim-core = { workspace = true }
+sim-registers = { workspace = true }
+sim-faults = { workspace = true }
+sim-modbus = { workspace = true }
+sim-recording = { workspace = true }
+sim-scenarios = { workspace = true }
+sim-storage = { workspace = true }
+tauri = { workspace = true }
+tauri-plugin-dialog = "2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }

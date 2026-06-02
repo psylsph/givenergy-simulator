@@ -9,3 +9,10 @@ sim-core = { workspace = true }
 sim-registers = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+crc = "3"
+
+[dev-dependencies]
+sim-models = { workspace = true }
+sim-registers = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "time"] }
+chrono = { workspace = true }
