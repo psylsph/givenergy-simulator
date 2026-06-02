@@ -224,6 +224,7 @@ impl RegisterStore {
                 "ge_hr_device_type" => {
                     // Encode inverter type as DTC hex code
                     let dtc: u16 = match state.config.inverter_type.as_str() {
+                        "Gen1Hybrid" => 0x1001,
                         "Gen3Hybrid" => 0x2001,
                         "Gen3Hybrid8kW" => 0x2101,
                         "Gen3Hybrid10kW" => 0x2102,

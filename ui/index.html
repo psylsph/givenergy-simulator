@@ -607,6 +607,7 @@
 
     // Inverter type presets: [max_ac_watts, default_export_limit]
     const INVERTER_PRESETS = {
+      Gen1Hybrid:      { dtc: 0x1001, label: 'Gen 1 Hybrid',     maxBattW: 2500, nomV: 51.2 },
       Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',     maxBattW: 3600, nomV: 51.2 },
       Gen3Hybrid8kW:   { dtc: 0x2101, label: 'Gen3 Hybrid 8kW', maxBattW: 8000, nomV: 51.2 },
       Gen3Hybrid10kW:  { dtc: 0x2102, label: 'Gen3 Hybrid 10kW',maxBattW: 10000,nomV: 51.2 },

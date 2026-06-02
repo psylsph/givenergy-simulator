@@ -57,6 +57,8 @@ pub async fn create_plant(
     // Max battery charge/discharge power per inverter type (watts)
     // Source: official GivEnergy datasheets
     let max_batt_w = match inv_type {
+        // Gen 1 Hybrid 5.0: 2500W charge/discharge
+        "Gen1Hybrid" => 2500.0,
         // Gen3 Hybrid 3.6/5.0: charge 3300W, discharge 3600W. Use 3600 as the DC battery limit.
         "Gen3Hybrid" => 3600.0,
         // Gen3 Hybrid 8.0: charge 8000W, discharge 8500W
@@ -125,6 +127,8 @@ pub async fn create_plant(
         // AllInOne (original 0x8002): 6kW continuous
         "AllInOne" => 6000.0,
         "AllInOne5" => 5000.0,
+        // Gen 1 Hybrid 5.0: 5000W nominal AC output
+        "Gen1Hybrid" => 5000.0,
         // Gen3Hybrid 3.6/5.0 default to 5000W
         _ => 5000.0,
     };
