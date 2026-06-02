@@ -3,6 +3,15 @@
 //! State transitions occur only during simulation ticks.
 //! All external writes become [`Command`]s applied between ticks.
 //!
+#![allow(
+    clippy::collapsible_if,
+    clippy::manual_clamp,
+    clippy::single_match,
+    clippy::new_without_default,
+    clippy::match_same_arms,
+    clippy::needless_return,
+    clippy::unnecessary_cast
+)]
 //! Device update order: **Solar → Load → Inverter → Battery**.
 
 use chrono::{Datelike, NaiveDateTime, Timelike};
@@ -126,7 +135,7 @@ impl SimulationEngine {
                         b.soh = soh.clamp(0.0, 1.0);
                         b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
                         let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
-                        let inv_max_kw = self.state.config.max_ac_watts as f64 / 1000.0;
+                        let inv_max_kw = self.state.config.max_ac_watts / 1000.0;
                         let per_module_kw = inv_max_kw / count as f64;
                         b.max_charge_kw = c_rate_kw.min(per_module_kw);
                         b.max_discharge_kw = c_rate_kw.min(per_module_kw);
@@ -373,11 +382,8 @@ impl LoadEngine {
 
     /// Return the baseline demand in watts for the given hour (0–23).
     fn hourly_demand(&self, hour: u32) -> f64 {
-        match &self.profile {
-            LoadProfile::Custom(points) => {
-                return Self::interpolate_custom(points, hour as f64);
-            }
-            _ => {} // fall through to built-in profiles
+        if let LoadProfile::Custom(points) = &self.profile {
+            return Self::interpolate_custom(points, hour as f64);
         }
         match self.profile {
             LoadProfile::Minimal => match hour {
@@ -938,7 +944,7 @@ impl DeviceModel for BatteryEngine {
             b.temperature_celsius += heat_rise - cooling;
 
             // Clamp temperature
-            b.temperature_celsius = b.temperature_celsius.max(-10.0).min(70.0);
+            b.temperature_celsius = b.temperature_celsius.clamp(-10.0, 70.0);
 
             // Aging model: track throughput and degrade capacity
             let energy_this_tick = power_kw.abs() * ctx.dt_hours; // kWh throughput
@@ -1123,7 +1129,7 @@ impl DeviceModel for ScheduleEngine {
                     .inverter
                     .mode_state
                     .set_schedule(InverterMode::ForceDischarge);
-                return;
+                
             }
         }
     }
@@ -1135,6 +1141,11 @@ impl DeviceModel for ScheduleEngine {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::bool_assert_comparison,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+    )]
     use super::*;
     use chrono::{NaiveDate, NaiveDateTime};
 

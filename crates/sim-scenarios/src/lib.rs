@@ -174,15 +174,15 @@ pub fn check_assertions(
     check_lt!("solar_lt", state.solar.generation_w);
 
     // grid_connected
-    if let Some(serde_yaml::Value::Number(n)) = expect.get("grid_connected") {
-        if let Some(expected) = n.as_f64() {
-            let actual = if state.grid.connected { 1.0 } else { 0.0 };
-            if actual != expected {
-                failures.push(format!(
-                    "grid_connected: expected {}, got {}",
-                    expected, actual
-                ));
-            }
+    if let Some(expected) = expect.get("grid_connected")
+        .and_then(|v| v.as_f64())
+    {
+        let actual = if state.grid.connected { 1.0 } else { 0.0 };
+        if actual != expected {
+            failures.push(format!(
+                "grid_connected: expected {}, got {}",
+                expected, actual
+            ));
         }
     }
 
@@ -217,6 +217,7 @@ pub fn check_assertions(
     }
 
     // fault_active
+    #[allow(clippy::collapsible_if)]
     if let Some(serde_yaml::Value::String(id)) = expect.get("fault_active") {
         if !state.active_faults.contains(id) {
             failures.push(format!(

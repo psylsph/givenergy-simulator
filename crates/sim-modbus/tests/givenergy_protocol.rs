@@ -3,6 +3,7 @@
 //! Tests cover:
 //! - Frame encoding: header fields, serial, padding, CRC
 //! - Frame decoding: happy path, error cases, CRC validation
+#![allow(clippy::let_unit_value)]
 //! - Register reads: input (fn 0x04) and holding (fn 0x03), various counts and offsets
 //! - Register writes: fn 0x06, readwrite vs readonly, command dispatch
 //! - Error handling: unsupported function codes, bad payloads

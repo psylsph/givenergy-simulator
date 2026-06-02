@@ -3,6 +3,7 @@
 //! Implements the proprietary GivEnergy MBAP variant used by the Wi-Fi dongle.
 //! Standard Modbus frames are wrapped inside a transparent-message envelope:
 //!
+#![allow(clippy::needless_range_loop)]
 //! ```text
 //! Bytes 0-1:    Transaction ID      — fixed 0x5959
 //! Bytes 2-3:    Protocol ID         — fixed 0x0001
@@ -264,12 +265,12 @@ pub async fn run_modbus_server(
                             // Check if this is a battery BMS read (IR 60-119 on battery slaves)
                             let battery_index = if slave == 0x32 {
                                 // Battery #1 BMS: IR 60-119 on inverter slave
-                                if inner_func == FC_READ_INPUT && start_addr >= 60 && start_addr < 120 {
+                                if inner_func == FC_READ_INPUT && (60..120).contains(&start_addr) {
                                     Some(0usize)
                                 } else {
                                     None
                                 }
-                            } else if slave >= 0x33 && slave <= 0x37 {
+                            } else if (0x33..=0x37).contains(&slave) {
                                 // Additional batteries: all IR reads are BMS
                                 if inner_func == FC_READ_INPUT {
                                     Some((slave - 0x33 + 1) as usize)

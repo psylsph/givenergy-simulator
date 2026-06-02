@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Core Simulation
+- Dual PV array support — PV1 and PV2 modelled as independent arrays with 45/55 power split
+- PV2 peak capacity configurable in plant creation dialog (0 = disabled)
+- Solar override now applies before night check, respecting array split
+- Inverter throughput limits corrected for all 12 inverter types per official datasheets
+- Gen 1 Hybrid added with 2500W battery charge/discharge limit
+- Battery charge/discharge rates capped by inverter max AC power across all modes
+- SOH adjustment recalculates battery charge/discharge limits
+- Time sync from Modbus client now processed correctly across drain cycles
 - Deterministic tick-loop simulation engine with pluggable device models
 - Solar PV generation with sinusoidal irradiance, latitude/day-of-year, weather modifiers
 - Battery SOC tracking, C-rate limits, charge/discharge efficiency (95%), thermal model with derating

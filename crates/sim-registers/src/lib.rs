@@ -123,11 +123,11 @@ impl RegisterStore {
     /// Write a holding register value by address (respects access control).
     pub fn write(&mut self, address: u16, value: u16) -> bool {
         let key = address as u32 + HOLDING_OFFSET;
-        if let Some(def) = self.defs.iter().find(|d| d.store_key() == key) {
-            if def.access == Access::ReadWrite {
-                self.values.insert(key, value);
-                return true;
-            }
+        if let Some(def) = self.defs.iter().find(|d| d.store_key() == key)
+            && def.access == Access::ReadWrite
+        {
+            self.values.insert(key, value);
+            return true;
         }
         false
     }
@@ -534,8 +534,8 @@ impl RegisterStore {
         // Cell voltages: IR 60-75 (mV). Simulate 16 cells from total voltage.
         let cell_count = 16usize;
         let cell_mv = (battery.voltage_v * 1000.0 / cell_count as f64).round() as u16;
-        for i in 0..cell_count {
-            regs[i] = cell_mv; // IR 60+i
+        for reg in regs.iter_mut().take(cell_count) {
+            *reg = cell_mv; // IR 60+i
         }
 
         // Cell group temperatures: IR 76-79 (0.1 °C)
