@@ -371,14 +371,23 @@
           <option value="Gen3Hybrid">Gen3 Hybrid (0x2001)</option>
           <option value="Gen3Hybrid8kW">Gen3 Hybrid 8kW (0x2101)</option>
           <option value="Gen3Hybrid10kW">Gen3 Hybrid 10kW (0x2102)</option>
+          <option value="Gen3Plus6kW">Gen3 Plus 6kW (0x2201)</option>
+          <option value="Gen3Plus4600">Gen3 Plus 4.6kW (0x2202)</option>
+          <option value="Gen3Plus3600">Gen3 Plus 3.6kW (0x2203)</option>
+          <option value="Gen3Plus6kW2">Gen3 Plus 6kW (0x2204)</option>
           <option value="ACCoupled">AC Coupled (0x3001)</option>
           <option value="ACCoupled2">AC Coupled Mk2 (0x3002)</option>
-          <option value="ThreePhase">Three Phase (0x4001)</option>
+          <option value="ThreePhase">Three Phase 6kW (0x4001)</option>
+          <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
+          <option value="ThreePhase10kW">Three Phase 10kW (0x4003)</option>
           <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
           <option value="AllInOne">All-in-One (0x8002)</option>
           <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
           <option value="AIO8kW">AIO 8kW (0x8102)</option>
           <option value="AIO10kW">AIO 10kW (0x8103)</option>
+          <option value="AIOHybrid6kW">AIO Hybrid 6kW (0x8201)</option>
+          <option value="AIOHybrid8kW">AIO Hybrid 8kW (0x8202)</option>
+          <option value="AIOHybrid10kW">AIO Hybrid 10kW (0x8203)</option>
         </select>
 
         <label>Battery Modules</label>
@@ -615,14 +624,23 @@
       Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',     maxBattW: 3600, nomV: 51.2 },
       Gen3Hybrid8kW:   { dtc: 0x2101, label: 'Gen3 Hybrid 8kW', maxBattW: 8000, nomV: 51.2 },
       Gen3Hybrid10kW:  { dtc: 0x2102, label: 'Gen3 Hybrid 10kW',maxBattW: 10000,nomV: 51.2 },
+      Gen3Plus6kW:     { dtc: 0x2201, label: 'Gen3 Plus 6kW',   maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus4600:    { dtc: 0x2202, label: 'Gen3 Plus 4.6kW', maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus3600:    { dtc: 0x2203, label: 'Gen3 Plus 3.6kW', maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus6kW2:    { dtc: 0x2204, label: 'Gen3 Plus 6kW',   maxBattW: 2600, nomV: 51.2 },
       ACCoupled:       { dtc: 0x3001, label: 'AC Coupled',      maxBattW: 3000, nomV: 51.2 },
       ACCoupled2:      { dtc: 0x3002, label: 'AC Coupled Mk2',  maxBattW: 3000, nomV: 51.2 },
       ThreePhase:      { dtc: 0x4001, label: 'Three Phase',     maxBattW: 6000, nomV: 76.8 },
+      ThreePhase8kW:    { dtc: 0x4002, label: 'Three Phase 8kW', maxBattW: 8000, nomV: 76.8 },
+      ThreePhase10kW:   { dtc: 0x4003, label: 'Three Phase 10kW',maxBattW: 10000,nomV: 76.8 },
       AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',  maxBattW: 6000, nomV: 307.0 },
       AllInOne:        { dtc: 0x8002, label: 'All-in-One',       maxBattW: 6000, nomV: 307.0 },
       AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',  maxBattW: 5000, nomV: 307.0 },
       AIO8kW:          { dtc: 0x8102, label: 'AIO 8kW',         maxBattW: 8000, nomV: 307.0 },
       AIO10kW:         { dtc: 0x8103, label: 'AIO 10kW',       maxBattW: 10000,nomV: 307.0 },
+      AIOHybrid6kW:    { dtc: 0x8201, label: 'AIO Hybrid 6kW', maxBattW: 6000, nomV: 307.0 },
+      AIOHybrid8kW:    { dtc: 0x8202, label: 'AIO Hybrid 8kW', maxBattW: 8000, nomV: 307.0 },
+      AIOHybrid10kW:   { dtc: 0x8203, label: 'AIO Hybrid 10kW',maxBattW: 10000,nomV: 307.0 },
     };
 
     function fmt(w) {

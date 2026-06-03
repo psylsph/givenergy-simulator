@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-03
+
+### Added
+- Extended charge/discharge slots 3-10 (HR 246-299) with per-slot target SOCs
+  — Schedule model expanded; ScheduleEngine uses macro-driven 10-slot check
+- 9 new inverter DTC variants: Gen3Plus (0x2201-2204), ThreePhase8/10kW
+  (0x4002-4003), AIOHybrid (0x8201-8203) — all with correct power limits
+- HR 166 (enable_rtc), 311 (export_priority), 317 (enable_eps) command routing
+- Smart Load slots (HR 554-573) in register catalogue
+- High registers (HR 4107-4114) in catalogue with projection
+
+### Changed
+- Register catalogue expanded from 177 to 249 entries (+72)
+- is_schedule_register updated to cover HR 246-269 and 276-299
+- Test count: 216
+
 ## [0.8.0] - 2026-06-03
 
 ### Added

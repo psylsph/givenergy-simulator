@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "sim-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2974,7 +2974,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2986,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "sim-faults"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "sim-modbus"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "crc",
@@ -3008,7 +3008,7 @@ dependencies = [
 
 [[package]]
 name = "sim-models"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3016,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "sim-recording"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3027,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "sim-registers"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3036,7 +3036,7 @@ dependencies = [
 
 [[package]]
 name = "sim-scenarios"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3047,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "sim-storage"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3058,7 +3058,7 @@ dependencies = [
 
 [[package]]
 name = "sim-tauri"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",

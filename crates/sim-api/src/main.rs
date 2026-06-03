@@ -193,6 +193,7 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         50 => Some(Command::SetActivePowerRate(cmd.value as f64)),
         110 => Some(Command::SetMinSoc(cmd.value as f64)),
         111 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
+        166 => Some(Command::SetEnableRtc(cmd.value != 0)),
         112 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
         313 | 1110 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
         314 | 1108 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
@@ -203,6 +204,8 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
                 None
             }
         }
+        311 => Some(Command::SetExportPriority(cmd.value)),
+        317 => Some(Command::SetEnableEps(cmd.value != 0)),
         318 => Some(Command::SetBatteryPause {
             mode: cmd.value,
             start: 60,
@@ -992,6 +995,7 @@ fn is_schedule_register(addr: u16) -> bool {
         addr,
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
             | 242..=245 | 272 | 275
+            | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1123
     )
 }

@@ -72,6 +72,11 @@ pub async fn create_plant(
         "Gen3Hybrid8kW" => 8000.0,
         // Gen3 Hybrid 10.0: charge 10000W, discharge 10500W
         "Gen3Hybrid10kW" => 10000.0,
+        // Gen3 Plus variants
+        "Gen3Plus6kW" => 2600.0,
+        "Gen3Plus4600" => 2600.0,
+        "Gen3Plus3600" => 2600.0,
+        "Gen3Plus6kW2" => 2600.0,
         // AC Coupled / Mk2: 3000W charge/discharge
         "ACCoupled" | "ACCoupled2" => 3000.0,
         // All-in-One 6kW: 6000W continuous
@@ -84,8 +89,14 @@ pub async fn create_plant(
         "AIO8kW" => 8000.0,
         // AIO 10kW
         "AIO10kW" => 10000.0,
+        // AIO Hybrid variants
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
         // 3-Phase 6kW: charge/discharge 6000W
         "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
         _ => 3600.0,
     };
     let max_batt_kw = max_batt_w / 1000.0;
@@ -126,21 +137,26 @@ pub async fn create_plant(
     plant_state.config.pv2_peak_watts = params.pv2_peak_watts.unwrap_or(0.0);
     plant_state.config.inverter_type = inv_type.to_string();
     plant_state.config.max_ac_watts = match plant_state.config.inverter_type.as_str() {
-        // Gen3 Hybrid 8.0: 8000W nominal AC output
         "Gen3Hybrid8kW" => 8000.0,
-        // Gen3 Hybrid 10.0: 10000W nominal AC output
         "Gen3Hybrid10kW" => 10000.0,
+        "Gen3Plus6kW" => 5000.0,
+        "Gen3Plus4600" => 4600.0,
+        "Gen3Plus3600" => 3600.0,
+        "Gen3Plus6kW2" => 6000.0,
         "AllInOne6" => 6000.0,
         "AIO8kW" => 8000.0,
         "AIO10kW" => 10000.0,
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
         "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
         "ACCoupled" | "ACCoupled2" => 3000.0,
-        // AllInOne (original 0x8002): 6kW continuous
         "AllInOne" => 6000.0,
         "AllInOne5" => 5000.0,
-        // Gen 1 Hybrid 5.0: 5000W nominal AC output
         "Gen1Hybrid" => 5000.0,
-        // Gen3Hybrid 3.6/5.0 default to 5000W
+        "Gen3Hybrid" => 5000.0,
         _ => 5000.0,
     };
     plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
@@ -305,6 +321,7 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
                 Some(Command::StartCalibration { module: None })
             }
         }
+        166 => Some(Command::SetEnableRtc(value != 0)),
         163 => {
             if value == 100 {
                 Some(Command::InverterReboot)
@@ -312,6 +329,8 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
                 None
             }
         }
+        311 => Some(Command::SetExportPriority(value)),
+        317 => Some(Command::SetEnableEps(value != 0)),
         318 => Some(Command::SetBatteryPause {
             mode: value,
             start: 60,
@@ -358,6 +377,7 @@ fn is_schedule_register(addr: u16) -> bool {
         addr,
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
             | 242..=245 | 272 | 275
+            | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1123
     )
 }

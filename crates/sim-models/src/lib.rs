@@ -627,7 +627,7 @@ impl PlantState {
 // Schedule — moved from sim-core to break circular dependency
 // ---------------------------------------------------------------------------
 
-/// Schedule parameters — two independent charge and discharge windows.
+/// Schedule parameters — up to 10 independent charge and discharge windows.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Schedule {
     /// Charge slot 1 start (decimal hours, e.g. 2.5 = 02:30).
@@ -654,6 +654,24 @@ pub struct Schedule {
     pub discharge_target_soc: f64,
     /// Target SOC for scheduled discharging, slot 2 (%).
     pub discharge_target_soc_2: f64,
+    // Slots 3-10 charge
+    pub charge_start_3: f64, pub charge_end_3: f64, pub charge_target_soc_3: f64,
+    pub charge_start_4: f64, pub charge_end_4: f64, pub charge_target_soc_4: f64,
+    pub charge_start_5: f64, pub charge_end_5: f64, pub charge_target_soc_5: f64,
+    pub charge_start_6: f64, pub charge_end_6: f64, pub charge_target_soc_6: f64,
+    pub charge_start_7: f64, pub charge_end_7: f64, pub charge_target_soc_7: f64,
+    pub charge_start_8: f64, pub charge_end_8: f64, pub charge_target_soc_8: f64,
+    pub charge_start_9: f64, pub charge_end_9: f64, pub charge_target_soc_9: f64,
+    pub charge_start_10: f64, pub charge_end_10: f64, pub charge_target_soc_10: f64,
+    // Slots 3-10 discharge
+    pub discharge_start_3: f64, pub discharge_end_3: f64, pub discharge_target_soc_3: f64,
+    pub discharge_start_4: f64, pub discharge_end_4: f64, pub discharge_target_soc_4: f64,
+    pub discharge_start_5: f64, pub discharge_end_5: f64, pub discharge_target_soc_5: f64,
+    pub discharge_start_6: f64, pub discharge_end_6: f64, pub discharge_target_soc_6: f64,
+    pub discharge_start_7: f64, pub discharge_end_7: f64, pub discharge_target_soc_7: f64,
+    pub discharge_start_8: f64, pub discharge_end_8: f64, pub discharge_target_soc_8: f64,
+    pub discharge_start_9: f64, pub discharge_end_9: f64, pub discharge_target_soc_9: f64,
+    pub discharge_start_10: f64, pub discharge_end_10: f64, pub discharge_target_soc_10: f64,
     /// When true, charge any time SOC < target (no window restriction).
     pub enable_charge: bool,
     /// When true, discharge any time SOC > target (no window restriction).
@@ -663,18 +681,28 @@ pub struct Schedule {
 impl Default for Schedule {
     fn default() -> Self {
         Self {
-            charge_start: 0.0,
-            charge_end: 0.0, // disabled
-            discharge_start: 0.0,
-            discharge_end: 0.0,
-            charge_start_2: 0.0,
-            charge_end_2: 0.0,
-            discharge_start_2: 0.0,
-            discharge_end_2: 0.0,
-            charge_target_soc: 100.0,
-            charge_target_soc_2: 100.0,
-            discharge_target_soc: 10.0,
-            discharge_target_soc_2: 10.0,
+            charge_start: 0.0, charge_end: 0.0,
+            discharge_start: 0.0, discharge_end: 0.0,
+            charge_start_2: 0.0, charge_end_2: 0.0,
+            discharge_start_2: 0.0, discharge_end_2: 0.0,
+            charge_target_soc: 100.0, charge_target_soc_2: 100.0,
+            discharge_target_soc: 10.0, discharge_target_soc_2: 10.0,
+            charge_start_3: 0.0, charge_end_3: 0.0, charge_target_soc_3: 100.0,
+            charge_start_4: 0.0, charge_end_4: 0.0, charge_target_soc_4: 100.0,
+            charge_start_5: 0.0, charge_end_5: 0.0, charge_target_soc_5: 100.0,
+            charge_start_6: 0.0, charge_end_6: 0.0, charge_target_soc_6: 100.0,
+            charge_start_7: 0.0, charge_end_7: 0.0, charge_target_soc_7: 100.0,
+            charge_start_8: 0.0, charge_end_8: 0.0, charge_target_soc_8: 100.0,
+            charge_start_9: 0.0, charge_end_9: 0.0, charge_target_soc_9: 100.0,
+            charge_start_10: 0.0, charge_end_10: 0.0, charge_target_soc_10: 100.0,
+            discharge_start_3: 0.0, discharge_end_3: 0.0, discharge_target_soc_3: 10.0,
+            discharge_start_4: 0.0, discharge_end_4: 0.0, discharge_target_soc_4: 10.0,
+            discharge_start_5: 0.0, discharge_end_5: 0.0, discharge_target_soc_5: 10.0,
+            discharge_start_6: 0.0, discharge_end_6: 0.0, discharge_target_soc_6: 10.0,
+            discharge_start_7: 0.0, discharge_end_7: 0.0, discharge_target_soc_7: 10.0,
+            discharge_start_8: 0.0, discharge_end_8: 0.0, discharge_target_soc_8: 10.0,
+            discharge_start_9: 0.0, discharge_end_9: 0.0, discharge_target_soc_9: 10.0,
+            discharge_start_10: 0.0, discharge_end_10: 0.0, discharge_target_soc_10: 10.0,
             enable_charge: false,
             enable_discharge: false,
         }

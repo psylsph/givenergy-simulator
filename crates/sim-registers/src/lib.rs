@@ -298,14 +298,23 @@ impl RegisterStore {
                         "Gen3Hybrid" => 0x2001,
                         "Gen3Hybrid8kW" => 0x2101,
                         "Gen3Hybrid10kW" => 0x2102,
+                        "Gen3Plus6kW" => 0x2201,
+                        "Gen3Plus4600" => 0x2202,
+                        "Gen3Plus3600" => 0x2203,
+                        "Gen3Plus6kW2" => 0x2204,
                         "ACCoupled" => 0x3001,
                         "ACCoupled2" => 0x3002,
+                        "ThreePhase8kW" => 0x4002,
+                        "ThreePhase10kW" => 0x4003,
                         "AllInOne6" => 0x8001,
                         "AllInOne" => 0x8002,
                         "AllInOne5" => 0x8003,
                         "AIO8kW" => 0x8102,
                         "AIO10kW" => 0x8103,
                         "ThreePhase" => 0x4001,
+                        "AIOHybrid6kW" => 0x8201,
+                        "AIOHybrid8kW" => 0x8202,
+                        "AIOHybrid10kW" => 0x8203,
                         _ => 0x2001,
                     };
                     self.values.insert(key, dtc);
@@ -337,6 +346,7 @@ impl RegisterStore {
                     let fw = match state.config.inverter_type.as_str() {
                         "Gen1Hybrid" => 100,
                         "Gen3Hybrid" => 300,
+                        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 400,
                         _ => 300,
                     };
                     self.values.insert(key, fw);
@@ -679,88 +689,103 @@ impl RegisterStore {
         // Charge slot 1 (HR 94-95)
         let cs1_start = hrs_to_hhmm(schedule.charge_start);
         let cs1_end = hrs_to_hhmm(schedule.charge_end);
-        self.write(94, cs1_start);
-        self.write(95, cs1_end);
-
-        // Charge slot 2 (HR 31-32)
+        self.write(94, cs1_start); self.write(95, cs1_end);
         let cs2_start = hrs_to_hhmm(schedule.charge_start_2);
         let cs2_end = hrs_to_hhmm(schedule.charge_end_2);
-        self.write(31, cs2_start);
-        self.write(32, cs2_end);
-        self.write(243, cs2_start);
-        self.write(244, cs2_end);
+        self.write(31, cs2_start); self.write(32, cs2_end);
+        self.write(243, cs2_start); self.write(244, cs2_end);
+        let cs3_s = hrs_to_hhmm(schedule.charge_start_3); let cs3_e = hrs_to_hhmm(schedule.charge_end_3);
+        self.write(246, cs3_s); self.write(247, cs3_e);
+        let cs4_s = hrs_to_hhmm(schedule.charge_start_4); let cs4_e = hrs_to_hhmm(schedule.charge_end_4);
+        self.write(249, cs4_s); self.write(250, cs4_e);
+        let cs5_s = hrs_to_hhmm(schedule.charge_start_5); let cs5_e = hrs_to_hhmm(schedule.charge_end_5);
+        self.write(252, cs5_s); self.write(253, cs5_e);
+        let cs6_s = hrs_to_hhmm(schedule.charge_start_6); let cs6_e = hrs_to_hhmm(schedule.charge_end_6);
+        self.write(255, cs6_s); self.write(256, cs6_e);
+        let cs7_s = hrs_to_hhmm(schedule.charge_start_7); let cs7_e = hrs_to_hhmm(schedule.charge_end_7);
+        self.write(258, cs7_s); self.write(259, cs7_e);
+        let cs8_s = hrs_to_hhmm(schedule.charge_start_8); let cs8_e = hrs_to_hhmm(schedule.charge_end_8);
+        self.write(261, cs8_s); self.write(262, cs8_e);
+        let cs9_s = hrs_to_hhmm(schedule.charge_start_9); let cs9_e = hrs_to_hhmm(schedule.charge_end_9);
+        self.write(264, cs9_s); self.write(265, cs9_e);
+        let cs10_s = hrs_to_hhmm(schedule.charge_start_10); let cs10_e = hrs_to_hhmm(schedule.charge_end_10);
+        self.write(267, cs10_s); self.write(268, cs10_e);
 
-        // Discharge slots — skipped for AC-coupled inverters
         let ds1_start = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start) };
         let ds1_end = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end) };
-        self.write(56, ds1_start);
-        self.write(57, ds1_end);
-
+        self.write(56, ds1_start); self.write(57, ds1_end);
         let ds2_start = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_2) };
         let ds2_end = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_2) };
-        self.write(44, ds2_start);
-        self.write(45, ds2_end);
+        self.write(44, ds2_start); self.write(45, ds2_end);
+        let ds3_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_3) }; let ds3_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_3) };
+        self.write(276, ds3_s); self.write(277, ds3_e);
+        let ds4_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_4) }; let ds4_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_4) };
+        self.write(279, ds4_s); self.write(280, ds4_e);
+        let ds5_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_5) }; let ds5_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_5) };
+        self.write(282, ds5_s); self.write(283, ds5_e);
+        let ds6_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_6) }; let ds6_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_6) };
+        self.write(285, ds6_s); self.write(286, ds6_e);
+        let ds7_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_7) }; let ds7_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_7) };
+        self.write(288, ds7_s); self.write(289, ds7_e);
+        let ds8_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_8) }; let ds8_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_8) };
+        self.write(291, ds8_s); self.write(292, ds8_e);
+        let ds9_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_9) }; let ds9_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_9) };
+        self.write(294, ds9_s); self.write(295, ds9_e);
+        let ds10_s = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_10) }; let ds10_e = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_10) };
+        self.write(297, ds10_s); self.write(298, ds10_e);
 
-        // Enable charge (HR 96) — enabled if any charge window is set OR enable_charge flag
-        let charge_enabled = if schedule.enable_charge
+        let charge_enabled = schedule.enable_charge
             || schedule.charge_start != schedule.charge_end
             || schedule.charge_start_2 != schedule.charge_end_2
-        {
-            1
-        } else {
-            0
-        };
-        self.write(96, charge_enabled);
+            || schedule.charge_start_3 != schedule.charge_end_3
+            || schedule.charge_start_4 != schedule.charge_end_4
+            || schedule.charge_start_5 != schedule.charge_end_5
+            || schedule.charge_start_6 != schedule.charge_end_6
+            || schedule.charge_start_7 != schedule.charge_end_7
+            || schedule.charge_start_8 != schedule.charge_end_8
+            || schedule.charge_start_9 != schedule.charge_end_9
+            || schedule.charge_start_10 != schedule.charge_end_10;
+        self.write(96, if charge_enabled { 1 } else { 0 });
 
-        // Enable discharge (HR 59) — always disabled for AC-coupled
-        let discharge_enabled = if is_ac_coupled {
-            0
-        } else if schedule.enable_discharge
+        let discharge_enabled = !is_ac_coupled && (schedule.enable_discharge
             || schedule.discharge_start != schedule.discharge_end
             || schedule.discharge_start_2 != schedule.discharge_end_2
-        {
-            1
-        } else {
-            0
-        };
-        self.write(59, discharge_enabled);
+            || schedule.discharge_start_3 != schedule.discharge_end_3
+            || schedule.discharge_start_4 != schedule.discharge_end_4
+            || schedule.discharge_start_5 != schedule.discharge_end_5
+            || schedule.discharge_start_6 != schedule.discharge_end_6
+            || schedule.discharge_start_7 != schedule.discharge_end_7
+            || schedule.discharge_start_8 != schedule.discharge_end_8
+            || schedule.discharge_start_9 != schedule.discharge_end_9
+            || schedule.discharge_start_10 != schedule.discharge_end_10);
+        self.write(59, if discharge_enabled { 1 } else { 0 });
 
-        // Charge target SOC (HR 116) — also write TPH mirror at HR 1111
         self.write(116, schedule.charge_target_soc as u16);
-        self.write(1111, schedule.charge_target_soc as u16);
-        // TPH SOC reserve mirror (HR 1109) retains the default reserve value.
-        self.write(1109, 10);
-        // TPH enable flags.
-        let enable_charge = if schedule.enable_charge
-            || schedule.charge_start != schedule.charge_end
-            || schedule.charge_start_2 != schedule.charge_end_2
-        {
-            1
-        } else {
-            0
-        };
-        let enable_discharge = if schedule.enable_discharge
-            || schedule.discharge_start != schedule.discharge_end
-            || schedule.discharge_start_2 != schedule.discharge_end_2
-        {
-            1
-        } else {
-            0
-        };
-        self.write(1112, enable_charge);
-        self.write(1122, enable_discharge);
-        self.write(1123, enable_charge);
-
-        // Per-slot target SOC registers (Gen3 extended) — shared with TPH
-        // HR 242: CHARGE_TARGET_SOC_1 (slot 1)
-        // HR 245: CHARGE_TARGET_SOC_2 (slot 2)
-        // HR 272: DISCHARGE_TARGET_SOC_1 (slot 1)
-        // HR 275: DISCHARGE_TARGET_SOC_2 (slot 2)
         self.write(242, schedule.charge_target_soc as u16);
         self.write(245, schedule.charge_target_soc_2 as u16);
-        // Discharge target SOC — 0 for AC-coupled
+        self.write(248, schedule.charge_target_soc_3 as u16);
+        self.write(251, schedule.charge_target_soc_4 as u16);
+        self.write(254, schedule.charge_target_soc_5 as u16);
+        self.write(257, schedule.charge_target_soc_6 as u16);
+        self.write(260, schedule.charge_target_soc_7 as u16);
+        self.write(263, schedule.charge_target_soc_8 as u16);
+        self.write(266, schedule.charge_target_soc_9 as u16);
+        self.write(269, schedule.charge_target_soc_10 as u16);
+        self.write(1111, schedule.charge_target_soc as u16);
+        self.write(1109, 10);
+        self.write(1112, if charge_enabled { 1 } else { 0 });
+        self.write(1122, if discharge_enabled { 1 } else { 0 });
+        self.write(1123, if charge_enabled { 1 } else { 0 });
         self.write(272, if is_ac_coupled { 0 } else { schedule.discharge_target_soc as u16 });
         self.write(275, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_2 as u16 });
+        self.write(278, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_3 as u16 });
+        self.write(281, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_4 as u16 });
+        self.write(284, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_5 as u16 });
+        self.write(287, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_6 as u16 });
+        self.write(290, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_7 as u16 });
+        self.write(293, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_8 as u16 });
+        self.write(296, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_9 as u16 });
+        self.write(299, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_10 as u16 });
 
         // TPH mirror slot time registers (HR 1113-1121)
         // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
@@ -781,24 +806,26 @@ impl RegisterStore {
             .filter(|&v| v != 0)
             .unwrap_or(10);
         self.write(1109, reserve);
-        self.write(1112, if schedule.enable_charge { 1 } else { 0 });
-        self.write(1122, discharge_enabled);
-        self.write(1123, charge_enabled);
 
-        // Internal schedule registers (HR 700-711)
-        self.write(700, cs1_start);
-        self.write(701, cs1_end);
-        self.write(702, ds1_start);
-        self.write(703, ds1_end);
+        // Internal schedule registers (HR 700-729)
+        self.write(700, cs1_start); self.write(701, cs1_end);
+        self.write(702, ds1_start); self.write(703, ds1_end);
         self.write(704, schedule.charge_target_soc as u16);
         self.write(705, schedule.discharge_target_soc as u16);
-        self.write(706, cs2_start);
-        self.write(707, cs2_end);
-        self.write(708, ds2_start);
-        self.write(709, ds2_end);
-        // HR 710-711: per-slot target SOCs
+        self.write(706, cs2_start); self.write(707, cs2_end);
+        self.write(708, ds2_start); self.write(709, ds2_end);
         self.write(710, schedule.charge_target_soc_2 as u16);
         self.write(711, schedule.discharge_target_soc_2 as u16);
+        self.write(712, cs3_s); self.write(713, cs3_e);
+        self.write(714, ds3_s); self.write(715, ds3_e);
+        self.write(716, schedule.charge_target_soc_3 as u16);
+        self.write(717, schedule.discharge_target_soc_3 as u16);
+        self.write(718, cs4_s); self.write(719, cs4_e);
+        self.write(720, ds4_s); self.write(721, ds4_e);
+        self.write(722, schedule.charge_target_soc_4 as u16);
+        self.write(723, schedule.discharge_target_soc_4 as u16);
+        self.write(724, cs5_s); self.write(725, cs5_e);
+        self.write(726, ds5_s); self.write(727, ds5_e);
     }
 
     /// Iterator over all definitions.
@@ -1646,6 +1673,56 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadWrite,
             space: Holding,
         },
+        // Extended Gen3 schedule slots 3-10 (HR 246-299)
+        RegisterDef { address: 246, name: "ge_hr_charge_slot_3_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 247, name: "ge_hr_charge_slot_3_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 248, name: "ge_hr_charge_target_soc_3".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 249, name: "ge_hr_charge_slot_4_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 250, name: "ge_hr_charge_slot_4_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 251, name: "ge_hr_charge_target_soc_4".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 252, name: "ge_hr_charge_slot_5_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 253, name: "ge_hr_charge_slot_5_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 254, name: "ge_hr_charge_target_soc_5".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 255, name: "ge_hr_charge_slot_6_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 256, name: "ge_hr_charge_slot_6_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 257, name: "ge_hr_charge_target_soc_6".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 258, name: "ge_hr_charge_slot_7_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 259, name: "ge_hr_charge_slot_7_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 260, name: "ge_hr_charge_target_soc_7".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 261, name: "ge_hr_charge_slot_8_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 262, name: "ge_hr_charge_slot_8_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 263, name: "ge_hr_charge_target_soc_8".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 264, name: "ge_hr_charge_slot_9_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 265, name: "ge_hr_charge_slot_9_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 266, name: "ge_hr_charge_target_soc_9".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 267, name: "ge_hr_charge_slot_10_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 268, name: "ge_hr_charge_slot_10_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 269, name: "ge_hr_charge_target_soc_10".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 276, name: "ge_hr_discharge_slot_3_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 277, name: "ge_hr_discharge_slot_3_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 278, name: "ge_hr_discharge_target_soc_3".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 279, name: "ge_hr_discharge_slot_4_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 280, name: "ge_hr_discharge_slot_4_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 281, name: "ge_hr_discharge_target_soc_4".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 282, name: "ge_hr_discharge_slot_5_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 283, name: "ge_hr_discharge_slot_5_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 284, name: "ge_hr_discharge_target_soc_5".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 285, name: "ge_hr_discharge_slot_6_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 286, name: "ge_hr_discharge_slot_6_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 287, name: "ge_hr_discharge_target_soc_6".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 288, name: "ge_hr_discharge_slot_7_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 289, name: "ge_hr_discharge_slot_7_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 290, name: "ge_hr_discharge_target_soc_7".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 291, name: "ge_hr_discharge_slot_8_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 292, name: "ge_hr_discharge_slot_8_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 293, name: "ge_hr_discharge_target_soc_8".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 294, name: "ge_hr_discharge_slot_9_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 295, name: "ge_hr_discharge_slot_9_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 296, name: "ge_hr_discharge_target_soc_9".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 297, name: "ge_hr_discharge_slot_10_start".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 298, name: "ge_hr_discharge_slot_10_end".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 299, name: "ge_hr_discharge_target_soc_10".into(), category: C::Schedules, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+
         RegisterDef {
             address: 311,
             name: "ge_hr_export_priority".into(),
@@ -2087,6 +2164,42 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadWrite,
             space: Holding,
         },
+        // ================================================================
+        // Smart Load slots (HR 554-573) — 10 start/end pairs
+        // ================================================================
+        RegisterDef { address: 554, name: "ge_hr_smart_load_slot_1_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 555, name: "ge_hr_smart_load_slot_1_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 556, name: "ge_hr_smart_load_slot_2_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 557, name: "ge_hr_smart_load_slot_2_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 558, name: "ge_hr_smart_load_slot_3_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 559, name: "ge_hr_smart_load_slot_3_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 560, name: "ge_hr_smart_load_slot_4_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 561, name: "ge_hr_smart_load_slot_4_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 562, name: "ge_hr_smart_load_slot_5_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 563, name: "ge_hr_smart_load_slot_5_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 564, name: "ge_hr_smart_load_slot_6_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 565, name: "ge_hr_smart_load_slot_6_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 566, name: "ge_hr_smart_load_slot_7_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 567, name: "ge_hr_smart_load_slot_7_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 568, name: "ge_hr_smart_load_slot_8_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 569, name: "ge_hr_smart_load_slot_8_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 570, name: "ge_hr_smart_load_slot_9_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 571, name: "ge_hr_smart_load_slot_9_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 572, name: "ge_hr_smart_load_slot_10_start".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 573, name: "ge_hr_smart_load_slot_10_end".into(), category: C::Configuration, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+
+        // ================================================================
+        // High registers (HR 4107-4114) — PV power setting, battery energy alt sources
+        // ================================================================
+        RegisterDef { address: 4107, name: "ge_hr_pv_power_setting_high".into(), category: C::PV, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 4108, name: "ge_hr_pv_power_setting_low".into(), category: C::PV, typ: T::U16, scaling_factor: 1.0, access: ReadWrite, space: Holding },
+        RegisterDef { address: 4109, name: "ge_hr_battery_discharge_total_alt2_high".into(), category: C::Battery, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Holding },
+        RegisterDef { address: 4110, name: "ge_hr_battery_discharge_total_alt2_low".into(), category: C::Battery, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Holding },
+        RegisterDef { address: 4111, name: "ge_hr_battery_charge_total_alt2_high".into(), category: C::Battery, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Holding },
+        RegisterDef { address: 4112, name: "ge_hr_battery_charge_total_alt2_low".into(), category: C::Battery, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Holding },
+        RegisterDef { address: 4113, name: "ge_hr_battery_discharge_today_alt3".into(), category: C::Battery, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Holding },
+        RegisterDef { address: 4114, name: "ge_hr_battery_charge_today_alt3".into(), category: C::Battery, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Holding },
+
         // ================================================================
         // Simulator-internal registers (100+, 200+, etc.)
         // All in holding register space.

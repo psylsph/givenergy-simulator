@@ -1244,56 +1244,52 @@ impl DeviceModel for ScheduleEngine {
             return;
         }
 
-        // Check charge slot 1 — uses slot target, not gated by enable_charge_target
-        if self.schedule.charge_start != self.schedule.charge_end {
-            if in_window(self.schedule.charge_start, self.schedule.charge_end, hour)
-                && soc < self.schedule.charge_target_soc
-            {
-                state.scheduled_charge = true;
-                return;
-            }
+        // Check all charge slots (1-10)
+        macro_rules! check_charge_slot {
+            ($start:expr, $end:expr, $target:expr) => {
+                if $start != $end {
+                    if in_window($start, $end, hour) && soc < $target {
+                        state.scheduled_charge = true;
+                        return;
+                    }
+                }
+            };
         }
-
-        // Check charge slot 2
-        if self.schedule.charge_start_2 != self.schedule.charge_end_2 {
-            if in_window(
-                self.schedule.charge_start_2,
-                self.schedule.charge_end_2,
-                hour,
-            ) && soc < self.schedule.charge_target_soc_2
-            {
-                state.scheduled_charge = true;
-                return;
-            }
-        }
+        check_charge_slot!(self.schedule.charge_start, self.schedule.charge_end, self.schedule.charge_target_soc);
+        check_charge_slot!(self.schedule.charge_start_2, self.schedule.charge_end_2, self.schedule.charge_target_soc_2);
+        check_charge_slot!(self.schedule.charge_start_3, self.schedule.charge_end_3, self.schedule.charge_target_soc_3);
+        check_charge_slot!(self.schedule.charge_start_4, self.schedule.charge_end_4, self.schedule.charge_target_soc_4);
+        check_charge_slot!(self.schedule.charge_start_5, self.schedule.charge_end_5, self.schedule.charge_target_soc_5);
+        check_charge_slot!(self.schedule.charge_start_6, self.schedule.charge_end_6, self.schedule.charge_target_soc_6);
+        check_charge_slot!(self.schedule.charge_start_7, self.schedule.charge_end_7, self.schedule.charge_target_soc_7);
+        check_charge_slot!(self.schedule.charge_start_8, self.schedule.charge_end_8, self.schedule.charge_target_soc_8);
+        check_charge_slot!(self.schedule.charge_start_9, self.schedule.charge_end_9, self.schedule.charge_target_soc_9);
+        check_charge_slot!(self.schedule.charge_start_10, self.schedule.charge_end_10, self.schedule.charge_target_soc_10);
 
         // Skip discharge slots for AC-coupled inverters (DTC prefix "3")
         let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
         if !is_ac_coupled {
-            // Check discharge slot 1
-            if self.schedule.discharge_start != self.schedule.discharge_end {
-                if in_window(
-                    self.schedule.discharge_start,
-                    self.schedule.discharge_end,
-                    hour,
-                ) && soc > self.schedule.discharge_target_soc
-                {
-                    state.scheduled_discharge = true;
-                    return;
-                }
+            // Check all discharge slots (1-10)
+            macro_rules! check_discharge_slot {
+                ($start:expr, $end:expr, $target:expr) => {
+                    if $start != $end {
+                        if in_window($start, $end, hour) && soc > $target {
+                            state.scheduled_discharge = true;
+                            return;
+                        }
+                    }
+                };
             }
-
-            // Check discharge slot 2
-            if self.schedule.discharge_start_2 != self.schedule.discharge_end_2 {
-                if in_window(
-                    self.schedule.discharge_start_2,
-                    self.schedule.discharge_end_2,
-                    hour,
-                ) && soc > self.schedule.discharge_target_soc_2
-                {
-                    state.scheduled_discharge = true;
-                }
-            }
+            check_discharge_slot!(self.schedule.discharge_start, self.schedule.discharge_end, self.schedule.discharge_target_soc);
+            check_discharge_slot!(self.schedule.discharge_start_2, self.schedule.discharge_end_2, self.schedule.discharge_target_soc_2);
+            check_discharge_slot!(self.schedule.discharge_start_3, self.schedule.discharge_end_3, self.schedule.discharge_target_soc_3);
+            check_discharge_slot!(self.schedule.discharge_start_4, self.schedule.discharge_end_4, self.schedule.discharge_target_soc_4);
+            check_discharge_slot!(self.schedule.discharge_start_5, self.schedule.discharge_end_5, self.schedule.discharge_target_soc_5);
+            check_discharge_slot!(self.schedule.discharge_start_6, self.schedule.discharge_end_6, self.schedule.discharge_target_soc_6);
+            check_discharge_slot!(self.schedule.discharge_start_7, self.schedule.discharge_end_7, self.schedule.discharge_target_soc_7);
+            check_discharge_slot!(self.schedule.discharge_start_8, self.schedule.discharge_end_8, self.schedule.discharge_target_soc_8);
+            check_discharge_slot!(self.schedule.discharge_start_9, self.schedule.discharge_end_9, self.schedule.discharge_target_soc_9);
+            check_discharge_slot!(self.schedule.discharge_start_10, self.schedule.discharge_end_10, self.schedule.discharge_target_soc_10);
         }
     }
 
