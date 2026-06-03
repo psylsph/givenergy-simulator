@@ -558,10 +558,22 @@ impl DeviceModel for InverterEngine {
 
         match state.inverter.mode_state.effective {
             InverterMode::Normal => {
-                self.normal_priority(state, solar_w, load_w);
+                if state.scheduled_charge {
+                    self.force_charge(state);
+                } else if state.scheduled_discharge {
+                    self.force_discharge(state);
+                } else {
+                    self.normal_priority(state, solar_w, load_w);
+                }
             }
             InverterMode::Eco => {
-                self.eco_priority(state, solar_w, load_w);
+                if state.scheduled_charge {
+                    self.force_charge(state);
+                } else if state.scheduled_discharge {
+                    self.force_discharge(state);
+                } else {
+                    self.eco_priority(state, solar_w, load_w);
+                }
             }
             InverterMode::ForceCharge => {
                 self.force_charge(state);
@@ -1089,6 +1101,10 @@ impl ScheduleEngine {
 
 impl DeviceModel for ScheduleEngine {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
+        // Reset flags every tick — ScheduleEngine sets them fresh.
+        state.scheduled_charge = false;
+        state.scheduled_discharge = false;
+
         if !self.enabled {
             return;
         }
@@ -1101,6 +1117,7 @@ impl DeviceModel for ScheduleEngine {
             if start < end {
                 h >= start && h < end
             } else {
+                // Wraps midnight, e.g. 22:00–06:00
                 h >= start || h < end
             }
         };
@@ -1110,10 +1127,7 @@ impl DeviceModel for ScheduleEngine {
             if in_window(self.schedule.charge_start, self.schedule.charge_end, hour)
                 && soc < self.schedule.charge_target_soc
             {
-                state
-                    .inverter
-                    .mode_state
-                    .set_schedule(InverterMode::ForceCharge);
+                state.scheduled_charge = true;
                 return;
             }
         }
@@ -1126,10 +1140,7 @@ impl DeviceModel for ScheduleEngine {
                 hour,
             ) && soc < self.schedule.charge_target_soc
             {
-                state
-                    .inverter
-                    .mode_state
-                    .set_schedule(InverterMode::ForceCharge);
+                state.scheduled_charge = true;
                 return;
             }
         }
@@ -1142,10 +1153,7 @@ impl DeviceModel for ScheduleEngine {
                 hour,
             ) && soc > self.schedule.discharge_target_soc
             {
-                state
-                    .inverter
-                    .mode_state
-                    .set_schedule(InverterMode::ForceDischarge);
+                state.scheduled_discharge = true;
                 return;
             }
         }
@@ -1158,10 +1166,7 @@ impl DeviceModel for ScheduleEngine {
                 hour,
             ) && soc > self.schedule.discharge_target_soc
             {
-                state
-                    .inverter
-                    .mode_state
-                    .set_schedule(InverterMode::ForceDischarge);
+                state.scheduled_discharge = true;
             }
         }
     }
@@ -1870,9 +1875,14 @@ mod tests {
         };
         engine.update(&ctx, &mut state);
 
+        assert!(
+            state.scheduled_charge,
+            "Schedule should have set scheduled_charge=true"
+        );
         assert_eq!(
             state.inverter.mode_state.effective,
-            InverterMode::ForceCharge
+            InverterMode::Normal, // mode stays unchanged by schedule
+            "Schedule should NOT change mode"
         );
     }
 
@@ -1895,7 +1905,10 @@ mod tests {
         };
         engine.update(&ctx, &mut state);
 
-        assert_eq!(state.inverter.mode_state.effective, InverterMode::Normal); // not changed
+        assert!(
+            !state.scheduled_charge,
+            "Should not charge when SOC at target"
+        );
     }
 
     #[test]
@@ -1917,9 +1930,14 @@ mod tests {
         };
         engine.update(&ctx, &mut state);
 
+        assert!(
+            state.scheduled_discharge,
+            "Schedule should set scheduled_discharge=true"
+        );
         assert_eq!(
             state.inverter.mode_state.effective,
-            InverterMode::ForceDischarge
+            InverterMode::Normal,
+            "Mode should stay unchanged"
         );
     }
 
@@ -1942,10 +1960,7 @@ mod tests {
             dt_hours: 1.0,
         };
         engine.update(&ctx, &mut state);
-        assert_eq!(
-            state.inverter.mode_state.effective,
-            InverterMode::ForceCharge
-        );
+        assert!(state.scheduled_charge, "At 23:00 should be inside window");
 
         // Test at 03:00 (inside window)
         let mut state2 = PlantState::new(ts(3));
@@ -1957,10 +1972,7 @@ mod tests {
             dt_hours: 1.0,
         };
         engine.update(&ctx2, &mut state2);
-        assert_eq!(
-            state2.inverter.mode_state.effective,
-            InverterMode::ForceCharge
-        );
+        assert!(state2.scheduled_charge, "At 03:00 should be inside window");
     }
 
     #[test]
@@ -1980,6 +1992,10 @@ mod tests {
             dt_hours: 1.0,
         };
         engine.update(&ctx, &mut state);
+        assert!(
+            !state.scheduled_charge,
+            "Disabled schedule should not set flag"
+        );
         assert_eq!(state.inverter.mode_state.effective, InverterMode::Normal);
     }
 

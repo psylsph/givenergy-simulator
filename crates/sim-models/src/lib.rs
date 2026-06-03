@@ -401,6 +401,13 @@ pub struct PlantState {
     /// Battery calibration state.
     #[serde(default)]
     pub calibration: CalibrationState,
+    /// Set by ScheduleEngine each tick when a charge schedule window is active.
+    /// InverterEngine reads this to charge from grid while staying in Eco/Normal mode.
+    #[serde(default)]
+    pub scheduled_charge: bool,
+    /// Set by ScheduleEngine each tick when a discharge schedule window is active.
+    #[serde(default)]
+    pub scheduled_discharge: bool,
 }
 
 impl PlantState {
@@ -422,6 +429,8 @@ impl PlantState {
             load_override: None,
             config: PlantConfig::default(),
             calibration: CalibrationState::default(),
+            scheduled_charge: false,
+            scheduled_discharge: false,
         }
     }
 
@@ -444,10 +453,10 @@ impl PlantState {
             load_override: None,
             config: PlantConfig::default(),
             calibration: CalibrationState::default(),
+            scheduled_charge: false,
+            scheduled_discharge: false,
         }
     }
-
-    // ---- Aggregate battery helpers ----
 
     /// Aggregate SOC across all battery modules (capacity-weighted average).
     pub fn aggregate_soc(&self) -> f64 {

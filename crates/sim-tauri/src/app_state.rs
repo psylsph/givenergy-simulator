@@ -131,13 +131,16 @@ pub struct ScheduleDto {
 impl ScheduleDto {
     fn from_state(state: &PlantState, schedule: Option<&sim_core::Schedule>) -> Self {
         // Convert decimal hours (e.g. 5.5) to HHMM (e.g. 530).
-        // 60 = disabled sentinel (minutes > 59).
+        // 0 = 00:00, 60 = disabled sentinel (minutes > 59).
         let hhmm = |decimal_hours: f64| -> u16 {
-            if decimal_hours <= 0.0 {
+            if decimal_hours < 0.0 {
                 return 60;
             }
             let h = decimal_hours.floor() as u16;
             let m = ((decimal_hours - h as f64) * 60.0).round() as u16;
+            if m > 59 {
+                return 60;
+            }
             h * 100 + m
         };
 
@@ -158,10 +161,8 @@ impl ScheduleDto {
         };
 
         Self {
-            enable_charge: (cs != ce || cs2 != ce2)
-                && state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge,
-            enable_discharge: (ds != de || ds2 != de2)
-                && state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge,
+            enable_charge: cs != ce || cs2 != ce2,
+            enable_discharge: ds != de || ds2 != de2,
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct,
             charge_slot_1_start: hhmm(cs),
