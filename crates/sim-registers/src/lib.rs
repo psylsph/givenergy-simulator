@@ -612,8 +612,9 @@ impl RegisterStore {
         self.write(44, ds2_start);
         self.write(45, ds2_end);
 
-        // Enable charge (HR 96) — enabled if either charge window is set
-        let charge_enabled = if schedule.charge_start != schedule.charge_end
+        // Enable charge (HR 96) — enabled if any charge window is set OR enable_charge flag
+        let charge_enabled = if schedule.enable_charge
+            || schedule.charge_start != schedule.charge_end
             || schedule.charge_start_2 != schedule.charge_end_2
         {
             1
@@ -622,8 +623,9 @@ impl RegisterStore {
         };
         self.write(96, charge_enabled);
 
-        // Enable discharge (HR 59) — enabled if either discharge window is set
-        let discharge_enabled = if schedule.discharge_start != schedule.discharge_end
+        // Enable discharge (HR 59) — enabled if any discharge window is set OR enable_discharge flag
+        let discharge_enabled = if schedule.enable_discharge
+            || schedule.discharge_start != schedule.discharge_end
             || schedule.discharge_start_2 != schedule.discharge_end_2
         {
             1

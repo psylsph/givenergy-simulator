@@ -2052,6 +2052,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enable_charge_flag_triggers_charging() {
+        let mut sched = Schedule::default();
+        sched.enable_charge = true;
+        sched.charge_target_soc = 100.0;
+        // Slot windows are disabled (0-0) — enable_charge flag should override
+
+        let mut state = PlantState::new(ts(14)); // 14:00 — outside any default slot
+        state.inverter.mode_state.set_user(InverterMode::Eco);
+        state.batteries[0].soc_percent = 30.0;
+        state.sync_battery_from_vec();
+
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(ScheduleEngine::new(sched)),
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(crate::EnergyTracker::new()),
+        ];
+        let mut engine = SimulationEngine::new(state, devices, 60);
+
+        engine.tick();
+
+        assert!(
+            engine.state.scheduled_charge,
+            "enable_charge flag should set scheduled_charge=true even at hour 14 with no window"
+        );
+        let soc_before = engine.state.aggregate_soc();
+        engine.tick();
+        let soc_after = engine.state.aggregate_soc();
+        assert!(
+            soc_after >= soc_before,
+            "Battery should charge: before={soc_before:.1}% after={soc_after:.1}%"
+        );
+    }
+
     // --- Aging Model ---
 
     #[test]
