@@ -540,54 +540,27 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
-                            // Enable discharge (HR 59) — 0 = disable slot 1
+                            // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
+                            if let Some(&v) = sched_updates.get(&96) {
+                                if v == 0 {
+                                    sched.charge_start = 0.0;
+                                    sched.charge_end = 0.0;
+                                    sched.enable_charge = false;
+                                } else {
+                                    sched.enable_charge = true;
+                                }
+                            }
+                            // Enable discharge (HR 59) — 0 = disable, 1 = always-on
                             if let Some(&v) = sched_updates.get(&59) {
                                 if v == 0 {
                                     sched.discharge_start = 0.0;
                                     sched.discharge_end = 0.0;
+                                    sched.enable_discharge = false;
+                                } else {
+                                    sched.enable_discharge = true;
                                 }
                             }
                             // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // TPH slot time mirrors (HR 1113-1121)
-                            if let Some(&v) = sched_updates.get(&1113) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1114) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1115) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1116) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1118) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1119) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1120) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1121) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
-                            if let Some(&v) = sched_updates.get(&59) {
-                                if v == 0 {
-                                    sched.discharge_start = 0.0;
-                                    sched.discharge_end = 0.0;
-                                }
-                            }
-                            // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // TPH slot time mirrors (HR 1113-1121)
                             if let Some(&v) = sched_updates.get(&1113) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
@@ -768,54 +741,27 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
-                            // Enable discharge (HR 59) — 0 = disable slot 1
+                            // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
+                            if let Some(&v) = sched_updates.get(&96) {
+                                if v == 0 {
+                                    sched.charge_start = 0.0;
+                                    sched.charge_end = 0.0;
+                                    sched.enable_charge = false;
+                                } else {
+                                    sched.enable_charge = true;
+                                }
+                            }
+                            // Enable discharge (HR 59) — 0 = disable, 1 = always-on
                             if let Some(&v) = sched_updates.get(&59) {
                                 if v == 0 {
                                     sched.discharge_start = 0.0;
                                     sched.discharge_end = 0.0;
+                                    sched.enable_discharge = false;
+                                } else {
+                                    sched.enable_discharge = true;
                                 }
                             }
                             // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // TPH slot time mirrors (HR 1113-1121)
-                            if let Some(&v) = sched_updates.get(&1113) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1114) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1115) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1116) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1118) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1119) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1120) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1121) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
-                            if let Some(&v) = sched_updates.get(&59) {
-                                if v == 0 {
-                                    sched.discharge_start = 0.0;
-                                    sched.discharge_end = 0.0;
-                                }
-                            }
-                            // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // TPH slot time mirrors (HR 1113-1121)
                             if let Some(&v) = sched_updates.get(&1113) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }

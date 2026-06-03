@@ -36,6 +36,8 @@ fn test_schedule() -> Schedule {
         charge_target_soc_2: 100.0,
         discharge_target_soc: 10.0,
         discharge_target_soc_2: 10.0,
+        enable_charge: false,
+        enable_discharge: false,
     }
 }
 
@@ -165,6 +167,8 @@ fn schedule_roundtrip_preserves_all_fields() {
         charge_target_soc_2: 85.0,
         discharge_target_soc: 15.0,
         discharge_target_soc_2: 20.0,
+        enable_charge: true,
+        enable_discharge: true,
     };
     let json = serde_json::to_string(&sched).unwrap();
     let restored: Schedule = serde_json::from_str(&json).unwrap();
@@ -180,6 +184,14 @@ fn schedule_roundtrip_preserves_all_fields() {
     assert_eq!(restored.charge_target_soc_2, 85.0);
     assert_eq!(restored.discharge_target_soc, 15.0);
     assert_eq!(restored.discharge_target_soc_2, 20.0);
+    assert!(
+        restored.enable_charge,
+        "Roundtrip should preserve enable_charge"
+    );
+    assert!(
+        restored.enable_discharge,
+        "Roundtrip should preserve enable_discharge"
+    );
 }
 
 // ===========================================================================

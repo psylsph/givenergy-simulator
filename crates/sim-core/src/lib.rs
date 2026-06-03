@@ -1122,6 +1122,18 @@ impl DeviceModel for ScheduleEngine {
             }
         };
 
+        // Enable_charge = always-on: charge whenever SOC < target (no window restriction)
+        if self.schedule.enable_charge && soc < self.schedule.charge_target_soc {
+            state.scheduled_charge = true;
+            return;
+        }
+
+        // Enable_discharge = always-on: discharge whenever SOC > target
+        if self.schedule.enable_discharge && soc > self.schedule.discharge_target_soc {
+            state.scheduled_discharge = true;
+            return;
+        }
+
         // Check charge slot 1
         if self.schedule.charge_start != self.schedule.charge_end {
             if in_window(self.schedule.charge_start, self.schedule.charge_end, hour)

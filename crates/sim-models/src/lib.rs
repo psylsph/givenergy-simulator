@@ -581,6 +581,10 @@ pub struct Schedule {
     pub discharge_target_soc: f64,
     /// Target SOC for scheduled discharging, slot 2 (%).
     pub discharge_target_soc_2: f64,
+    /// When true, charge any time SOC < target (no window restriction).
+    pub enable_charge: bool,
+    /// When true, discharge any time SOC > target (no window restriction).
+    pub enable_discharge: bool,
 }
 
 impl Default for Schedule {
@@ -598,6 +602,8 @@ impl Default for Schedule {
             charge_target_soc_2: 100.0,
             discharge_target_soc: 10.0,
             discharge_target_soc_2: 10.0,
+            enable_charge: false,
+            enable_discharge: false,
         }
     }
 }

@@ -797,18 +797,24 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&275) {
                 sched.discharge_target_soc_2 = v as f64;
             }
-            // Enable/disable charge (HR 96)
+            // Enable charge (HR 96) — 0 = disable, 1 = always-on
             if let Some(&v) = sched_updates.get(&96) {
                 if v == 0 {
                     sched.charge_start = 0.0;
                     sched.charge_end = 0.0;
+                    sched.enable_charge = false;
+                } else {
+                    sched.enable_charge = true;
                 }
             }
-            // Enable/disable discharge (HR 59)
+            // Enable discharge (HR 59) — 0 = disable, 1 = always-on
             if let Some(&v) = sched_updates.get(&59) {
                 if v == 0 {
                     sched.discharge_start = 0.0;
                     sched.discharge_end = 0.0;
+                    sched.enable_discharge = false;
+                } else {
+                    sched.enable_discharge = true;
                 }
             }
             // TPH mirrors
