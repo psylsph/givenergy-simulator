@@ -213,17 +213,30 @@ impl From<&PlantState> for PlantStateDto {
             timestamp: state.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string(),
             inverter_mode: format!("{:?}", state.inverter.mode_state.effective),
             battery_mode: {
+                let scheduled_charge = state.scheduled_charge;
+                let scheduled_discharge = state.scheduled_discharge;
                 let eco = state.inverter.mode_state.effective == sim_models::InverterMode::Eco;
+                let force_charge =
+                    state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge;
                 let enable_discharge =
                     state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge;
                 let soc_reserve = state.min_aggregate_soc();
-                match (eco, enable_discharge, (soc_reserve.round() as u16) == 100) {
-                    (true, false, false) => "Eco",
-                    (true, false, true) => "EcoPaused",
-                    (true, true, _) => "TimedDemand",
-                    (false, true, _) => "TimedExport",
-                    (false, false, false) => "ExportPaused",
-                    (false, false, true) => "ExportPaused",
+                match (
+                    scheduled_charge,
+                    scheduled_discharge,
+                    eco,
+                    force_charge,
+                    enable_discharge,
+                    (soc_reserve.round() as u16) == 100,
+                ) {
+                    (true, _, _, _, _, _) => "ScheduledCharge",
+                    (_, true, _, _, _, _) => "ScheduledDischarge",
+                    (_, _, true, false, false, false) => "Eco",
+                    (_, _, true, false, false, true) => "EcoPaused",
+                    (_, _, true, false, true, _) => "TimedDemand",
+                    (_, _, false, true, _, _) => "ForceCharge",
+                    (_, _, false, false, true, _) => "TimedExport",
+                    _ => "ExportPaused",
                 }
                 .to_string()
             },
