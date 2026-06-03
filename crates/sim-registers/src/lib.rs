@@ -618,10 +618,11 @@ impl RegisterStore {
         };
         self.write(59, discharge_enabled);
 
-        // Charge target SOC (HR 116)
+        // Charge target SOC (HR 116) — also write TPH mirror at HR 1111
         self.write(116, schedule.charge_target_soc as u16);
+        self.write(1111, schedule.charge_target_soc as u16);
 
-        // Per-slot target SOC registers (Gen3 extended)
+        // Per-slot target SOC registers (Gen3 extended) — shared with TPH
         // HR 242: CHARGE_TARGET_SOC_1 (slot 1)
         // HR 245: CHARGE_TARGET_SOC_2 (slot 2)
         // HR 272: DISCHARGE_TARGET_SOC_1 (slot 1)
@@ -630,6 +631,22 @@ impl RegisterStore {
         self.write(245, schedule.charge_target_soc_2 as u16);
         self.write(272, schedule.discharge_target_soc as u16);
         self.write(275, schedule.discharge_target_soc_2 as u16);
+
+        // TPH mirror slot time registers (HR 1113-1121)
+        // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
+        self.write(1113, cs1_start);
+        self.write(1114, cs1_end);
+        // TPH_CHARGE_SLOT_2_START/END = 1115-1116 (mirrors HR 31-32 / 243-244)
+        self.write(1115, cs2_start);
+        self.write(1116, cs2_end);
+        // TPH_DISCHARGE_SLOT_1_START/END = 1118-1119 (mirrors HR 56-57)
+        self.write(1118, ds1_start);
+        self.write(1119, ds1_end);
+        // TPH_DISCHARGE_SLOT_2_START/END = 1120-1121 (mirrors HR 44-45)
+        self.write(1120, ds2_start);
+        self.write(1121, ds2_end);
+        // TPH_BATTERY_SOC_RESERVE = 1109 (mirrors HR 110)
+        self.write(1109, schedule.charge_target_soc as u16);
 
         // Internal schedule registers (HR 700-711)
         self.write(700, cs1_start);
