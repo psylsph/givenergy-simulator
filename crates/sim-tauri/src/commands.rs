@@ -276,36 +276,13 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
             };
             Some(Command::SetInverterMode(mode))
         }
-        // HR 59: Enable discharge (write by ForceDischarge, TimedDemand)
-        59 => {
-            if value == 1 {
-                // Enable discharge — client would also set schedule slots
-                // For now, just keep current mode
-                None
-            } else {
-                None
-            }
-        }
-        // HR 96: Enable charge (write by ForceCharge)
-        96 => {
-            if value == 1 {
-                Some(Command::SetInverterMode(InverterMode::ForceCharge))
-            } else {
-                None
-            }
-        }
+        // HR 50: Active power rate (%) → export limit = rate% of max
+        50 => None, // handled in register store
+        // HR 96: Enable charge — handled via schedule update below
         // HR 110: Battery SOC reserve (%)
         110 => Some(Command::SetMinSoc(value as f64)),
-        // HR 111: Battery charge limit (%)
-        111 => {
-            // Scale max charge — no Command variant, so store in register store directly
-            None
-        }
-        // HR 50: Active power rate (%) → export limit = rate% of max
-        50 => {
-            // Export limit as percentage — handled in register store
-            None
-        }
+        // HR 111: Battery charge limit (%) — register-only
+        111 => None,
         // HR 100: Inverter mode (internal)
         100 => {
             let mode = match value {
@@ -321,8 +298,29 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         210 => Some(Command::SetMinSoc(value as f64)),
         // HR 211: Battery max SOC (internal)
         211 => Some(Command::SetMaxSoc(value as f64)),
+        // All other registers (including schedule HR 31-32, 44-45, 56-57, 59, 94-95, 96, 116)
+        // are handled by the drain loop's schedule accumulator.
         _ => None,
     }
+}
+
+/// Convert HHMM register value (e.g. 530 = 05:30) to decimal hours.
+/// Returns None if the value is the disabled sentinel (60) or invalid.
+fn hhmm_to_hours(val: u16) -> Option<f64> {
+    if val == 60 {
+        return None; // disabled
+    }
+    let hours = val / 100;
+    let mins = val % 100;
+    if mins > 59 || hours > 23 {
+        return None; // invalid
+    }
+    Some(hours as f64 + mins as f64 / 60.0)
+}
+
+/// Check if a register address is a schedule-related holding register.
+fn is_schedule_register(addr: u16) -> bool {
+    matches!(addr, 31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116)
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +442,9 @@ pub async fn start_simulation(
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
+                                    let mut sched_dirty = false;
+                                    let mut sched_updates: std::collections::HashMap<u16, u16> =
+                                        std::collections::HashMap::new();
                                     for cmd in cmds.drain(..) {
                                         match cmd.address {
                                             35 => time_buf[0] = Some(cmd.value),
@@ -454,12 +455,17 @@ pub async fn start_simulation(
                                             40 => time_buf[5] = Some(cmd.value),
                                             _ => {}
                                         }
+                                        if is_schedule_register(cmd.address) {
+                                            sched_updates.insert(cmd.address, cmd.value);
+                                            sched_dirty = true;
+                                        }
                                         if let Some(sim_cmd) =
                                             modbus_address_to_command(cmd.address, cmd.value)
                                         {
                                             e.enqueue(sim_cmd);
                                         }
                                     }
+                                    // Apply time registers
                                     if time_buf.iter().all(|r| r.is_some()) {
                                         let y = time_buf[0].unwrap() as i32;
                                         let m = time_buf[1].unwrap() as u32;
@@ -474,6 +480,45 @@ pub async fn start_simulation(
                                         }
                                         *time_buf = [None; 6];
                                     }
+                                    // Apply schedule register updates
+                                    if sched_dirty {
+                                        let mut sched =
+                                            schedule_arc.lock().await.clone().unwrap_or_default();
+                                        // Charge slot 1 (HR 94-95)
+                                        if let Some(&v) = sched_updates.get(&94) {
+                                            sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        if let Some(&v) = sched_updates.get(&95) {
+                                            sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        // Discharge slot 1 (HR 56-57)
+                                        if let Some(&v) = sched_updates.get(&56) {
+                                            sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        if let Some(&v) = sched_updates.get(&57) {
+                                            sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        // Charge target SOC (HR 116)
+                                        if let Some(&v) = sched_updates.get(&116) {
+                                            sched.charge_target_soc = v as f64;
+                                        }
+                                        // Enable charge (HR 96) — 0 = disable (set start==end)
+                                        if let Some(&v) = sched_updates.get(&96) {
+                                            if v == 0 {
+                                                sched.charge_start = 0.0;
+                                                sched.charge_end = 0.0;
+                                            }
+                                        }
+                                        // Enable discharge (HR 59) — 0 = disable
+                                        if let Some(&v) = sched_updates.get(&59) {
+                                            if v == 0 {
+                                                sched.discharge_start = 0.0;
+                                                sched.discharge_end = 0.0;
+                                            }
+                                        }
+                                        e.enqueue(Command::SetSchedule(sched.clone()));
+                                        *schedule_arc.lock().await = Some(sched);
+                                    }
                                 }
                             }
                         }
@@ -482,6 +527,10 @@ pub async fn start_simulation(
                         {
                             let mut rs = register_store.lock().await;
                             rs.project_from_state(&e.state);
+                            let sched_ref = schedule_arc.lock().await.clone();
+                            if let Some(ref s) = sched_ref {
+                                rs.project_schedule(s);
+                            }
                         }
                         // Update battery snapshot for Modbus BMS reads
                         {
@@ -533,6 +582,9 @@ pub async fn start_simulation(
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
+                                    let mut sched_dirty = false;
+                                    let mut sched_updates: std::collections::HashMap<u16, u16> =
+                                        std::collections::HashMap::new();
                                     for cmd in cmds.drain(..) {
                                         match cmd.address {
                                             35 => time_buf[0] = Some(cmd.value),
@@ -543,12 +595,17 @@ pub async fn start_simulation(
                                             40 => time_buf[5] = Some(cmd.value),
                                             _ => {}
                                         }
+                                        if is_schedule_register(cmd.address) {
+                                            sched_updates.insert(cmd.address, cmd.value);
+                                            sched_dirty = true;
+                                        }
                                         if let Some(sim_cmd) =
                                             modbus_address_to_command(cmd.address, cmd.value)
                                         {
                                             e.enqueue(sim_cmd);
                                         }
                                     }
+                                    // Apply time registers
                                     if time_buf.iter().all(|r| r.is_some()) {
                                         let y = time_buf[0].unwrap() as i32;
                                         let m = time_buf[1].unwrap() as u32;
@@ -563,6 +620,45 @@ pub async fn start_simulation(
                                         }
                                         *time_buf = [None; 6];
                                     }
+                                    // Apply schedule register updates
+                                    if sched_dirty {
+                                        let mut sched =
+                                            schedule_arc.lock().await.clone().unwrap_or_default();
+                                        // Charge slot 1 (HR 94-95)
+                                        if let Some(&v) = sched_updates.get(&94) {
+                                            sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        if let Some(&v) = sched_updates.get(&95) {
+                                            sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        // Discharge slot 1 (HR 56-57)
+                                        if let Some(&v) = sched_updates.get(&56) {
+                                            sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        if let Some(&v) = sched_updates.get(&57) {
+                                            sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                        }
+                                        // Charge target SOC (HR 116)
+                                        if let Some(&v) = sched_updates.get(&116) {
+                                            sched.charge_target_soc = v as f64;
+                                        }
+                                        // Enable charge (HR 96) — 0 = disable (set start==end)
+                                        if let Some(&v) = sched_updates.get(&96) {
+                                            if v == 0 {
+                                                sched.charge_start = 0.0;
+                                                sched.charge_end = 0.0;
+                                            }
+                                        }
+                                        // Enable discharge (HR 59) — 0 = disable
+                                        if let Some(&v) = sched_updates.get(&59) {
+                                            if v == 0 {
+                                                sched.discharge_start = 0.0;
+                                                sched.discharge_end = 0.0;
+                                            }
+                                        }
+                                        e.enqueue(Command::SetSchedule(sched.clone()));
+                                        *schedule_arc.lock().await = Some(sched);
+                                    }
                                 }
                             }
                         }
@@ -571,6 +667,10 @@ pub async fn start_simulation(
                         {
                             let mut rs = register_store.lock().await;
                             rs.project_from_state(&e.state);
+                            let sched_ref = schedule_arc.lock().await.clone();
+                            if let Some(ref s) = sched_ref {
+                                rs.project_schedule(s);
+                            }
                         }
                         // Update battery snapshot for Modbus BMS reads
                         {

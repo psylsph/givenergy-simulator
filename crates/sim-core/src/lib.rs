@@ -61,6 +61,8 @@ pub enum Command {
     CancelCalibration,
     /// Clear all active faults at once.
     FixAllFaults,
+    /// Update the charge/discharge schedule.
+    SetSchedule(Schedule),
     /// Change simulation time step (seconds per tick) — used for speed-up.
     SetTickInterval(u64),
 }
@@ -176,6 +178,14 @@ impl SimulationEngine {
                 }
                 Command::FixAllFaults => {
                     self.state.active_faults.clear();
+                }
+                Command::SetSchedule(sched) => {
+                    for device in &mut self.devices {
+                        if let Some(se) = device.as_any_mut().downcast_mut::<ScheduleEngine>() {
+                            se.schedule = sched.clone();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1053,35 +1063,8 @@ impl DeviceModel for EnergyTracker {
 // ScheduleEngine — timed charge/discharge windows
 // ---------------------------------------------------------------------------
 
-/// Schedule parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Schedule {
-    /// Charge window start (decimal hours, e.g. 2.5 = 02:30).
-    pub charge_start: f64,
-    /// Charge window end (decimal hours).
-    pub charge_end: f64,
-    /// Discharge window start (decimal hours).
-    pub discharge_start: f64,
-    /// Discharge window end (decimal hours).
-    pub discharge_end: f64,
-    /// Target SOC for scheduled charging (%).
-    pub charge_target_soc: f64,
-    /// Target SOC for scheduled discharging (%).
-    pub discharge_target_soc: f64,
-}
-
-impl Default for Schedule {
-    fn default() -> Self {
-        Self {
-            charge_start: 0.0,
-            charge_end: 5.5, // 05:30
-            discharge_start: 0.0,
-            discharge_end: 0.0,
-            charge_target_soc: 100.0,
-            discharge_target_soc: 10.0,
-        }
-    }
-}
+// Schedule re-exported from sim-models to avoid breaking imports.
+pub use sim_models::Schedule;
 
 /// Device model that enforces schedule-based inverter mode changes.
 /// Must be registered **before** InverterEngine so mode is set before power flow calc.
@@ -1146,6 +1129,10 @@ impl DeviceModel for ScheduleEngine {
                     .set_schedule(InverterMode::ForceDischarge);
             }
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

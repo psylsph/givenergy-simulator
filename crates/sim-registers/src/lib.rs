@@ -557,6 +557,71 @@ impl RegisterStore {
         }
     }
 
+    /// Project schedule parameters into GE holding registers.
+    ///
+    /// Call after `project_from_state` — this overwrites the hardcoded
+    /// "disabled sentinel" values with the actual schedule.
+    pub fn project_schedule(&mut self, schedule: &sim_models::Schedule) {
+        let hrs_to_hhmm = |h: f64| -> u16 {
+            if h <= 0.0 {
+                return 60; /* disabled */
+            }
+            let hours = h.floor() as u16;
+            let mins = ((h - hours as f64) * 60.0).round() as u16;
+            if mins > 59 {
+                return 60; /* invalid = disabled */
+            }
+            hours * 100 + mins
+        };
+
+        // Charge slot 1 (HR 94-95)
+        let cs1_start = hrs_to_hhmm(schedule.charge_start);
+        let cs1_end = hrs_to_hhmm(schedule.charge_end);
+        self.write(94, cs1_start);
+        self.write(95, cs1_end);
+
+        // Charge slot 2 (HR 31-32) — same as slot 1 for now
+        self.write(31, cs1_start);
+        self.write(32, cs1_end);
+
+        // Discharge slot 1 (HR 56-57)
+        let ds1_start = hrs_to_hhmm(schedule.discharge_start);
+        let ds1_end = hrs_to_hhmm(schedule.discharge_end);
+        self.write(56, ds1_start);
+        self.write(57, ds1_end);
+
+        // Discharge slot 2 (HR 44-45) — same as slot 1
+        self.write(44, ds1_start);
+        self.write(45, ds1_end);
+
+        // Enable charge (HR 96) — enabled if charge window is set
+        let charge_enabled = if schedule.charge_start != schedule.charge_end {
+            1
+        } else {
+            0
+        };
+        self.write(96, charge_enabled);
+
+        // Enable discharge (HR 59) — enabled if discharge window is set
+        let discharge_enabled = if schedule.discharge_start != schedule.discharge_end {
+            1
+        } else {
+            0
+        };
+        self.write(59, discharge_enabled);
+
+        // Charge target SOC (HR 116)
+        self.write(116, schedule.charge_target_soc as u16);
+
+        // Internal schedule registers (HR 700-704)
+        self.write(700, cs1_start);
+        self.write(701, cs1_end);
+        self.write(702, ds1_start);
+        self.write(703, ds1_end);
+        self.write(704, schedule.charge_target_soc as u16);
+        self.write(705, schedule.discharge_target_soc as u16);
+    }
+
     /// Iterator over all definitions.
     /// Project battery BMS data for a specific battery module (IR 60-119).
     ///

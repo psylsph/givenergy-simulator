@@ -78,6 +78,10 @@ pub struct TickContext {
 pub trait DeviceModel: Send {
     /// Advance the model by one tick.
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState);
+    /// Downcast support for schedule updates.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        unimplemented!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,5 +538,39 @@ impl PlantState {
             .map(|b| b.temperature_celsius)
             .sum::<f64>()
             / self.batteries.len() as f64
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Schedule — moved from sim-core to break circular dependency
+// ---------------------------------------------------------------------------
+
+/// Schedule parameters.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Schedule {
+    /// Charge window start (decimal hours, e.g. 2.5 = 02:30).
+    pub charge_start: f64,
+    /// Charge window end (decimal hours).
+    pub charge_end: f64,
+    /// Discharge window start (decimal hours).
+    pub discharge_start: f64,
+    /// Discharge window end (decimal hours).
+    pub discharge_end: f64,
+    /// Target SOC for scheduled charging (%).
+    pub charge_target_soc: f64,
+    /// Target SOC for scheduled discharging (%).
+    pub discharge_target_soc: f64,
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Self {
+            charge_start: 0.0,
+            charge_end: 5.5, // 05:30
+            discharge_start: 0.0,
+            discharge_end: 0.0,
+            charge_target_soc: 100.0,
+            discharge_target_soc: 10.0,
+        }
     }
 }
