@@ -6,7 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Core Simulation
+## [0.7.1] - 2026-06-03
+
+### Added
+- Gen 1 Hybrid inverter type (0x1001, 2500W battery limit)
+- Dual PV array support with 45/55 power split
+- PV2 peak capacity configurable in plant creation
+- 12 inverter types with correct datasheet battery limits
+- SOH adjustment recalculates charge/discharge limits
+- Time sync accumulator for HR 35-40 across drain cycles
+- Solar override applies before night check
+
+### Fixed
+- Battery charge/discharge capped by inverter max AC power in all modes
+- PV2 voltage register (IR 2) returns 350V when PV2 configured
+- All clippy warnings resolved (zero warnings from `cargo clippy --all-targets`)
+- All formatting issues resolved (`cargo fmt --check` clean)
+- Inverter dropdown and presets ordered by DTC hex value
+
+### Changed
+- `SolarState` split into `pv1_w` / `pv2_w` (generation_w = total)
+- CI pipeline clippy filter improved
+- Test count: 211
+
+## [0.7.0]
 - Dual PV array support — PV1 and PV2 modelled as independent arrays with 45/55 power split
 - PV2 peak capacity configurable in plant creation dialog (0 = disabled)
 - Solar override now applies before night check, respecting array split
