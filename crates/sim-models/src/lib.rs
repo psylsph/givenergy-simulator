@@ -624,6 +624,108 @@ impl PlantState {
 }
 
 // ---------------------------------------------------------------------------
+// MeterState — CT clamp meter data
+// ---------------------------------------------------------------------------
+
+/// State of a single CT clamp meter (grid import/export metering point).
+/// Derived from PlantState.grid — stored separately for Modbus serving.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MeterState {
+    /// Per-phase voltage (V ×0.1). Single-phase: v_phase_1 only.
+    pub v_phase_1: f64,
+    pub v_phase_2: f64,
+    pub v_phase_3: f64,
+    /// Per-phase current (A ×0.01)
+    pub i_phase_1: f64,
+    pub i_phase_2: f64,
+    pub i_phase_3: f64,
+    pub i_total: f64,
+    /// Per-phase active power (W, signed: +export / −import)
+    pub p_active_phase_1: f64,
+    pub p_active_phase_2: f64,
+    pub p_active_phase_3: f64,
+    pub p_active_total: f64,
+    /// Per-phase reactive power (var)
+    pub p_reactive_phase_1: f64,
+    pub p_reactive_phase_2: f64,
+    pub p_reactive_phase_3: f64,
+    pub p_reactive_total: f64,
+    /// Per-phase apparent power (VA)
+    pub p_apparent_phase_1: f64,
+    pub p_apparent_phase_2: f64,
+    pub p_apparent_phase_3: f64,
+    pub p_apparent_total: f64,
+    /// Per-phase power factor (×0.001)
+    pub pf_phase_1: f64,
+    pub pf_phase_2: f64,
+    pub pf_phase_3: f64,
+    pub pf_total: f64,
+    /// Grid frequency (Hz ×0.01)
+    pub frequency: f64,
+    /// Import/export active energy today (kWh ×0.1)
+    pub e_import_active: f64,
+    pub e_export_active: f64,
+}
+
+impl Default for MeterState {
+    fn default() -> Self {
+        Self {
+            v_phase_1: 240.0, v_phase_2: 0.0, v_phase_3: 0.0,
+            i_phase_1: 0.0, i_phase_2: 0.0, i_phase_3: 0.0,
+            i_total: 0.0,
+            p_active_phase_1: 0.0, p_active_phase_2: 0.0, p_active_phase_3: 0.0,
+            p_active_total: 0.0,
+            p_reactive_phase_1: 0.0, p_reactive_phase_2: 0.0, p_reactive_phase_3: 0.0,
+            p_reactive_total: 0.0,
+            p_apparent_phase_1: 0.0, p_apparent_phase_2: 0.0, p_apparent_phase_3: 0.0,
+            p_apparent_total: 0.0,
+            pf_phase_1: 1000.0, pf_phase_2: 0.0, pf_phase_3: 0.0,
+            pf_total: 1000.0,
+            frequency: 50.0,
+            e_import_active: 0.0,
+            e_export_active: 0.0,
+        }
+    }
+}
+
+impl From<&PlantState> for MeterState {
+    /// Derive meter readings from the current plant state.
+    fn from(state: &PlantState) -> Self {
+        let grid_w = state.grid.power_w; // +import / −export
+        let grid_v = 240.0;
+        let grid_i = grid_w.abs() / grid_v;
+        // Single-phase: all power on phase 1
+        // Positive = import (active power positive = importing)
+        // For GivEnergy convention: +W = import, −W = export
+        let p1 = grid_w;
+        let p2 = 0.0;
+        let p3 = 0.0;
+        let pt = grid_w;
+        let i1 = if grid_v > 0.0 { p1 / grid_v } else { 0.0 };
+
+        Self {
+            v_phase_1: grid_v, v_phase_2: 0.0, v_phase_3: 0.0,
+            i_phase_1: i1, i_phase_2: 0.0, i_phase_3: 0.0,
+            i_total: i1,
+            p_active_phase_1: p1.clamp(-32768.0, 32767.0),
+            p_active_phase_2: p2, p_active_phase_3: p3,
+            p_active_total: pt.clamp(-32768.0, 32767.0),
+            p_reactive_phase_1: 0.0, p_reactive_phase_2: 0.0, p_reactive_phase_3: 0.0,
+            p_reactive_total: 0.0,
+            p_apparent_phase_1: p1.abs(),
+            p_apparent_phase_2: 0.0, p_apparent_phase_3: 0.0,
+            p_apparent_total: pt.abs(),
+            pf_phase_1: if pt.abs() > 1.0 { 1000.0 } else { 0.0 },
+            pf_phase_2: 0.0, pf_phase_3: 0.0,
+            pf_total: if pt.abs() > 1.0 { 1000.0 } else { 0.0 },
+            frequency: 50.0,
+            e_import_active: state.energy_totals.grid_import_kwh,
+            e_export_active: state.energy_totals.grid_export_kwh,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Schedule — moved from sim-core to break circular dependency
 // ---------------------------------------------------------------------------
 

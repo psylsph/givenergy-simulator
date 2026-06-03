@@ -311,6 +311,34 @@ pub async fn run_modbus_server(
                                 continue;
                             }
 
+                            // Check if this is a meter read (IR 60-89 on meter slaves 0x01-0x08)
+                            let is_meter = (0x01..=0x08).contains(&slave)
+                                && inner_func == FC_READ_INPUT
+                                && (60..90).contains(&start_addr);
+
+                            if is_meter {
+                                // Serve meter registers from the shared store
+                                let space = sim_registers::RegisterSpace::Input;
+                                let store_guard = store.lock().await;
+                                let mut data = Vec::with_capacity(count as usize * 2);
+                                for i in 0..count {
+                                    let val = store_guard
+                                        .read_by_space(start_addr + i, space)
+                                        .unwrap_or(0);
+                                    data.extend_from_slice(&val.to_be_bytes());
+                                }
+                                drop(store_guard);
+                                let mut resp_payload = Vec::with_capacity(SERIAL_LEN + 4 + data.len());
+                                resp_payload.extend_from_slice(&serial);
+                                resp_payload.extend_from_slice(&start_addr.to_be_bytes());
+                                resp_payload.extend_from_slice(&count.to_be_bytes());
+                                resp_payload.extend_from_slice(&data);
+                                let resp = build_response_with_padding(&serial, slave, inner_func, &resp_payload, 0x8A);
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+
                             // Check if this is a battery BMS read (IR 60-119 on battery slaves)
                             let battery_index = if slave == 0x32 {
                                 // Battery #1 BMS: IR 60-119 on inverter slave

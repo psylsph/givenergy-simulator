@@ -287,6 +287,76 @@ impl RegisterStore {
                 "ge_ir_battery_soc" => Some(state.aggregate_soc()),
 
                 // ================================================================
+                // CT Clamp Meter Input Registers (IR 60-89)
+                // ================================================================
+                "meter_v_phase_1" => Some(240.0),
+                "meter_v_phase_2" => Some(0.0),
+                "meter_v_phase_3" => Some(0.0),
+                "meter_i_phase_1" => {
+                    let i = state.grid.power_w.abs() / 240.0;
+                    self.values.insert(key, (i * 100.0) as u16);
+                    continue;
+                }
+                "meter_i_phase_2" => { self.values.insert(key, 0); continue; }
+                "meter_i_phase_3" => { self.values.insert(key, 0); continue; }
+                "meter_i_ln" => { self.values.insert(key, 0); continue; }
+                "meter_i_total" => {
+                    let i = state.grid.power_w.abs() / 240.0;
+                    self.values.insert(key, (i * 100.0) as u16);
+                    continue;
+                }
+                "meter_p_active_phase_1" => {
+                    // GivEnergy convention: +W = import, −W = export
+                    let clamped = state.grid.power_w.clamp(-32768.0, 32767.0);
+                    self.values.insert(key, clamped as i16 as u16);
+                    continue;
+                }
+                "meter_p_active_phase_2" => { self.values.insert(key, 0); continue; }
+                "meter_p_active_phase_3" => { self.values.insert(key, 0); continue; }
+                "meter_p_active_total" => {
+                    let clamped = state.grid.power_w.clamp(-32768.0, 32767.0);
+                    self.values.insert(key, clamped as i16 as u16);
+                    continue;
+                }
+                "meter_p_reactive_phase_1" | "meter_p_reactive_phase_2" | "meter_p_reactive_phase_3" | "meter_p_reactive_total" => {
+                    self.values.insert(key, 0); continue;
+                }
+                "meter_p_apparent_phase_1" => {
+                    self.values.insert(key, state.grid.power_w.abs() as u16);
+                    continue;
+                }
+                "meter_p_apparent_phase_2" | "meter_p_apparent_phase_3" => {
+                    self.values.insert(key, 0); continue;
+                }
+                "meter_p_apparent_total" => {
+                    self.values.insert(key, state.grid.power_w.abs() as u16);
+                    continue;
+                }
+                "meter_pf_phase_1" => {
+                    if state.grid.power_w.abs() > 1.0 {
+                        self.values.insert(key, 1000i16 as u16);
+                    } else {
+                        self.values.insert(key, 0);
+                    }
+                    continue;
+                }
+                "meter_pf_phase_2" | "meter_pf_phase_3" => { self.values.insert(key, 0); continue; }
+                "meter_pf_total" => {
+                    if state.grid.power_w.abs() > 1.0 {
+                        self.values.insert(key, 1000i16 as u16);
+                    } else {
+                        self.values.insert(key, 0);
+                    }
+                    continue;
+                }
+                "meter_frequency" => Some(50.0),
+                "meter_e_import_active" => Some(state.energy_totals.grid_import_kwh),
+                "meter_e_import_reactive" => Some(0.0),
+                "meter_e_export_active" => Some(state.energy_totals.grid_export_kwh),
+                "meter_e_export_reactive" => Some(0.0),
+                "meter_reserved" => Some(0.0),
+
+                // ================================================================
                 // GivEnergy-native Holding Registers (HR 0-119)
                 // ================================================================
 
@@ -1263,6 +1333,41 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadOnly,
             space: Input,
         },
+        // ================================================================
+        // CT Clamp Meter Input Registers (IR 60-89)
+        // Served on device addresses 0x01-0x08 (separate from inverter 0x32)
+        // ================================================================
+        RegisterDef { address: 60, name: "meter_v_phase_1".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 61, name: "meter_v_phase_2".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 62, name: "meter_v_phase_3".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 63, name: "meter_i_phase_1".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 64, name: "meter_i_phase_2".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 65, name: "meter_i_phase_3".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 66, name: "meter_i_ln".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 67, name: "meter_i_total".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 68, name: "meter_p_active_phase_1".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 69, name: "meter_p_active_phase_2".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 70, name: "meter_p_active_phase_3".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 71, name: "meter_p_active_total".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 72, name: "meter_p_reactive_phase_1".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 73, name: "meter_p_reactive_phase_2".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 74, name: "meter_p_reactive_phase_3".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 75, name: "meter_p_reactive_total".into(), category: C::Grid, typ: T::S16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 76, name: "meter_p_apparent_phase_1".into(), category: C::Grid, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 77, name: "meter_p_apparent_phase_2".into(), category: C::Grid, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 78, name: "meter_p_apparent_phase_3".into(), category: C::Grid, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 79, name: "meter_p_apparent_total".into(), category: C::Grid, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+        RegisterDef { address: 80, name: "meter_pf_phase_1".into(), category: C::Grid, typ: T::S16, scaling_factor: 0.001, access: ReadOnly, space: Input },
+        RegisterDef { address: 81, name: "meter_pf_phase_2".into(), category: C::Grid, typ: T::S16, scaling_factor: 0.001, access: ReadOnly, space: Input },
+        RegisterDef { address: 82, name: "meter_pf_phase_3".into(), category: C::Grid, typ: T::S16, scaling_factor: 0.001, access: ReadOnly, space: Input },
+        RegisterDef { address: 83, name: "meter_pf_total".into(), category: C::Grid, typ: T::S16, scaling_factor: 0.001, access: ReadOnly, space: Input },
+        RegisterDef { address: 84, name: "meter_frequency".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.01, access: ReadOnly, space: Input },
+        RegisterDef { address: 85, name: "meter_e_import_active".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 86, name: "meter_e_import_reactive".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 87, name: "meter_e_export_active".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 88, name: "meter_e_export_reactive".into(), category: C::Grid, typ: T::U16, scaling_factor: 0.1, access: ReadOnly, space: Input },
+        RegisterDef { address: 89, name: "meter_reserved".into(), category: C::Grid, typ: T::U16, scaling_factor: 1.0, access: ReadOnly, space: Input },
+
         // ================================================================
         // GivEnergy-native Holding Registers (HR 0-119)
         // Read via fn 0x03 (Read Holding Registers), slave 0x32
