@@ -1138,7 +1138,7 @@ impl DeviceModel for ScheduleEngine {
                 self.schedule.charge_start_2,
                 self.schedule.charge_end_2,
                 hour,
-            ) && soc < self.schedule.charge_target_soc
+            ) && soc < self.schedule.charge_target_soc_2
             {
                 state.scheduled_charge = true;
                 return;
@@ -1164,7 +1164,7 @@ impl DeviceModel for ScheduleEngine {
                 self.schedule.discharge_start_2,
                 self.schedule.discharge_end_2,
                 hour,
-            ) && soc > self.schedule.discharge_target_soc
+            ) && soc > self.schedule.discharge_target_soc_2
             {
                 state.scheduled_discharge = true;
             }

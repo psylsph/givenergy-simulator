@@ -573,10 +573,14 @@ pub struct Schedule {
     pub discharge_start_2: f64,
     /// Discharge slot 2 end (decimal hours).
     pub discharge_end_2: f64,
-    /// Target SOC for scheduled charging (%).
+    /// Target SOC for scheduled charging, slot 1 (%).
     pub charge_target_soc: f64,
-    /// Target SOC for scheduled discharging (%).
+    /// Target SOC for scheduled charging, slot 2 (%).
+    pub charge_target_soc_2: f64,
+    /// Target SOC for scheduled discharging, slot 1 (%).
     pub discharge_target_soc: f64,
+    /// Target SOC for scheduled discharging, slot 2 (%).
+    pub discharge_target_soc_2: f64,
 }
 
 impl Default for Schedule {
@@ -591,7 +595,9 @@ impl Default for Schedule {
             discharge_start_2: 0.0,
             discharge_end_2: 0.0,
             charge_target_soc: 100.0,
+            charge_target_soc_2: 100.0,
             discharge_target_soc: 10.0,
+            discharge_target_soc_2: 10.0,
         }
     }
 }

@@ -33,7 +33,9 @@ fn test_schedule() -> Schedule {
         discharge_start_2: 0.0,
         discharge_end_2: 0.0,
         charge_target_soc: 100.0,
+        charge_target_soc_2: 100.0,
         discharge_target_soc: 10.0,
+        discharge_target_soc_2: 10.0,
     }
 }
 
@@ -160,7 +162,9 @@ fn schedule_roundtrip_preserves_all_fields() {
         discharge_start_2: 0.0,
         discharge_end_2: 0.0,
         charge_target_soc: 90.0,
+        charge_target_soc_2: 85.0,
         discharge_target_soc: 15.0,
+        discharge_target_soc_2: 20.0,
     };
     let json = serde_json::to_string(&sched).unwrap();
     let restored: Schedule = serde_json::from_str(&json).unwrap();
@@ -173,7 +177,9 @@ fn schedule_roundtrip_preserves_all_fields() {
     assert_eq!(restored.discharge_start_2, 0.0);
     assert_eq!(restored.discharge_end_2, 0.0);
     assert_eq!(restored.charge_target_soc, 90.0);
+    assert_eq!(restored.charge_target_soc_2, 85.0);
     assert_eq!(restored.discharge_target_soc, 15.0);
+    assert_eq!(restored.discharge_target_soc_2, 20.0);
 }
 
 // ===========================================================================

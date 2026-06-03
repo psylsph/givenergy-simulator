@@ -621,7 +621,17 @@ impl RegisterStore {
         // Charge target SOC (HR 116)
         self.write(116, schedule.charge_target_soc as u16);
 
-        // Internal schedule registers (HR 700-709)
+        // Per-slot target SOC registers (Gen3 extended)
+        // HR 242: CHARGE_TARGET_SOC_1 (slot 1)
+        // HR 245: CHARGE_TARGET_SOC_2 (slot 2)
+        // HR 272: DISCHARGE_TARGET_SOC_1 (slot 1)
+        // HR 275: DISCHARGE_TARGET_SOC_2 (slot 2)
+        self.write(242, schedule.charge_target_soc as u16);
+        self.write(245, schedule.charge_target_soc_2 as u16);
+        self.write(272, schedule.discharge_target_soc as u16);
+        self.write(275, schedule.discharge_target_soc_2 as u16);
+
+        // Internal schedule registers (HR 700-711)
         self.write(700, cs1_start);
         self.write(701, cs1_end);
         self.write(702, ds1_start);
@@ -632,6 +642,9 @@ impl RegisterStore {
         self.write(707, cs2_end);
         self.write(708, ds2_start);
         self.write(709, ds2_end);
+        // HR 710-711: per-slot target SOCs
+        self.write(710, schedule.charge_target_soc_2 as u16);
+        self.write(711, schedule.discharge_target_soc_2 as u16);
     }
 
     /// Iterator over all definitions.

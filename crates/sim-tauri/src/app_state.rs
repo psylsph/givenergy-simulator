@@ -115,6 +115,8 @@ pub struct ScheduleDto {
     pub enable_charge: bool,
     pub soc_reserve: f64,
     pub charge_target_soc: f64,
+    pub charge_target_soc_2: f64,
+    pub discharge_target_soc_2: f64,
     pub charge_slot_1_start: u16,
     pub charge_slot_1_end: u16,
     pub charge_slot_2_start: u16,
@@ -144,7 +146,7 @@ impl ScheduleDto {
             h * 100 + m
         };
 
-        let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct, _dt) = match schedule {
+        let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct1, ct2, dt1, dt2) = match schedule {
             Some(s) => (
                 s.charge_start,
                 s.charge_end,
@@ -155,16 +157,22 @@ impl ScheduleDto {
                 s.discharge_start_2,
                 s.discharge_end_2,
                 s.charge_target_soc,
+                s.charge_target_soc_2,
                 s.discharge_target_soc,
+                s.discharge_target_soc_2,
             ),
-            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 10.0),
+            None => (
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 10.0, 10.0,
+            ),
         };
 
         Self {
             enable_charge: cs != ce || cs2 != ce2,
             enable_discharge: ds != de || ds2 != de2,
             soc_reserve: state.min_aggregate_soc(),
-            charge_target_soc: ct,
+            charge_target_soc: ct1,
+            charge_target_soc_2: ct2,
+            discharge_target_soc_2: dt2,
             charge_slot_1_start: hhmm(cs),
             charge_slot_1_end: hhmm(ce),
             charge_slot_2_start: hhmm(cs2),

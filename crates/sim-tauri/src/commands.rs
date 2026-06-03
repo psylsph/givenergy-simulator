@@ -320,7 +320,7 @@ fn hhmm_to_hours(val: u16) -> Option<f64> {
 
 /// Check if a register address is a schedule-related holding register.
 fn is_schedule_register(addr: u16) -> bool {
-    matches!(addr, 31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116)
+    matches!(addr, 31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116 | 242 | 245 | 272 | 275)
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +519,22 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&116) {
                                 sched.charge_target_soc = v as f64;
                             }
+                            // Charge target SOC slot 1 per-slot (HR 242)
+                            if let Some(&v) = sched_updates.get(&242) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            // Charge target SOC slot 2 per-slot (HR 245)
+                            if let Some(&v) = sched_updates.get(&245) {
+                                sched.charge_target_soc_2 = v as f64;
+                            }
+                            // Discharge target SOC slot 1 per-slot (HR 272)
+                            if let Some(&v) = sched_updates.get(&272) {
+                                sched.discharge_target_soc = v as f64;
+                            }
+                            // Discharge target SOC slot 2 per-slot (HR 275)
+                            if let Some(&v) = sched_updates.get(&275) {
+                                sched.discharge_target_soc_2 = v as f64;
+                            }
                             // Enable charge (HR 96) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&96) {
                                 if v == 0 {
@@ -672,6 +688,22 @@ pub async fn start_simulation(
                             // Charge target SOC (HR 116)
                             if let Some(&v) = sched_updates.get(&116) {
                                 sched.charge_target_soc = v as f64;
+                            }
+                            // Charge target SOC slot 1 per-slot (HR 242)
+                            if let Some(&v) = sched_updates.get(&242) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            // Charge target SOC slot 2 per-slot (HR 245)
+                            if let Some(&v) = sched_updates.get(&245) {
+                                sched.charge_target_soc_2 = v as f64;
+                            }
+                            // Discharge target SOC slot 1 per-slot (HR 272)
+                            if let Some(&v) = sched_updates.get(&272) {
+                                sched.discharge_target_soc = v as f64;
+                            }
+                            // Discharge target SOC slot 2 per-slot (HR 275)
+                            if let Some(&v) = sched_updates.get(&275) {
+                                sched.discharge_target_soc_2 = v as f64;
                             }
                             // Enable charge (HR 96) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&96) {
