@@ -1083,7 +1083,7 @@ pub async fn save_plant(app: AppHandle, state: State<'_, AppState>) -> Result<()
 /// The exported file can be loaded by `giv-sim serve <path> --modbus <addr>`.
 #[tauri::command]
 pub async fn export_config(
-    app: AppHandle,
+    _app: AppHandle,
     state: State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
