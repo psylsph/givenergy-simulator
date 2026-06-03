@@ -12,11 +12,11 @@
 
 </div>
 
-<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="psylsph" data-color="#5F7FFF" data-emoji=""  data-font="Cookie" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#ffffff" data-coffee-color="#FFDD00" ></script>
-
-
 A digital twin of a GivEnergy solar PV + battery storage system. Model your Gen3 Hybrid or AC Coupled inverter with up to 3 battery modules, realistic solar generation, household load profiles, and Modbus integration — all running locally on your machine.
 
+## Screenshot
+
+![GivEnergy Plant Simulator Dashboard](docs/screenshot.png)
 
 ## What It Does
 
@@ -194,12 +194,16 @@ cargo test -p sim-core -- battery_balancing
 
 Full design docs live in [`docs/`](docs/) — architecture, state model, register strategy, Modbus protocol, IPC contracts, engine designs, and roadmap.
 
+## Credits
+
+This project would not exist without the pioneering reverse-engineering work of the GivEnergy open-source community.
+
+- **[GivTCP](https://github.com/GivEnergy/giv_tcp)** — The original GivEnergy Modbus integration for Home Assistant. This project established the core Modbus protocol mapping, register addresses, and write methodology that this app builds on. Without GivTCP, none of this would be possible.
+
+- **[givenergy-modbus](https://github.com/dewet22/givenergy-modbus)** — The definitive Python reference library for the GivEnergy Modbus protocol. Its detailed register map, frame format documentation, and working reference implementation were invaluable in getting the protocol right — especially the write protocol (function code 6, device address 0x11) and the HHMM timeslot encoding.
+
+Both projects are open-source and available on GitHub. If you find this app useful, consider giving them a star too ⭐
+
 ## License
 
 MIT
-
-<div align="center">
-
-<a href="https://www.buymeacoffee.com/psylsph" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-blue.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
-
-</div>
