@@ -195,7 +195,10 @@ impl RegisterStore {
                 // IR 30: Grid power (signed, +exporting/-importing per GE convention)
                 "ge_ir_grid_power" => {
                     // Negate: our internal has positive=import, GE wire has positive=export
-                    self.values.insert(key, (-state.grid.power_w) as i16 as u16);
+                    // Clamp to i16 range to avoid panic on saturating cast
+                    let negated = -state.grid.power_w;
+                    let clamped = negated.clamp(-32768.0, 32767.0);
+                    self.values.insert(key, clamped as i16 as u16);
                     continue;
                 }
                 // IR 35: Consumption today (×0.1 kWh)
@@ -505,7 +508,9 @@ impl RegisterStore {
                 "pv_energy_today" => Some(state.energy_totals.solar_generation_kwh),
                 "pv_peak_capacity" => Some(state.config.solar_peak_watts),
                 "grid_power" => {
-                    self.values.insert(key, state.grid.power_w as i16 as u16);
+                    // Clamp to i16 range to avoid panic on saturating cast
+                    let clamped = state.grid.power_w.clamp(-32768.0, 32767.0);
+                    self.values.insert(key, clamped as i16 as u16);
                     continue;
                 }
                 "grid_voltage" => Some(240.0),
