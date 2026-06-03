@@ -678,7 +678,7 @@ async fn serve_config(
     let cfg: PlantConfig = serde_json::from_str(&json)?;
 
     let mut state = cfg.plant;
-    let schedule_opt = cfg.schedule;
+    let mut schedule_opt = cfg.schedule;
     state.config.tick_interval_secs = tick_interval;
 
     let peak_watts = state.config.solar_peak_watts;
@@ -742,10 +742,105 @@ async fn serve_config(
     let start = std::time::Instant::now();
 
     loop {
+        // Phase 1: drain Modbus write commands, collecting schedule registers
+        let mut sched_updates: std::collections::HashMap<u16, u16> =
+            std::collections::HashMap::new();
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+            if is_schedule_register(cmd.address) {
+                sched_updates.insert(cmd.address, cmd.value);
+            } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                 engine.enqueue(sim_cmd);
             }
+        }
+
+        // Phase 2: apply schedule updates
+        if !sched_updates.is_empty() {
+            let mut sched = schedule_opt.clone().unwrap_or_default();
+            // Charge slot 1 (HR 94-95)
+            if let Some(&v) = sched_updates.get(&94) {
+                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&95) {
+                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            // Charge slot 2 (HR 31-32)
+            if let Some(&v) = sched_updates.get(&31) {
+                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&32) {
+                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            // Discharge slot 1 (HR 56-57)
+            if let Some(&v) = sched_updates.get(&56) {
+                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&57) {
+                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            // Discharge slot 2 (HR 44-45)
+            if let Some(&v) = sched_updates.get(&44) {
+                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&45) {
+                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            // Per-slot target SOCs
+            if let Some(&v) = sched_updates.get(&242) {
+                sched.charge_target_soc = v as f64;
+            }
+            if let Some(&v) = sched_updates.get(&245) {
+                sched.charge_target_soc_2 = v as f64;
+            }
+            if let Some(&v) = sched_updates.get(&272) {
+                sched.discharge_target_soc = v as f64;
+            }
+            if let Some(&v) = sched_updates.get(&275) {
+                sched.discharge_target_soc_2 = v as f64;
+            }
+            // Enable/disable charge (HR 96)
+            if let Some(&v) = sched_updates.get(&96) {
+                if v == 0 {
+                    sched.charge_start = 0.0;
+                    sched.charge_end = 0.0;
+                }
+            }
+            // Enable/disable discharge (HR 59)
+            if let Some(&v) = sched_updates.get(&59) {
+                if v == 0 {
+                    sched.discharge_start = 0.0;
+                    sched.discharge_end = 0.0;
+                }
+            }
+            // TPH mirrors
+            if let Some(&v) = sched_updates.get(&1111) {
+                sched.charge_target_soc = v as f64;
+            }
+            if let Some(&v) = sched_updates.get(&1113) {
+                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1114) {
+                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1115) {
+                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1116) {
+                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1118) {
+                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1119) {
+                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1120) {
+                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            if let Some(&v) = sched_updates.get(&1121) {
+                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+            }
+            engine.enqueue(Command::SetSchedule(sched.clone()));
+            schedule_opt = Some(sched);
         }
 
         engine.tick();
@@ -818,4 +913,28 @@ async fn serve_config(
     }
 
     Ok(())
+}
+
+/// Check if a register address is a schedule-related holding register.
+fn is_schedule_register(addr: u16) -> bool {
+    matches!(
+        addr,
+        31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
+            | 242 | 245 | 272 | 275
+            | 1109 | 1111 | 1113..=1116 | 1118..=1121
+    )
+}
+
+/// Convert HHMM register value to decimal hours.
+/// Returns None for disabled (60) or invalid values.
+fn hhmm_to_hours(val: u16) -> Option<f64> {
+    if val == 60 {
+        return None;
+    }
+    let hours = val / 100;
+    let mins = val % 100;
+    if mins > 59 || hours > 23 {
+        return None;
+    }
+    Some(hours as f64 + mins as f64 / 60.0)
 }

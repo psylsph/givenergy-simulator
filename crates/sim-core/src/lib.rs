@@ -1999,6 +1999,47 @@ mod tests {
         assert_eq!(state.inverter.mode_state.effective, InverterMode::Normal);
     }
 
+    #[test]
+    fn eco_mode_charges_during_charge_slot() {
+        let mut sched = Schedule::default();
+        sched.charge_start = 2.0;
+        sched.charge_end = 6.0;
+        sched.charge_target_soc = 100.0;
+
+        let mut state = PlantState::new(ts(4));
+        state.inverter.mode_state.set_user(InverterMode::Eco);
+        state.batteries[0].soc_percent = 30.0;
+        state.sync_battery_from_vec();
+
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(ScheduleEngine::new(sched)),
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(crate::EnergyTracker::new()),
+        ];
+        let mut engine = SimulationEngine::new(state, devices, 60);
+
+        let soc_before = engine.state.aggregate_soc();
+        engine.tick();
+        let soc_after = engine.state.aggregate_soc();
+
+        assert!(
+            engine.state.scheduled_charge,
+            "Schedule should have set scheduled_charge=true at hour 4 inside window 2-6"
+        );
+        assert!(
+            soc_after > soc_before,
+            "Battery should charge: before={soc_before:.1}% after={soc_after:.1}%"
+        );
+        assert!(
+            engine.state.grid.power_w > 0.0,
+            "Grid should be importing during charge slot, got {}W",
+            engine.state.grid.power_w
+        );
+    }
+
     // --- Aging Model ---
 
     #[test]
