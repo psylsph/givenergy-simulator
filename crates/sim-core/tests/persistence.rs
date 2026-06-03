@@ -144,10 +144,10 @@ fn old_format_fallback_logic_works() {
 // ===========================================================================
 
 #[test]
-fn schedule_default_has_charge_slot_midnight_to_0530() {
+fn schedule_default_disabled() {
     let sched = Schedule::default();
     assert_eq!(sched.charge_start, 0.0);
-    assert_eq!(sched.charge_end, 5.5);
+    assert_eq!(sched.charge_end, 0.0);
     assert_eq!(sched.discharge_start, 0.0);
     assert_eq!(sched.discharge_end, 0.0);
 }

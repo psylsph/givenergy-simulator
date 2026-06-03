@@ -591,7 +591,7 @@ impl Default for Schedule {
     fn default() -> Self {
         Self {
             charge_start: 0.0,
-            charge_end: 5.5, // 05:30
+            charge_end: 0.0, // disabled
             discharge_start: 0.0,
             discharge_end: 0.0,
             charge_start_2: 0.0,
