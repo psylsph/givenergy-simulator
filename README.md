@@ -18,25 +18,11 @@ A digital twin of a GivEnergy solar PV + battery storage system. Model your Gen3
 
 ![GivEnergy Plant Simulator Dashboard](docs/screenshot.png)
 
-## Features
-
-- **Simulates a full GivEnergy plant** — inverter, batteries, solar PV, grid connection, and household load
-- **Real-time dashboard** — energy flow diagram, battery SOC gauge, power timeline, cumulative kWh totals
-- **Hardware-accurate Modbus protocol** — speaks the proprietary GivEnergy data-adapter framing, compatible with real client apps
-- **12 inverter types** — Gen 1 Hybrid, Gen3 Hybrid (5/8/10 kW), AC Coupled (Mk1/Mk2), Three Phase, All-in-One (5/6/8/10 kW) with correct datasheet power limits
-- **Dual PV arrays** — independent PV1 and PV2 with 45/55 power split
-- **Up to 3 battery modules** — each with independent SOC, SOH, capacity, and thermal behaviour
-- **5 inverter modes** — Normal, Eco, Force Charge, Force Discharge, Export Limit
-- **Timed schedules** — charge/discharge windows with SOC targets, midnight-wrapping support
-- **Manual overrides** — pin solar generation or load demand to fixed wattages for testing
-- **Fault injection** — simulate grid loss, inverter trips, battery over-temperature
-- **Weather simulation** — Clear, Partly Cloudy, Overcast, Rain, Storm irradiance profiles
-- **Save and restore** — persist plant state to disk, reload with all settings intact
-- **Headless CLI** — run scripted scenarios with assertions for automated testing
-
 ---
 
-## Quick Start — Desktop GUI
+## Quick Start
+
+### Desktop GUI
 
 ```bash
 # Install frontend dependencies (first time only)
@@ -48,7 +34,7 @@ cd crates/sim-tauri && cargo tauri dev
 
 > **Prerequisites:** `cargo install tauri-cli` and on Linux: `sudo apt install libwebkit2gtk-4.1-dev`
 
-## Quick Start — Headless CLI
+### Headless CLI
 
 ```bash
 # Run a built-in scenario
@@ -57,85 +43,126 @@ cargo run --bin sim-api -- run examples/basic_day.yaml
 # With Modbus server (connect your GivEnergy client)
 cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020
 
-# Multi-battery
-cargo run --bin sim-api -- run examples/basic_day.yaml --battery-count 3
-
-# Export results (JSON Lines, CSV, JUnit XML, JSON report)
-cargo run --bin sim-api -- run examples/grid_outage.yaml --output /tmp/results
+# Multi-battery, export results
+cargo run --bin sim-api -- run examples/basic_day.yaml --battery-count 3 --output /tmp/results
 ```
 
 ---
 
-## Using the GUI
+## GUI — Step by Step
 
-### Creating a Plant
+### 1. Creating a Plant
 
-1. **Choose an inverter type** from the dropdown — ordered by model series (Gen 1, Gen3, AC Coupled, Three Phase, All-in-One). Each type has correct AC and battery power limits from official datasheets.
-2. **Set battery modules** — 1 to 3 modules. Select capacity for each (2.6–19.0 kWh).
-3. **Adjust SOH** — the State of Health slider per module (50–100%). A 9.5 kWh module at 80% SOH behaves as 7.6 kWh.
-4. **Set solar peak** — total peak solar capacity in watts. If you set PV2 peak, generation splits across two arrays (45% PV1 / 55% PV2).
-5. **Pick a load profile** — Minimal, Family, EV, HeatPump, or Custom.
-6. **Choose weather** — Clear, Partly Cloudy, Overcast, Rain, or Storm.
-7. Click **Create Plant**. The simulation starts immediately.
+Click **Create Plant** on the setup screen. The defaults (1 battery, 5 kW solar, family load, clear weather, Gen3 Hybrid) give you a working system out of the box.
 
-### Dashboard
+If you want to customise before starting:
 
-The main display shows:
+**Inverter Type**
+Choose from 12 supported models — Gen 1 Hybrid, Gen3 Hybrid (5/8/10 kW), AC Coupled (Mk1/Mk2), Three Phase, All-in-One (5/6/8/10 kW). Each has correct AC output and battery charge/discharge limits from official GivEnergy datasheets. The dropdown is ordered by device type code (DTC) hex value.
 
-- **Energy flow diagram** — animated power flows between Solar, Battery, Grid, and Load with live wattage labels.
-- **Battery SOC gauge** — colour-coded charge level for each module.
-- **Power timeline** — scrolling chart of solar, load, battery, and grid power over time.
-- **Cumulative kWh cards** — total import, export, solar generation, consumption, charge, and discharge.
+**Battery Modules**
+Pick 1 to 3 modules. For each module:
+- **Capacity** — select from standard GivEnergy sizes: 2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0 kWh.
+- **SOH (State of Health)** — drag the slider from 50% to 100%. This reduces effective capacity: a 9.5 kWh battery at 80% SOH behaves as 7.6 kWh. The nominal (nameplate) capacity is still shown for reference.
 
-### Controlling the Simulation
+**Solar Peak**
+Total wattage of your PV array. If you set a PV2 peak wattage, the simulator splits generation across two arrays (45% PV1 / 55% PV2) and shows them independently.
+
+**Load Profile**
+Select a household consumption pattern:
+- **Minimal** — low baseline around 300W
+- **Family** — morning peak, afternoon dip, evening peak around 3 kW
+- **EV** — Family profile plus overnight EV charging
+- **HeatPump** — Family plus a steady heat pump load
+- **Custom** — define your own (hour, watts) points
+
+**Weather**
+Choose Clear, Partly Cloudy, Overcast, Rain, or Storm. This directly controls solar irradiance — you can change it mid-simulation to see how your system responds to a cloudy afternoon.
+
+**PV2 Peak**
+Optional. Set to 0 (default) for a single PV array, or enter peak watts for a second array. Both arrays share the solar peak you set above using the 45/55 split.
+
+Click **Create Plant** once all settings are configured. The simulation starts immediately.
+
+### 2. Dashboard
+
+The main panel has four areas:
+
+**Energy Flow Diagram**
+Shows live power flowing between Solar, Battery, Grid, and Load. Arrows move in the direction of power flow and display the current wattage. If solar exceeds load, the excess flows to the battery (or grid when the battery is full). If load exceeds solar, the deficit comes from the battery or grid.
+
+**Battery Modules Panel**
+One card per battery module, showing:
+- **SOC %** — state of charge, colour-coded green (>50%), yellow (20–50%), red (<20%)
+- **SOC Gauge** — horizontal bar, live updating
+- **Set SOC** — drag the range slider to manually set the battery charge level. The label updates as you drag.
+- **Power** — current charge/discharge rate in kW, shown as "Charging", "Discharging", or "Idle"
+- **Voltage, Current, Temp** — live readings per module
+- **Capacity** — effective / nominal kWh (e.g. "7.6 / 9.5 kWh"). Effective is reduced by SOH.
+- **SoH** — current state of health percentage
+- **Cycles** — accumulated charge/discharge cycle count
+
+**Power Timeline**
+A scrolling line chart with four traces: Solar (yellow), Load (orange), Battery (green when charging, red when discharging), Grid (blue when importing, red when exporting).
+
+**Cumulative kWh Cards**
+Five cards showing totals since the simulation started:
+- Solar generated
+- Load consumed
+- Grid imported / exported
+- Battery charged / discharged
+
+### 3. Sidebar Controls
 
 | Control | What it does |
 |---------|-------------|
-| **Pause / Resume** | Freeze or unfreeze the simulation clock. |
-| **Reset** | Destroy the current plant and return to the setup screen. |
-| **Tick speed** | How fast simulated time advances (e.g. 1s real = 1min sim). |
-| **Inverter mode** | Switch between Normal, Eco, Force Charge, Force Discharge, Export Limit at any time. |
-| **Weather** | Change weather conditions on the fly — solar output adjusts immediately. |
-| **Solar override** | Pin solar generation to a fixed wattage (works even at night). Set to 0 or clear to restore automatic. |
-| **Load override** | Pin household demand to a fixed wattage. Set to 0 or clear to restore the load profile. |
-| **Export limit** | Cap grid export in watts (used with Export Limit mode). |
+| **Pause / Resume** | Freeze or unfreeze the simulation clock. Battery temperature continues to drift while paused (passive cooling). |
+| **Reset** | Stop the simulation and return to the setup screen. |
+| **Tick speed** | How fast simulated time advances. E.g. set to 60 and 1 real second = 1 simulation minute. |
+| **Inverter mode** | Switch operating mode mid-simulation. See "Inverter Modes" below for what each does. |
+| **Weather** | Change conditions on the fly. Solar output adjusts immediately — try switching to Rain mid-day. |
+| **Solar override** | Pin solar generation to a fixed wattage. Enter 0 to disable solar entirely. Works at night too — the override bypasses the normal solar calculation entirely. Clear the field to restore automatic generation. |
+| **Load override** | Pin household demand to a fixed wattage. Enter 0 for no load. Clear to restore the load profile. |
+| **Export limit** | Cap how much power you send to the grid. Used with Export Limit mode, but also caps export in Normal/Eco. |
 
-### Schedules
+### 4. Schedules
 
-Set timed charge or discharge windows:
+Set timed charge or discharge windows that automatically switch the inverter mode:
 
-- **Enable charge / discharge** — toggle the schedule on or off.
-- **Start / End time** — use HH:MM format (e.g. `02:00` to `05:00` for a 3-hour window).
-- **Target SOC** — charge target (e.g. charge to 100%) or discharge target (e.g. discharge to 10%).
-- When active, the inverter mode automatically switches to Force Charge or Force Discharge during the window.
+1. Toggle **Enable charge** or **Enable discharge**.
+2. Set a **Start** and **End** time in HHMM format (e.g. 200 for 02:00, 530 for 05:30, 1430 for 14:30).
+3. Set a **Target SOC** — for charge, the battery charges until it reaches this percentage. For discharge, it discharges down to this percentage.
+4. When the clock enters the window, the inverter switches to Force Charge or Force Discharge automatically. When the window ends, it returns to the previously selected mode.
 
-### Fault Injection
+### 5. Fault Injection
 
-Click the fault buttons to inject failures:
+Test how the system handles failures without damaging real hardware:
 
-- **Grid Loss** — disconnects the grid, no import or export possible.
-- **Inverter Trip** — shuts down the inverter, all power flow stops.
-- **Battery Over-Temp** — forces battery temperature above safe threshold, triggers derating then shutdown.
+- **Inject Grid Loss** — the grid disconnects. No import or export possible. Solar powers load and battery only; excess is curtailed.
+- **Inject Inverter Trip** — the inverter shuts down completely. All power flow stops.
+- **Inject Battery Over-Temp** — forces battery temperature above the safe threshold. The battery derates (limited output) above 45°C and shuts down above 55°C.
 
-Click the corresponding **Clear** button to resolve the fault.
+Click **Clear** next to each fault button to resolve it. The system recovers automatically.
 
-### Save and Load
+### 6. Save and Load
 
-- **Save** — writes the current plant state (all settings, SOC, energy totals, schedule config) to `~/.local/share/com.givenergy.simulator/plant_state.json`.
-- **Load** — restores a previously saved plant. All sidebar controls (dropdowns, sliders, overrides) are restored to their saved values.
+- **Save** — writes the full plant state (all settings, SOC, SOH, energy totals, schedule config) to `~/.local/share/com.givenergy.simulator/plant_state.json`.
+- **Load** — restores a previously saved plant. All sidebar settings (inverter type, battery config, overrides, sliders) are restored to their saved values.
 
-### Connecting a Modbus Client
+> Tip: after a save, you can close the app and reopen — your plant will be exactly where you left it.
 
-The simulator speaks the real GivEnergy Modbus protocol. Any app that connects to a GivEnergy Wi-Fi dongle can connect to the simulator instead.
+### 7. Connecting a Modbus Client
 
-1. Start the simulator with the Modbus server enabled:
+The simulator speaks the real GivEnergy Modbus protocol — not standard Modbus TCP. Any app that connects to a GivEnergy Wi-Fi dongle can connect to the simulator instead.
+
+1. Start the CLI with the Modbus server enabled:
    ```bash
    cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020
    ```
 2. Point your GivEnergy client app at `127.0.0.1:5020`.
 3. The client reads live registers (SOC, power, voltage, energy totals) and writes configuration (mode, schedules, SOC limits) just like a real inverter.
 
-The server handles:
+Protocol details:
 - **Read Input Registers** (fn 0x04, slave 0x32) — live readings
 - **Read Holding Registers** (fn 0x03, slave 0x32) — configuration
 - **Write Single Register** (fn 0x06, slave 0x11) — write commands that dispatch to the simulation engine
@@ -143,7 +170,7 @@ The server handles:
 
 ---
 
-## Using the CLI
+## CLI — Scenarios and Testing
 
 ### Running Scenarios
 
@@ -164,46 +191,47 @@ date: 2025-06-21
     soc_lt: 80
 ```
 
-Each time entry can set `load`, `solar`, `mode`, `weather`, `fault`, `clear_fault`, `export_limit`, and/or `expect` assertions.
+Each time entry can set `load`, `solar`, `mode`, `weather`, `fault`, `clear_fault`, `export_limit`, and/or `expect` assertions. All times are HH:MM.
 
 ### Available Assertions
 
-| Assertion | Checks |
-|-----------|--------|
-| `soc_gt` / `soc_lt` | Battery SOC above/below a percentage |
-| `solar_gt` / `solar_lt` | Solar generation above/below watts |
-| `grid_connected` | Grid connected (1) or disconnected (0) |
-| `grid_import_gt` | Grid import above watts |
-| `grid_export_gt` | Grid export above watts |
-| `battery_charging` | Battery is charging (true/false) |
-| `no_faults` | No active faults |
-| `fault_active` | Named fault is active |
-| `solar_kwh_gt` | Cumulative solar generation above kWh |
-| `grid_export_kwh_gt` | Cumulative grid export above kWh |
-| `grid_import_kwh_gt` | Cumulative grid import above kWh |
-| `load_kwh_gt` | Cumulative load consumption above kWh |
+```
+soc_gt / soc_lt          Battery SOC above/below a percentage
+solar_gt / solar_lt      Solar generation above/below watts
+grid_connected           Grid connected (1) or disconnected (0)
+grid_import_gt           Grid import above watts
+grid_export_gt           Grid export above watts
+battery_charging         Battery is charging (true/false)
+no_faults                No active faults
+fault_active <name>      Named fault is active
+solar_kwh_gt             Cumulative solar generation above kWh
+grid_export_kwh_gt       Cumulative grid export above kWh
+grid_import_kwh_gt       Cumulative grid import above kWh
+load_kwh_gt              Cumulative load consumption above kWh
+```
+
+If any assertion fails, the CLI exits with code 1 (CI-friendly).
 
 ### Multi-Day Scenarios
 
-Add `days: N` to repeat events daily. Events fire at the same time each day, with the simulation clock advancing through each day in sequence.
+Add `days: N` to repeat events daily. Events fire at the same time each day; the simulation clock advances through each day in sequence.
 
 ### Output Formats
 
-When using `--output <dir>`, the CLI writes:
+With `--output <dir>`:
 
 - **JSON Lines** — one frame per tick (`recording.jsonl`)
 - **CSV** — energy trace (`trace.csv`)
 - **JUnit XML** — assertion results for CI (`report.xml`)
 - **JSON report** — summary with per-assertion pass/fail (`report.json`)
 
-### CLI Flags
+### CLI Reference
 
 ```
 giv-sim run <scenario.yaml> [options]
 
-Options:
   --date YYYY-MM-DD       Simulation start date (default: today)
-  --battery-count N       Number of battery modules 1-3 (default: 1)
+  --battery-count N       Number of battery modules, 1-3 (default: 1)
   --modbus ADDR:PORT      Start Modbus TCP server for client connections
   --output DIR            Write output files to directory
   --tick-interval MS      Real-time tick interval in milliseconds (default: 100)
@@ -213,10 +241,10 @@ Options:
 
 ## Inverter Types
 
-All 12 supported inverter types with correct power limits:
+All 12 supported inverter types with correct power limits from official datasheets:
 
-| Inverter | Device Code | AC Max | Battery Limit |
-|----------|-------------|--------|---------------|
+| Inverter | DTC | AC Max | Battery Limit |
+|----------|-----|--------|---------------|
 | Gen 1 Hybrid | 0x1001 | 5,000W | 2,500W |
 | Gen3 Hybrid | 0x2001 | 5,000W | 3,600W |
 | Gen3 Hybrid 8kW | 0x2101 | 8,000W | 8,000W |
@@ -230,31 +258,42 @@ All 12 supported inverter types with correct power limits:
 | AIO 8kW | 0x8102 | 8,000W | 8,000W |
 | AIO 10kW | 0x8103 | 10,000W | 10,000W |
 
-Battery charge and discharge is capped by both the battery C-rate and the inverter's battery limit.
+Battery charge and discharge is capped by both the battery C-rate and the inverter's battery limit — whichever is lower.
 
-## Inverter Modes
+### Inverter Modes
 
-| Mode | Behaviour |
-|------|-----------|
-| **Normal** | Solar powers load first, excess charges battery, remainder exports to grid. Deficit draws from battery, then grid. |
+| Mode | What it does |
+|------|-------------|
+| **Normal** | Solar powers the house first. Excess charges the battery. Leftover exports to grid. If solar < load, battery discharges, then grid imports. |
 | **Eco** | Same as Normal — solar excess charges battery before export. |
-| **Force Charge** | Grid charges battery at max rate until target SOC. Solar surplus assists. |
-| **Force Discharge** | Battery discharges at max rate to grid/load. |
-| **Export Limit** | Like Normal but caps grid export at a configurable wattage. |
+| **Force Charge** | Forces the battery to charge at maximum rate (from solar plus grid) until the target SOC is reached. Use with a schedule to charge overnight at cheap rates. |
+| **Force Discharge** | Forces the battery to discharge at maximum rate to supply load and export to grid until the reserve is reached. |
+| **Export Limit** | Like Normal but caps grid export at the configured wattage (see Export Limit control). Excess solar that can't be exported is curtailed. |
+
+---
 
 ## Load Profiles
 
-| Profile | Description |
-|---------|-------------|
-| **Minimal** | Low baseline ~300W |
-| **Family** | Morning peak, afternoon dip, evening peak ~3 kW |
-| **EV** | Family + overnight EV charging |
-| **HeatPump** | Family + steady heat pump load |
-| **Custom** | Define your own `(hour, watts)` points |
+| Profile | Pattern |
+|---------|---------|
+| **Minimal** | Low baseline ~300W, good for holidays or empty house |
+| **Family** | Morning peak (breakfast), afternoon dip, evening peak (dinner/TV) ~3 kW |
+| **EV** | Family plus overnight EV charging block (22:00–06:00) |
+| **HeatPump** | Family plus steady heat pump load through winter months |
+| **Custom** | Define your own hourly wattage points for testing specific scenarios |
+
+---
 
 ## Battery Module Configuration
 
-Select from standard GivEnergy module sizes: 2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0 kWh. Each module's SOH slider adjusts effective capacity — a 9.5 kWh module at 80% SOH behaves as 7.6 kWh.
+Each module tracks these internal properties:
+
+- **SOC** (state of charge) — percentage, clamped to configurable min/max
+- **SOH** (state of health) — degrades with charge cycles, reduces effective capacity. Set at creation via slider; further reduced by cycling.
+- **Temperature** — rises during charge/discharge, passive cooling towards ambient. Derates output above 45°C, shuts down above 55°C.
+- **C-rate** — charge/discharge rate relative to capacity. Default max is 0.3C (e.g. 30% of capacity per hour).
+
+Power is distributed evenly across modules. The inverter's battery power limit caps the total regardless of how much battery headroom exists.
 
 ---
 
@@ -273,25 +312,11 @@ Select from standard GivEnergy module sizes: 2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0
 └─────────────────────────────────────────────────────────┘
 ```
 
-Full architecture diagram: [`docs/architecture-diagram.md`](docs/architecture-diagram.md)
-
 The engine runs a deterministic tick loop. Each tick advances the simulation clock and processes all device models in a fixed order:
 
 ```
 Schedule → Solar → Load → Inverter → Faults → Battery → Energy Tracker
 ```
-
-### Battery Model
-
-Each battery module tracks:
-
-- **SOC** (state of charge) — percentage, clamped to configurable min/max
-- **SOH** (state of health) — degrades with charge cycles, reduces effective capacity
-- **Temperature** — rises during charge/discharge, passive cooling towards ambient, derates above 45°C, shuts down above 55°C
-- **Efficiency** — configurable charge/discharge efficiency (default 95%)
-- **Power limits** — C-rate based, capped by inverter DC power rating
-
-Power is distributed evenly across modules. The inverter's `max_ac_watts` caps the total charge or discharge rate regardless of battery capability.
 
 ### Modbus Protocol
 
@@ -299,9 +324,9 @@ The simulator implements the GivEnergy proprietary Modbus framing — not standa
 
 Register map covers:
 
-- **Input registers** (0–59): live readings — PV voltage/current/power, grid power, battery SOC/voltage/current/temperature, energy totals
-- **Holding registers** (0–320): configuration — inverter mode, charge/discharge slots, SOC limits, battery pause mode
-- **Internal registers** (100–705): extended simulator state — per-module battery details, PV parameters, grid stats, energy totals, schedule config
+- **Input registers** (0–59) — live readings: PV voltage/current/power, grid power, battery SOC/voltage/current/temperature, energy totals
+- **Holding registers** (0–320) — configuration: inverter mode, charge/discharge slots, SOC limits, battery pause mode
+- **Internal registers** (100–705) — extended simulator state: per-module battery details, PV parameters, grid stats, energy totals, schedule config
 
 ---
 
@@ -325,10 +350,10 @@ ui/               — Web frontend (Vite + vanilla JS)
 ## Building and Testing
 
 ```bash
-# Run the full test suite (211 tests)
+# Full test suite (211 tests)
 cargo test
 
-# Build everything (except sim-tauri which needs GTK deps)
+# Build all crates (sim-tauri excluded — needs GTK deps)
 cargo build --workspace --exclude sim-tauri
 
 # Run a single test
@@ -347,9 +372,9 @@ Full design docs live in [`docs/`](docs/) — architecture, state model, registe
 
 This project would not exist without the pioneering reverse-engineering work of the GivEnergy open-source community.
 
-- **[GivTCP](https://github.com/GivEnergy/giv_tcp)** — The original GivEnergy Modbus integration for Home Assistant. This project established the core Modbus protocol mapping, register addresses, and write methodology that this app builds on. Without GivTCP, none of this would be possible.
+- **[GivTCP](https://github.com/GivEnergy/giv_tcp)** — The original GivEnergy Modbus integration for Home Assistant. This project established the core Modbus protocol mapping, register addresses, and write methodology that this app builds on.
 
-- **[givenergy-modbus](https://github.com/dewet22/givenergy-modbus)** — The definitive Python reference library for the GivEnergy Modbus protocol. Its detailed register map, frame format documentation, and working reference implementation were invaluable in getting the protocol right — especially the write protocol (function code 6, device address 0x11) and the HHMM timeslot encoding.
+- **[givenergy-modbus](https://github.com/dewet22/givenergy-modbus)** — The definitive Python reference library for the GivEnergy Modbus protocol. Its detailed register map, frame format documentation, and working reference implementation were invaluable.
 
 Both projects are open-source and available on GitHub. If you find this app useful, consider giving them a star too ⭐
 
