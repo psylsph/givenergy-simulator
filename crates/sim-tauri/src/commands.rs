@@ -439,12 +439,13 @@ pub async fn start_simulation(
                         }
 
                         // Drain and apply Modbus write commands before tick
+                        // Phase 1: collect under sync MutexGuards (no .await allowed)
+                        let mut sched_dirty = false;
+                        let mut sched_updates: std::collections::HashMap<u16, u16> =
+                            std::collections::HashMap::new();
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                    let mut sched_dirty = false;
-                                    let mut sched_updates: std::collections::HashMap<u16, u16> =
-                                        std::collections::HashMap::new();
                                     for cmd in cmds.drain(..) {
                                         match cmd.address {
                                             35 => time_buf[0] = Some(cmd.value),
@@ -480,47 +481,46 @@ pub async fn start_simulation(
                                         }
                                         *time_buf = [None; 6];
                                     }
-                                    // Apply schedule register updates
-                                    if sched_dirty {
-                                        let mut sched =
-                                            schedule_arc.lock().await.clone().unwrap_or_default();
-                                        // Charge slot 1 (HR 94-95)
-                                        if let Some(&v) = sched_updates.get(&94) {
-                                            sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        if let Some(&v) = sched_updates.get(&95) {
-                                            sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        // Discharge slot 1 (HR 56-57)
-                                        if let Some(&v) = sched_updates.get(&56) {
-                                            sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        if let Some(&v) = sched_updates.get(&57) {
-                                            sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        // Charge target SOC (HR 116)
-                                        if let Some(&v) = sched_updates.get(&116) {
-                                            sched.charge_target_soc = v as f64;
-                                        }
-                                        // Enable charge (HR 96) — 0 = disable (set start==end)
-                                        if let Some(&v) = sched_updates.get(&96) {
-                                            if v == 0 {
-                                                sched.charge_start = 0.0;
-                                                sched.charge_end = 0.0;
-                                            }
-                                        }
-                                        // Enable discharge (HR 59) — 0 = disable
-                                        if let Some(&v) = sched_updates.get(&59) {
-                                            if v == 0 {
-                                                sched.discharge_start = 0.0;
-                                                sched.discharge_end = 0.0;
-                                            }
-                                        }
-                                        e.enqueue(Command::SetSchedule(sched.clone()));
-                                        *schedule_arc.lock().await = Some(sched);
-                                    }
                                 }
                             }
+                        }
+                        // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
+                        if sched_dirty {
+                            let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
+                            // Charge slot 1 (HR 94-95)
+                            if let Some(&v) = sched_updates.get(&94) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&95) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 1 (HR 56-57)
+                            if let Some(&v) = sched_updates.get(&56) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&57) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Charge target SOC (HR 116)
+                            if let Some(&v) = sched_updates.get(&116) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            // Enable charge (HR 96) — 0 = disable (set start==end)
+                            if let Some(&v) = sched_updates.get(&96) {
+                                if v == 0 {
+                                    sched.charge_start = 0.0;
+                                    sched.charge_end = 0.0;
+                                }
+                            }
+                            // Enable discharge (HR 59) — 0 = disable
+                            if let Some(&v) = sched_updates.get(&59) {
+                                if v == 0 {
+                                    sched.discharge_start = 0.0;
+                                    sched.discharge_end = 0.0;
+                                }
+                            }
+                            e.enqueue(Command::SetSchedule(sched.clone()));
+                            *schedule_arc.lock().await = Some(sched);
                         }
 
                         e.tick();
@@ -579,12 +579,13 @@ pub async fn start_simulation(
                     let mut eng = engine.lock().await;
                     if let Some(ref mut e) = *eng {
                         // Drain and apply Modbus write commands before tick
+                        // Phase 1: collect under sync MutexGuards (no .await allowed)
+                        let mut sched_dirty = false;
+                        let mut sched_updates: std::collections::HashMap<u16, u16> =
+                            std::collections::HashMap::new();
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                    let mut sched_dirty = false;
-                                    let mut sched_updates: std::collections::HashMap<u16, u16> =
-                                        std::collections::HashMap::new();
                                     for cmd in cmds.drain(..) {
                                         match cmd.address {
                                             35 => time_buf[0] = Some(cmd.value),
@@ -620,47 +621,46 @@ pub async fn start_simulation(
                                         }
                                         *time_buf = [None; 6];
                                     }
-                                    // Apply schedule register updates
-                                    if sched_dirty {
-                                        let mut sched =
-                                            schedule_arc.lock().await.clone().unwrap_or_default();
-                                        // Charge slot 1 (HR 94-95)
-                                        if let Some(&v) = sched_updates.get(&94) {
-                                            sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        if let Some(&v) = sched_updates.get(&95) {
-                                            sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        // Discharge slot 1 (HR 56-57)
-                                        if let Some(&v) = sched_updates.get(&56) {
-                                            sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        if let Some(&v) = sched_updates.get(&57) {
-                                            sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                                        }
-                                        // Charge target SOC (HR 116)
-                                        if let Some(&v) = sched_updates.get(&116) {
-                                            sched.charge_target_soc = v as f64;
-                                        }
-                                        // Enable charge (HR 96) — 0 = disable (set start==end)
-                                        if let Some(&v) = sched_updates.get(&96) {
-                                            if v == 0 {
-                                                sched.charge_start = 0.0;
-                                                sched.charge_end = 0.0;
-                                            }
-                                        }
-                                        // Enable discharge (HR 59) — 0 = disable
-                                        if let Some(&v) = sched_updates.get(&59) {
-                                            if v == 0 {
-                                                sched.discharge_start = 0.0;
-                                                sched.discharge_end = 0.0;
-                                            }
-                                        }
-                                        e.enqueue(Command::SetSchedule(sched.clone()));
-                                        *schedule_arc.lock().await = Some(sched);
-                                    }
                                 }
                             }
+                        }
+                        // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
+                        if sched_dirty {
+                            let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
+                            // Charge slot 1 (HR 94-95)
+                            if let Some(&v) = sched_updates.get(&94) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&95) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 1 (HR 56-57)
+                            if let Some(&v) = sched_updates.get(&56) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&57) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Charge target SOC (HR 116)
+                            if let Some(&v) = sched_updates.get(&116) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            // Enable charge (HR 96) — 0 = disable (set start==end)
+                            if let Some(&v) = sched_updates.get(&96) {
+                                if v == 0 {
+                                    sched.charge_start = 0.0;
+                                    sched.charge_end = 0.0;
+                                }
+                            }
+                            // Enable discharge (HR 59) — 0 = disable
+                            if let Some(&v) = sched_updates.get(&59) {
+                                if v == 0 {
+                                    sched.discharge_start = 0.0;
+                                    sched.discharge_end = 0.0;
+                                }
+                            }
+                            e.enqueue(Command::SetSchedule(sched.clone()));
+                            *schedule_arc.lock().await = Some(sched);
                         }
 
                         e.tick();
