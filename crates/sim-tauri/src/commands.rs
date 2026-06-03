@@ -487,18 +487,32 @@ pub async fn start_simulation(
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
-                            // Charge slot 1 (HR 94-95)
+                            // Charge slot 1 (HR 94-95) — primary
                             if let Some(&v) = sched_updates.get(&94) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Discharge slot 1 (HR 56-57)
+                            // Charge slot 2 (HR 31-32) — alias for slot 1
+                            if let Some(&v) = sched_updates.get(&31) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&32) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 1 (HR 56-57) — primary
                             if let Some(&v) = sched_updates.get(&56) {
                                 sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&57) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 2 (HR 44-45) — alias for slot 1
+                            if let Some(&v) = sched_updates.get(&44) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&45) {
                                 sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
@@ -627,18 +641,32 @@ pub async fn start_simulation(
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
-                            // Charge slot 1 (HR 94-95)
+                            // Charge slot 1 (HR 94-95) — primary
                             if let Some(&v) = sched_updates.get(&94) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Discharge slot 1 (HR 56-57)
+                            // Charge slot 2 (HR 31-32) — alias for slot 1
+                            if let Some(&v) = sched_updates.get(&31) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&32) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 1 (HR 56-57) — primary
                             if let Some(&v) = sched_updates.get(&56) {
                                 sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&57) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            // Discharge slot 2 (HR 44-45) — alias for slot 1
+                            if let Some(&v) = sched_updates.get(&44) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&45) {
                                 sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
