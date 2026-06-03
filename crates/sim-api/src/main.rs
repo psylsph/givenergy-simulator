@@ -7,7 +7,7 @@
 #![allow(clippy::too_many_arguments, clippy::collapsible_if, clippy::ptr_arg)]
 
 use chrono::NaiveDate;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use sim_core::{
     BatteryEngine, Command, InverterEngine, LoadEngine, LoadProfile, PlantState, SimulationEngine,
     SolarEngine, WeatherCondition,
@@ -23,14 +23,21 @@ use std::sync::Arc;
 // CLI
 // ---------------------------------------------------------------------------
 
-#[derive(Parser)]
+/// Wrapper for import/export of plant configuration.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PlantConfig {
+    plant: sim_models::PlantState,
+    schedule: Option<sim_core::Schedule>,
+}
+
+#[derive(clap::Parser)]
 #[command(name = "giv-sim", version, about = "GivEnergy Plant simulator")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(clap::Subcommand)]
 enum Commands {
     /// Run a scenario YAML file.
     Run {
@@ -75,6 +82,21 @@ enum Commands {
         /// Output format: summary, csv, json.
         #[arg(long, default_value = "summary")]
         format: String,
+    },
+    /// Load a plant config JSON and run headless with Modbus server.
+    Serve {
+        /// Path to plant config JSON file (exported from GUI).
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+        /// Tick interval in seconds.
+        #[arg(long, default_value = "1")]
+        tick_interval: u64,
+        /// Modbus TCP server address.
+        #[arg(long)]
+        modbus: SocketAddr,
+        /// Output directory for recording frames.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -238,6 +260,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             diff,
             format,
         } => replay_recording(&recording, diff.as_ref(), &format).await,
+        Commands::Serve {
+            config,
+            tick_interval,
+            modbus,
+            output,
+        } => serve_config(&config, tick_interval, modbus, output.as_deref()).await,
     }
 }
 
@@ -631,6 +659,162 @@ async fn replay_recording(
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Load a plant config JSON and run headless with Modbus server.
+///
+/// Creates the simulation engine from the saved plant state (including overrides),
+/// starts the Modbus TCP server, and ticks indefinitely until Ctrl+C.
+async fn serve_config(
+    config_path: &std::path::Path,
+    tick_interval: u64,
+    modbus_addr: std::net::SocketAddr,
+    output_dir: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(config_path)?;
+    let cfg: PlantConfig = serde_json::from_str(&json)?;
+
+    let mut state = cfg.plant;
+    let schedule_opt = cfg.schedule;
+    state.config.tick_interval_secs = tick_interval;
+
+    let peak_watts = state.config.solar_peak_watts;
+    let latitude = state.config.latitude;
+
+    let devices: Vec<Box<dyn DeviceModel>> = if let Some(ref sched) = schedule_opt {
+        vec![
+            Box::new(sim_core::ScheduleEngine::new(sched.clone())),
+            Box::new(SolarEngine::new(peak_watts, latitude)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(FaultEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(sim_core::EnergyTracker::new()),
+        ]
+    } else {
+        vec![
+            Box::new(SolarEngine::new(peak_watts, latitude)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(FaultEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(sim_core::EnergyTracker::new()),
+        ]
+    };
+
+    let mut engine = SimulationEngine::new(state, devices, tick_interval);
+
+    let reg_cat = sim_registers::default_register_catalogue();
+    let mut reg_store = sim_registers::RegisterStore::new(reg_cat);
+
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut recording: Vec<sim_recording::RecordingFrame> = Vec::new();
+
+    tracing::info!(
+        "Serving plant config '{}' on {modbus_addr} (tick={tick_interval}s)",
+        config_path.display(),
+    );
+
+    let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
+    let server_store = store.clone();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Err(e) = sim_modbus::run_modbus_server(
+            modbus_addr,
+            server_store,
+            cmd_tx,
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        )
+        .await
+        {
+            tracing::error!("Modbus server error: {e}");
+        }
+    });
+    tracing::info!("Modbus TCP server running on {modbus_addr}");
+
+    let mut tick_count: u64 = 0;
+    let start = std::time::Instant::now();
+
+    loop {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                engine.enqueue(sim_cmd);
+            }
+        }
+
+        engine.tick();
+        tick_count += 1;
+
+        reg_store.project_from_state(&engine.state);
+        if let Ok(mut ms) = store.try_lock() {
+            ms.project_from_state(&engine.state);
+            if let Some(ref sched) = schedule_opt {
+                ms.project_schedule(sched);
+            }
+        }
+
+        recording.push(sim_recording::RecordingFrame {
+            timestamp: engine.state.timestamp,
+            plant_state: engine.state.clone(),
+            register_snapshot: reg_store.snapshot(),
+        });
+
+        if tick_count % 1000 == 0 {
+            let elapsed = start.elapsed();
+            let soc = engine.state.aggregate_soc();
+            tracing::info!(
+                "[{tick_count}] tick/s={:.0} SOC={soc:.1}% solar={:.0}W load={:.0}W grid={:.0}W",
+                tick_count as f64 / elapsed.as_secs_f64().max(0.001),
+                engine.state.solar.generation_w,
+                engine.state.load.demand_w,
+                engine.state.grid.power_w,
+            );
+        }
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Shutdown requested. Saving output...");
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+    }
+
+    let elapsed = start.elapsed();
+    tracing::info!(
+        "Server ran for {:.1}s ({tick_count} ticks, avg {:.0} tick/s). Final SOC={:.1}%",
+        elapsed.as_secs_f64(),
+        tick_count as f64 / elapsed.as_secs_f64().max(0.001),
+        engine.state.aggregate_soc(),
+    );
+
+    if let Some(dir) = output_dir {
+        let base_name = config_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("serve");
+
+        let jsonl_path = dir.join(format!("{base_name}.jsonl"));
+        let mut f = std::fs::File::create(&jsonl_path)?;
+        for frame in &recording {
+            sim_recording::write_frame(&mut f, frame)?;
+        }
+        tracing::info!(
+            "Recording: {} ({} frames)",
+            jsonl_path.display(),
+            recording.len()
+        );
+
+        let csv_path = dir.join(format!("{base_name}.csv"));
+        let mut f = std::fs::File::create(&csv_path)?;
+        sim_recording::write_csv(&mut f, &recording)?;
+        tracing::info!("CSV traces: {}", csv_path.display());
     }
 
     Ok(())

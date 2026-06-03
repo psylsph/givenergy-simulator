@@ -58,6 +58,7 @@ pub fn run() {
             commands::start_calibration,
             commands::cancel_calibration,
             commands::set_tick_interval,
+            commands::export_config,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule

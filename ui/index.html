@@ -476,6 +476,9 @@
           <button id="btn-export-csv">📊 CSV</button>
           <button id="btn-export-jsonl">💾 JSONL</button>
         </div>
+        <div class="row" style="margin-top:4px">
+          <button id="btn-export-config">⚙️ Export Config</button>
+        </div>
       </div>
     </aside>
 
@@ -1130,6 +1133,13 @@
         const path = await save({ defaultPath: 'recording.jsonl', filters: [{ name: 'JSONL', extensions: ['jsonl'] }] });
         if (path) await invoke('export_recording', { params: { path, format: 'jsonl' } });
       } catch (e) { console.error('export failed:', e); }
+    });
+
+    el('btn-export-config').addEventListener('click', async () => {
+      try {
+        const path = await save({ defaultPath: 'plant-config.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+        if (path) await invoke('export_config', { path });
+      } catch (e) { console.error('export config failed:', e); }
     });
 
     window.addEventListener('resize', drawTimeline);

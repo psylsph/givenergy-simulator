@@ -1079,6 +1079,32 @@ pub async fn save_plant(app: AppHandle, state: State<'_, AppState>) -> Result<()
     Ok(())
 }
 
+/// Export the current plant config (plant state + schedule + overrides) to a JSON file.
+/// The exported file can be loaded by `giv-sim serve <path> --modbus <addr>`.
+#[tauri::command]
+pub async fn export_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let eng = state.engine.lock().await;
+    let plant_state = eng
+        .as_ref()
+        .map(|e| e.state.clone())
+        .ok_or_else(|| "No plant created yet".to_string())?;
+    drop(eng);
+    let schedule = state.schedule.lock().await.clone();
+
+    let persisted = crate::app_state::PersistedState {
+        plant: plant_state,
+        schedule,
+    };
+    let json = serde_json::to_string_pretty(&persisted).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    tracing::info!("Plant config exported to {}", path);
+    Ok(())
+}
+
 /// Check if a saved plant state exists.
 #[tauri::command]
 pub async fn has_saved_plant(app: AppHandle) -> Result<bool, String> {
