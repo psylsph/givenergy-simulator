@@ -580,9 +580,11 @@ impl RegisterStore {
         self.write(94, cs1_start);
         self.write(95, cs1_end);
 
-        // Charge slot 2 (HR 31-32) — same as slot 1 for now
-        self.write(31, cs1_start);
-        self.write(32, cs1_end);
+        // Charge slot 2 (HR 31-32)
+        let cs2_start = hrs_to_hhmm(schedule.charge_start_2);
+        let cs2_end = hrs_to_hhmm(schedule.charge_end_2);
+        self.write(31, cs2_start);
+        self.write(32, cs2_end);
 
         // Discharge slot 1 (HR 56-57)
         let ds1_start = hrs_to_hhmm(schedule.discharge_start);
@@ -590,20 +592,26 @@ impl RegisterStore {
         self.write(56, ds1_start);
         self.write(57, ds1_end);
 
-        // Discharge slot 2 (HR 44-45) — same as slot 1
-        self.write(44, ds1_start);
-        self.write(45, ds1_end);
+        // Discharge slot 2 (HR 44-45)
+        let ds2_start = hrs_to_hhmm(schedule.discharge_start_2);
+        let ds2_end = hrs_to_hhmm(schedule.discharge_end_2);
+        self.write(44, ds2_start);
+        self.write(45, ds2_end);
 
-        // Enable charge (HR 96) — enabled if charge window is set
-        let charge_enabled = if schedule.charge_start != schedule.charge_end {
+        // Enable charge (HR 96) — enabled if either charge window is set
+        let charge_enabled = if schedule.charge_start != schedule.charge_end
+            || schedule.charge_start_2 != schedule.charge_end_2
+        {
             1
         } else {
             0
         };
         self.write(96, charge_enabled);
 
-        // Enable discharge (HR 59) — enabled if discharge window is set
-        let discharge_enabled = if schedule.discharge_start != schedule.discharge_end {
+        // Enable discharge (HR 59) — enabled if either discharge window is set
+        let discharge_enabled = if schedule.discharge_start != schedule.discharge_end
+            || schedule.discharge_start_2 != schedule.discharge_end_2
+        {
             1
         } else {
             0
@@ -613,13 +621,17 @@ impl RegisterStore {
         // Charge target SOC (HR 116)
         self.write(116, schedule.charge_target_soc as u16);
 
-        // Internal schedule registers (HR 700-704)
+        // Internal schedule registers (HR 700-709)
         self.write(700, cs1_start);
         self.write(701, cs1_end);
         self.write(702, ds1_start);
         self.write(703, ds1_end);
         self.write(704, schedule.charge_target_soc as u16);
         self.write(705, schedule.discharge_target_soc as u16);
+        self.write(706, cs2_start);
+        self.write(707, cs2_end);
+        self.write(708, ds2_start);
+        self.write(709, ds2_end);
     }
 
     /// Iterator over all definitions.

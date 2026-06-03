@@ -545,17 +545,25 @@ impl PlantState {
 // Schedule — moved from sim-core to break circular dependency
 // ---------------------------------------------------------------------------
 
-/// Schedule parameters.
+/// Schedule parameters — two independent charge and discharge windows.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Schedule {
-    /// Charge window start (decimal hours, e.g. 2.5 = 02:30).
+    /// Charge slot 1 start (decimal hours, e.g. 2.5 = 02:30).
     pub charge_start: f64,
-    /// Charge window end (decimal hours).
+    /// Charge slot 1 end (decimal hours).
     pub charge_end: f64,
-    /// Discharge window start (decimal hours).
+    /// Discharge slot 1 start (decimal hours).
     pub discharge_start: f64,
-    /// Discharge window end (decimal hours).
+    /// Discharge slot 1 end (decimal hours).
     pub discharge_end: f64,
+    /// Charge slot 2 start (decimal hours).
+    pub charge_start_2: f64,
+    /// Charge slot 2 end (decimal hours).
+    pub charge_end_2: f64,
+    /// Discharge slot 2 start (decimal hours).
+    pub discharge_start_2: f64,
+    /// Discharge slot 2 end (decimal hours).
+    pub discharge_end_2: f64,
     /// Target SOC for scheduled charging (%).
     pub charge_target_soc: f64,
     /// Target SOC for scheduled discharging (%).
@@ -569,6 +577,10 @@ impl Default for Schedule {
             charge_end: 5.5, // 05:30
             discharge_start: 0.0,
             discharge_end: 0.0,
+            charge_start_2: 0.0,
+            charge_end_2: 0.0,
+            discharge_start_2: 0.0,
+            discharge_end_2: 0.0,
             charge_target_soc: 100.0,
             discharge_target_soc: 10.0,
         }

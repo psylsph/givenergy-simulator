@@ -494,12 +494,12 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Charge slot 2 (HR 31-32) — alias for slot 1
+                            // Charge slot 2 (HR 31-32)
                             if let Some(&v) = sched_updates.get(&31) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&32) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Discharge slot 1 (HR 56-57) — primary
                             if let Some(&v) = sched_updates.get(&56) {
@@ -508,25 +508,25 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&57) {
                                 sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Discharge slot 2 (HR 44-45) — alias for slot 1
+                            // Discharge slot 2 (HR 44-45)
                             if let Some(&v) = sched_updates.get(&44) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&45) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
                             if let Some(&v) = sched_updates.get(&116) {
                                 sched.charge_target_soc = v as f64;
                             }
-                            // Enable charge (HR 96) — 0 = disable (set start==end)
+                            // Enable charge (HR 96) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&96) {
                                 if v == 0 {
                                     sched.charge_start = 0.0;
                                     sched.charge_end = 0.0;
                                 }
                             }
-                            // Enable discharge (HR 59) — 0 = disable
+                            // Enable discharge (HR 59) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&59) {
                                 if v == 0 {
                                     sched.discharge_start = 0.0;
@@ -648,12 +648,12 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Charge slot 2 (HR 31-32) — alias for slot 1
+                            // Charge slot 2 (HR 31-32)
                             if let Some(&v) = sched_updates.get(&31) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&32) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Discharge slot 1 (HR 56-57) — primary
                             if let Some(&v) = sched_updates.get(&56) {
@@ -662,25 +662,25 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&57) {
                                 sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Discharge slot 2 (HR 44-45) — alias for slot 1
+                            // Discharge slot 2 (HR 44-45)
                             if let Some(&v) = sched_updates.get(&44) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             if let Some(&v) = sched_updates.get(&45) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
                             if let Some(&v) = sched_updates.get(&116) {
                                 sched.charge_target_soc = v as f64;
                             }
-                            // Enable charge (HR 96) — 0 = disable (set start==end)
+                            // Enable charge (HR 96) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&96) {
                                 if v == 0 {
                                     sched.charge_start = 0.0;
                                     sched.charge_end = 0.0;
                                 }
                             }
-                            // Enable discharge (HR 59) — 0 = disable
+                            // Enable discharge (HR 59) — 0 = disable slot 1
                             if let Some(&v) = sched_updates.get(&59) {
                                 if v == 0 {
                                     sched.discharge_start = 0.0;

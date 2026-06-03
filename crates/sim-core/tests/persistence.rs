@@ -28,6 +28,10 @@ fn test_schedule() -> Schedule {
         charge_end: 5.5,
         discharge_start: 17.0,
         discharge_end: 20.0,
+        charge_start_2: 0.0,
+        charge_end_2: 0.0,
+        discharge_start_2: 0.0,
+        discharge_end_2: 0.0,
         charge_target_soc: 100.0,
         discharge_target_soc: 10.0,
     }
@@ -151,6 +155,10 @@ fn schedule_roundtrip_preserves_all_fields() {
         charge_end: 6.0,
         discharge_start: 17.0,
         discharge_end: 20.0,
+        charge_start_2: 14.0,
+        charge_end_2: 16.0,
+        discharge_start_2: 0.0,
+        discharge_end_2: 0.0,
         charge_target_soc: 90.0,
         discharge_target_soc: 15.0,
     };
@@ -160,6 +168,10 @@ fn schedule_roundtrip_preserves_all_fields() {
     assert_eq!(restored.charge_end, 6.0);
     assert_eq!(restored.discharge_start, 17.0);
     assert_eq!(restored.discharge_end, 20.0);
+    assert_eq!(restored.charge_start_2, 14.0);
+    assert_eq!(restored.charge_end_2, 16.0);
+    assert_eq!(restored.discharge_start_2, 0.0);
+    assert_eq!(restored.discharge_end_2, 0.0);
     assert_eq!(restored.charge_target_soc, 90.0);
     assert_eq!(restored.discharge_target_soc, 15.0);
 }

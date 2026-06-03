@@ -141,33 +141,37 @@ impl ScheduleDto {
             h * 100 + m
         };
 
-        let (cs, ce, ds, de, ct, _dt) = match schedule {
+        let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct, _dt) = match schedule {
             Some(s) => (
                 s.charge_start,
                 s.charge_end,
                 s.discharge_start,
                 s.discharge_end,
+                s.charge_start_2,
+                s.charge_end_2,
+                s.discharge_start_2,
+                s.discharge_end_2,
                 s.charge_target_soc,
                 s.discharge_target_soc,
             ),
-            None => (0.0, 0.0, 0.0, 0.0, 100.0, 10.0),
+            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 10.0),
         };
 
         Self {
-            enable_charge: cs != ce
+            enable_charge: (cs != ce || cs2 != ce2)
                 && state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge,
-            enable_discharge: ds != de
+            enable_discharge: (ds != de || ds2 != de2)
                 && state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge,
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct,
             charge_slot_1_start: hhmm(cs),
             charge_slot_1_end: hhmm(ce),
-            charge_slot_2_start: 60, // slot 2 not yet modelled in Schedule
-            charge_slot_2_end: 60,
+            charge_slot_2_start: hhmm(cs2),
+            charge_slot_2_end: hhmm(ce2),
             discharge_slot_1_start: hhmm(ds),
             discharge_slot_1_end: hhmm(de),
-            discharge_slot_2_start: 60,
-            discharge_slot_2_end: 60,
+            discharge_slot_2_start: hhmm(ds2),
+            discharge_slot_2_end: hhmm(de2),
             battery_pause_mode: 0,
             pause_slot_start: 60,
             pause_slot_end: 60,

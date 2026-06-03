@@ -1096,16 +1096,20 @@ impl DeviceModel for ScheduleEngine {
         let hour = ctx.now.time().num_seconds_from_midnight() as f64 / 3600.0;
         let soc = state.aggregate_soc();
 
-        // Check charge window
-        if self.schedule.charge_start != self.schedule.charge_end {
-            let in_window = if self.schedule.charge_start < self.schedule.charge_end {
-                hour >= self.schedule.charge_start && hour < self.schedule.charge_end
+        // Helper: check if hour is inside a window (handles midnight wrap)
+        let in_window = |start: f64, end: f64, h: f64| -> bool {
+            if start < end {
+                h >= start && h < end
             } else {
-                // Wraps midnight, e.g. 22:00–06:00
-                hour >= self.schedule.charge_start || hour < self.schedule.charge_end
-            };
+                h >= start || h < end
+            }
+        };
 
-            if in_window && soc < self.schedule.charge_target_soc {
+        // Check charge slot 1
+        if self.schedule.charge_start != self.schedule.charge_end {
+            if in_window(self.schedule.charge_start, self.schedule.charge_end, hour)
+                && soc < self.schedule.charge_target_soc
+            {
                 state
                     .inverter
                     .mode_state
@@ -1114,15 +1118,46 @@ impl DeviceModel for ScheduleEngine {
             }
         }
 
-        // Check discharge window
-        if self.schedule.discharge_start != self.schedule.discharge_end {
-            let in_window = if self.schedule.discharge_start < self.schedule.discharge_end {
-                hour >= self.schedule.discharge_start && hour < self.schedule.discharge_end
-            } else {
-                hour >= self.schedule.discharge_start || hour < self.schedule.discharge_end
-            };
+        // Check charge slot 2
+        if self.schedule.charge_start_2 != self.schedule.charge_end_2 {
+            if in_window(
+                self.schedule.charge_start_2,
+                self.schedule.charge_end_2,
+                hour,
+            ) && soc < self.schedule.charge_target_soc
+            {
+                state
+                    .inverter
+                    .mode_state
+                    .set_schedule(InverterMode::ForceCharge);
+                return;
+            }
+        }
 
-            if in_window && soc > self.schedule.discharge_target_soc {
+        // Check discharge slot 1
+        if self.schedule.discharge_start != self.schedule.discharge_end {
+            if in_window(
+                self.schedule.discharge_start,
+                self.schedule.discharge_end,
+                hour,
+            ) && soc > self.schedule.discharge_target_soc
+            {
+                state
+                    .inverter
+                    .mode_state
+                    .set_schedule(InverterMode::ForceDischarge);
+                return;
+            }
+        }
+
+        // Check discharge slot 2
+        if self.schedule.discharge_start_2 != self.schedule.discharge_end_2 {
+            if in_window(
+                self.schedule.discharge_start_2,
+                self.schedule.discharge_end_2,
+                hour,
+            ) && soc > self.schedule.discharge_target_soc
+            {
                 state
                     .inverter
                     .mode_state
