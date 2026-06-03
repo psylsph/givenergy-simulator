@@ -166,12 +166,26 @@ impl RegisterStore {
                 "ge_ir_pv2_current" => Some(state.solar.pv2_w / 350.0),
                 // IR 13: Grid frequency (×0.01 Hz)
                 "ge_ir_grid_frequency" => Some(50.0),
-                // IR 17: PV1 energy today (×0.1 kWh)
-                "ge_ir_pv1_energy_today" => Some(state.energy_totals.solar_generation_kwh / 2.0),
+                // IR 17: PV1 energy today (×0.1 kWh) — proportional to power split
+                "ge_ir_pv1_energy_today" => {
+                    let total = state.energy_totals.solar_generation_kwh;
+                    if state.config.pv2_peak_watts > 0.0 {
+                        Some(total * 0.45)
+                    } else {
+                        Some(total)
+                    }
+                }
                 // IR 18: PV1 power (W)
                 "ge_ir_pv1_power" => Some(state.solar.pv1_w),
                 // IR 19: PV2 energy today (×0.1 kWh)
-                "ge_ir_pv2_energy_today" => Some(state.energy_totals.solar_generation_kwh / 2.0),
+                "ge_ir_pv2_energy_today" => {
+                    let total = state.energy_totals.solar_generation_kwh;
+                    if state.config.pv2_peak_watts > 0.0 {
+                        Some(total * 0.55)
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 // IR 20: PV2 power (W)
                 "ge_ir_pv2_power" => Some(state.solar.pv2_w),
                 // IR 25: Export energy today (×0.1 kWh)

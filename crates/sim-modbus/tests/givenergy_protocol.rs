@@ -591,11 +591,11 @@ async fn read_input_energy_totals() {
     let (addr, _, _) = start_server_with_state(&state).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-    // IR 17 = PV1 energy today (×0.1 kWh) = 12.5 / 2 / 0.1 = 62
+    // IR 17 = PV1 energy today (×0.1 kWh) = 12.5 / 0.1 = 125 (no PV2 array)
     let resp = send_recv(&mut stream, &build_read_input_request(17, 1)).await;
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
-    assert_eq!(data[0], 62, "IR 17 = PV1 energy = 6.25kWh / 0.1 = 62");
+    assert_eq!(data[0], 125, "IR 17 = PV1 energy = 12.5kWh / 0.1 = 125");
 
     // IR 25 = export today (×0.1 kWh) = 3.0 / 0.1 = 30
     let resp = send_recv(&mut stream, &build_read_input_request(25, 1)).await;
