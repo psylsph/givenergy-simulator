@@ -23,17 +23,18 @@ A digital twin of a GivEnergy solar PV + battery storage system. Model your Gen3
 | 1 | Inverter type selector |
 | 2 | Battery module config (capacity + SOH slider) |
 | 3 | Solar peak + optional PV2 peak |
-| 4 | Load profile and weather |
-| 5 | **Create Plant** button |
-| 6 | Energy flow diagram — live power arrows between Solar, Battery, Grid, Load |
-| 7 | Battery SOC gauges — per-module cards with voltage, current, temp, capacity, SoH |
-| 8 | Power timeline — scrolling 4-trace chart |
-| 9 | Cumulative kWh totals — import, export, solar, consumption, charge, discharge |
-| 10 | Pause / Reset / Tick speed |
-| 11 | Inverter mode selector |
-| 12 | Solar / Load overrides + export limit |
-| 13 | Charge / Discharge schedules with SOC targets |
-| 14 | Fault injection buttons (Grid Loss, Inverter Trip, Battery Over-Temp) |
+| 4 | Load profile |
+| 5 | Weather + **Create Plant** button |
+| 6 | Simulation (Pause / Reset / Tick speed) |
+| 7 | Inverter mode + Weather controls |
+| 8 | Solar / Load overrides + export limit |
+| 9 | **Fault Injection** buttons (Grid Loss, Inverter Trip, Battery Over-Temp) |
+| 10 | Scenario loader + Save/Load persistence |
+| A | Energy flow diagram — live power arrows between Solar, Battery, Grid, Load |
+| B | Battery SOC gauges — per-module cards with voltage, current, temp, capacity, SoH |
+| C | Active Faults display + Schedule card |
+| D | Power timeline — scrolling 4-trace chart |
+| E | Cumulative kWh totals — import, export, solar, consumption, charge, discharge |
 
 ---
 
