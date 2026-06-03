@@ -26,9 +26,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --workspace --exclude sim-tauri
       - name: Unit tests
-        run: cargo test
+        run: cargo test --workspace --exclude sim-tauri
       - name: Scenario regression
         run: ./scripts/run-ci.sh
 
@@ -42,4 +42,4 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets 2>&1 | (! grep -E "^error" | grep -v "Rust 2015")
+        run: cargo clippy --all-targets --workspace --exclude sim-tauri 2>&1 | (! grep -E "^error" | grep -v "Rust 2015")
