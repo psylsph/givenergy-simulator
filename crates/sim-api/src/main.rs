@@ -683,27 +683,18 @@ async fn serve_config(
 
     let peak_watts = state.config.solar_peak_watts;
     let latitude = state.config.latitude;
-
-    let devices: Vec<Box<dyn DeviceModel>> = if let Some(ref sched) = schedule_opt {
-        vec![
-            Box::new(sim_core::ScheduleEngine::new(sched.clone())),
-            Box::new(SolarEngine::new(peak_watts, latitude)),
-            Box::new(LoadEngine::new(LoadProfile::Family)),
-            Box::new(InverterEngine::new()),
-            Box::new(FaultEngine::new()),
-            Box::new(BatteryEngine::new()),
-            Box::new(sim_core::EnergyTracker::new()),
-        ]
-    } else {
-        vec![
-            Box::new(SolarEngine::new(peak_watts, latitude)),
-            Box::new(LoadEngine::new(LoadProfile::Family)),
-            Box::new(InverterEngine::new()),
-            Box::new(FaultEngine::new()),
-            Box::new(BatteryEngine::new()),
-            Box::new(sim_core::EnergyTracker::new()),
-        ]
-    };
+    // Build devices — ScheduleEngine is always included so Modbus schedule
+    // writes can take effect even when the initial config has no schedule.
+    let initial_sched = schedule_opt.clone().unwrap_or_default();
+    let devices: Vec<Box<dyn DeviceModel>> = vec![
+        Box::new(sim_core::ScheduleEngine::new(initial_sched)),
+        Box::new(SolarEngine::new(peak_watts, latitude)),
+        Box::new(LoadEngine::new(LoadProfile::Family)),
+        Box::new(InverterEngine::new()),
+        Box::new(FaultEngine::new()),
+        Box::new(BatteryEngine::new()),
+        Box::new(sim_core::EnergyTracker::new()),
+    ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
 
