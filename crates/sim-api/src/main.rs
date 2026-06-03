@@ -175,6 +175,39 @@ fn _parse_weather_cmd(s: &str) -> Option<WeatherCondition> {
 /// Translate a Modbus register write into a simulation Command.
 fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
     match cmd.address {
+        20 => Some(Command::SetEnableChargeTarget(cmd.value != 0)),
+        27 => {
+            let mode = match cmd.value {
+                1 => sim_models::InverterMode::Eco,
+                _ => sim_models::InverterMode::Normal,
+            };
+            Some(Command::SetInverterMode(mode))
+        }
+        29 => {
+            if cmd.value == 0 {
+                Some(Command::CancelCalibration)
+            } else {
+                Some(Command::StartCalibration { module: None })
+            }
+        }
+        50 => Some(Command::SetActivePowerRate(cmd.value as f64)),
+        110 => Some(Command::SetMinSoc(cmd.value as f64)),
+        111 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
+        112 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
+        313 | 1110 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
+        314 | 1108 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
+        163 => {
+            if cmd.value == 100 {
+                Some(Command::InverterReboot)
+            } else {
+                None
+            }
+        }
+        318 => Some(Command::SetBatteryPause {
+            mode: cmd.value,
+            start: 60,
+            end: 60,
+        }),
         // HR 35-40: system time (year, month, day, hour, minute, second)
         // Handled separately via time register accumulation in the tick loop
         35..=40 => None,
@@ -299,7 +332,9 @@ async fn run_scenario(
     let load_profile = parse_profile(profile);
 
     // Order: Solar → Load → Inverter → Faults → Battery → EnergyTracker
+    let initial_schedule = sim_models::Schedule::default();
     let devices: Vec<Box<dyn DeviceModel>> = vec![
+        Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
         Box::new(solar),
         Box::new(LoadEngine::new(load_profile)),
         Box::new(InverterEngine::new()),
@@ -309,6 +344,7 @@ async fn run_scenario(
     ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
+    let mut schedule_opt: Option<sim_models::Schedule> = Some(initial_schedule);
 
     // Register store for Modbus and recording
     let reg_cat = sim_registers::default_register_catalogue();
@@ -378,10 +414,20 @@ async fn run_scenario(
             while engine.state.timestamp < target {
                 // Drain Modbus write commands
                 if let Some(ref mut rx) = modbus_rx {
+                    let mut sched_updates: std::collections::HashMap<u16, u16> =
+                        std::collections::HashMap::new();
                     while let Ok(cmd) = rx.try_recv() {
-                        if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                        if is_schedule_register(cmd.address) {
+                            sched_updates.insert(cmd.address, cmd.value);
+                        } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                             engine.enqueue(sim_cmd);
                         }
+                    }
+                    if !sched_updates.is_empty() {
+                        let mut sched = schedule_opt.clone().unwrap_or_default();
+                        apply_schedule_updates(&mut sched, &sched_updates);
+                        engine.enqueue(Command::SetSchedule(sched.clone()));
+                        schedule_opt = Some(sched);
                     }
                 }
 
@@ -431,6 +477,8 @@ async fn run_scenario(
             // Tick once to let the event take effect
             // Also drain any pending Modbus commands
             if let Some(ref mut rx) = modbus_rx {
+                let mut sched_updates: std::collections::HashMap<u16, u16> =
+                    std::collections::HashMap::new();
                 while let Ok(cmd) = rx.try_recv() {
                     match cmd.address {
                         35 => time_regs[0] = Some(cmd.value),
@@ -441,9 +489,17 @@ async fn run_scenario(
                         40 => time_regs[5] = Some(cmd.value),
                         _ => {}
                     }
-                    if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                    if is_schedule_register(cmd.address) {
+                        sched_updates.insert(cmd.address, cmd.value);
+                    } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                         engine.enqueue(sim_cmd);
                     }
+                }
+                if !sched_updates.is_empty() {
+                    let mut sched = schedule_opt.clone().unwrap_or_default();
+                    apply_schedule_updates(&mut sched, &sched_updates);
+                    engine.enqueue(Command::SetSchedule(sched.clone()));
+                    schedule_opt = Some(sched);
                 }
                 if time_regs.iter().all(|r| r.is_some()) {
                     let y = time_regs[0].unwrap() as i32;
@@ -714,13 +770,15 @@ async fn serve_config(
 
     let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
     let server_store = store.clone();
+    let battery_shared = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let batt_server = battery_shared.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         if let Err(e) = sim_modbus::run_modbus_server(
             modbus_addr,
             server_store,
             cmd_tx,
-            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            batt_server,
         )
         .await
         {
@@ -754,11 +812,11 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&95) {
                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
             }
-            // Charge slot 2 (HR 31-32)
-            if let Some(&v) = sched_updates.get(&31) {
+            // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
+            if let Some(&v) = sched_updates.get(&31).or_else(|| sched_updates.get(&243)) {
                 sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
             }
-            if let Some(&v) = sched_updates.get(&32) {
+            if let Some(&v) = sched_updates.get(&32).or_else(|| sched_updates.get(&244)) {
                 sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
             }
             // Discharge slot 1 (HR 56-57)
@@ -775,7 +833,10 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&45) {
                 sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
             }
-            // Per-slot target SOCs
+            // Global/slot target SOCs
+            if let Some(&v) = sched_updates.get(&116) {
+                sched.charge_target_soc = v as f64;
+            }
             if let Some(&v) = sched_updates.get(&242) {
                 sched.charge_target_soc = v as f64;
             }
@@ -812,6 +873,15 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&1111) {
                 sched.charge_target_soc = v as f64;
             }
+            if let Some(&v) = sched_updates.get(&1112) {
+                sched.enable_charge = v != 0;
+            }
+            if let Some(&v) = sched_updates.get(&1122) {
+                sched.enable_discharge = v != 0;
+            }
+            if let Some(&v) = sched_updates.get(&1123) {
+                sched.enable_charge = v != 0;
+            }
             if let Some(&v) = sched_updates.get(&1113) {
                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
             }
@@ -847,8 +917,12 @@ async fn serve_config(
         if let Ok(mut ms) = store.try_lock() {
             ms.project_from_state(&engine.state);
             if let Some(ref sched) = schedule_opt {
-                ms.project_schedule(sched);
+                ms.project_schedule_for(sched, &engine.state.config.inverter_type);
             }
+        }
+        // Update battery snapshot for Modbus BMS reads
+        if let Ok(mut bs) = battery_shared.try_lock() {
+            *bs = engine.state.batteries.clone();
         }
 
         recording.push(sim_recording::RecordingFrame {
@@ -917,8 +991,8 @@ fn is_schedule_register(addr: u16) -> bool {
     matches!(
         addr,
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
-            | 242 | 245 | 272 | 275
-            | 1109 | 1111 | 1113..=1116 | 1118..=1121
+            | 242..=245 | 272 | 275
+            | 1109 | 1111..=1116 | 1118..=1123
     )
 }
 
@@ -934,4 +1008,107 @@ fn hhmm_to_hours(val: u16) -> Option<f64> {
         return None;
     }
     Some(hours as f64 + mins as f64 / 60.0)
+}
+
+/// Apply schedule register updates to a Schedule struct.
+/// Shared between run_scenario and serve_config.
+fn apply_schedule_updates(sched: &mut sim_models::Schedule, updates: &std::collections::HashMap<u16, u16>) {
+    // Charge slot 1 (HR 94-95)
+    if let Some(&v) = updates.get(&94) {
+        sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&95) {
+        sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
+    if let Some(&v) = updates.get(&31).or_else(|| updates.get(&243)) {
+        sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&32).or_else(|| updates.get(&244)) {
+        sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    // Discharge slot 1 (HR 56-57)
+    if let Some(&v) = updates.get(&56) {
+        sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&57) {
+        sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    // Discharge slot 2 (HR 44-45)
+    if let Some(&v) = updates.get(&44) {
+        sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&45) {
+        sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    // Charge target SOCs
+    if let Some(&v) = updates.get(&116).or_else(|| updates.get(&242)) {
+        sched.charge_target_soc = v as f64;
+    }
+    if let Some(&v) = updates.get(&245) {
+        sched.charge_target_soc_2 = v as f64;
+    }
+    if let Some(&v) = updates.get(&272) {
+        sched.discharge_target_soc = v as f64;
+    }
+    if let Some(&v) = updates.get(&275) {
+        sched.discharge_target_soc_2 = v as f64;
+    }
+    // Enable charge (HR 96) — 0 = disable, 1 = always-on
+    if let Some(&v) = updates.get(&96) {
+        if v == 0 {
+            sched.charge_start = 0.0;
+            sched.charge_end = 0.0;
+            sched.enable_charge = false;
+        } else {
+            sched.enable_charge = true;
+        }
+    }
+    // Enable discharge (HR 59) — 0 = disable, 1 = always-on
+    if let Some(&v) = updates.get(&59) {
+        if v == 0 {
+            sched.discharge_start = 0.0;
+            sched.discharge_end = 0.0;
+            sched.enable_discharge = false;
+        } else {
+            sched.enable_discharge = true;
+        }
+    }
+    // TPH mirrors
+    if let Some(&v) = updates.get(&1111) {
+        sched.charge_target_soc = v as f64;
+    }
+    if let Some(&v) = updates.get(&1112) {
+        sched.enable_charge = v != 0;
+    }
+    if let Some(&v) = updates.get(&1122) {
+        sched.enable_discharge = v != 0;
+    }
+    if let Some(&v) = updates.get(&1123) {
+        sched.enable_charge = v != 0;
+    }
+    if let Some(&v) = updates.get(&1113) {
+        sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1114) {
+        sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1115) {
+        sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1116) {
+        sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1118) {
+        sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1119) {
+        sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1120) {
+        sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
+    if let Some(&v) = updates.get(&1121) {
+        sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+    }
 }

@@ -40,6 +40,9 @@ pub const PROTOCOL_ID: u16 = 0x0001;
 /// Fixed unit ID for GivEnergy frames.
 pub const UNIT_ID: u8 = 0x01;
 
+/// Heartbeat main function code.
+pub const FUNC_HEARTBEAT: u8 = 0x01;
+
 /// Transparent-message function code used by the GivEnergy data adapter.
 pub const FUNC_TRANSPARENT: u8 = 0x02;
 
@@ -56,6 +59,7 @@ pub const HEADER_SIZE: usize = 2 + 2 + 2 + 1 + 1 + SERIAL_LEN + 8;
 
 pub const FC_READ_HOLDING: u8 = 0x03;
 pub const FC_READ_INPUT: u8 = 0x04;
+pub const FC_READ_METER: u8 = 0x16;
 pub const FC_WRITE_SINGLE: u8 = 0x06;
 
 // ---------------------------------------------------------------------------
@@ -102,6 +106,17 @@ pub struct ModbusCommand {
 /// The inner PDU = slave_address + function_code + payload.
 /// CRC-16/Modbus is appended over the inner PDU.
 pub fn build_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, payload: &[u8]) -> Vec<u8> {
+    build_response_with_padding(serial, slave, func, payload, 0x8A)
+}
+
+/// Build a GivEnergy response frame with explicit transparent padding byte value.
+pub fn build_response_with_padding(
+    serial: &[u8; SERIAL_LEN],
+    slave: u8,
+    func: u8,
+    payload: &[u8],
+    padding: u8,
+) -> Vec<u8> {
     // Inner PDU: slave + func + payload + CRC
     let mut inner = Vec::with_capacity(2 + payload.len() + 2);
     inner.push(slave);
@@ -119,8 +134,22 @@ pub fn build_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, payload: &
     frame.push(UNIT_ID);
     frame.push(FUNC_TRANSPARENT);
     frame.extend_from_slice(serial);
-    frame.extend_from_slice(&8u64.to_be_bytes());
+    frame.extend_from_slice(&(padding as u64).to_be_bytes());
     frame.extend_from_slice(&inner);
+    frame
+}
+
+/// Build a GivEnergy heartbeat response frame.
+pub fn build_heartbeat_response(serial: &[u8; SERIAL_LEN]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(HEADER_SIZE + SERIAL_LEN);
+    frame.extend_from_slice(&TRANSACTION_ID.to_be_bytes());
+    frame.extend_from_slice(&PROTOCOL_ID.to_be_bytes());
+    // length = unit_id(1) + func_id(1) + serial(10) = 12
+    let length: u16 = 12;
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.push(UNIT_ID);
+    frame.push(FUNC_HEARTBEAT);
+    frame.extend_from_slice(serial);
     frame
 }
 
@@ -131,7 +160,7 @@ pub fn build_error_response(
     func: u8,
     exception: u8,
 ) -> Vec<u8> {
-    build_response(serial, slave, func | 0x80, &[exception])
+    build_response_with_padding(serial, slave, func | 0x80, &[exception], 0x12)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +172,7 @@ pub fn build_error_response(
 /// Listens for GivEnergy proprietary frames and responds in kind.
 /// Supports multi-slave addressing for battery BMS modules:
 /// - Slave 0x32: inverter registers + battery #1 BMS (IR 60-119)
-/// - Slave 0x33-0x37: battery modules 2-5 BMS (IR 60-119)
+/// - Slave 0x33-0x36: battery modules 2-5 BMS (IR 60-119)
 pub async fn run_modbus_server(
     addr: SocketAddr,
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
@@ -197,10 +226,6 @@ pub async fn run_modbus_server(
                     }
 
                     let func_id = pending[7];
-                    if func_id != FUNC_TRANSPARENT {
-                        tracing::warn!("Invalid function ID 0x{func_id:02X}, dropping connection");
-                        return;
-                    }
 
                     let length = u16::from_be_bytes([pending[4], pending[5]]) as usize;
                     let frame_len = 6 + length; // bytes 0-5 + everything after
@@ -214,6 +239,19 @@ pub async fn run_modbus_server(
                     // Extract serial (bytes 8-17)
                     let mut serial = [b' '; SERIAL_LEN];
                     serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
+
+                    // Handle heartbeat (main function 0x01)
+                    if func_id == FUNC_HEARTBEAT {
+                        let resp = build_heartbeat_response(&serial);
+                        let _ = stream.write_all(&resp).await;
+                        pending.drain(..frame_len);
+                        continue;
+                    }
+
+                    if func_id != FUNC_TRANSPARENT {
+                        tracing::warn!("Invalid function ID 0x{func_id:02X}, dropping connection");
+                        return;
+                    }
 
                     // Inner PDU starts at byte 26 (HEADER_SIZE)
                     let inner_pdu = &frame[HEADER_SIZE..];
@@ -244,7 +282,7 @@ pub async fn run_modbus_server(
                     }
 
                     match inner_func {
-                        FC_READ_HOLDING | FC_READ_INPUT => {
+                        FC_READ_HOLDING | FC_READ_INPUT | FC_READ_METER => {
                             if inner_payload.len() < 4 {
                                 tracing::warn!("Read request payload too short");
                                 let resp = build_error_response(
@@ -261,7 +299,7 @@ pub async fn run_modbus_server(
                                 u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
                             let count = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
 
-                            if count == 0 || count > 125 {
+                            if count == 0 || count > 60 {
                                 let resp = build_error_response(
                                     &serial,
                                     slave,
@@ -281,9 +319,9 @@ pub async fn run_modbus_server(
                                 } else {
                                     None
                                 }
-                            } else if (0x33..=0x37).contains(&slave) {
-                                // Additional batteries: all IR reads are BMS
-                                if inner_func == FC_READ_INPUT {
+                            } else if (0x33..=0x36).contains(&slave) {
+                                // Additional batteries: IR 60-119 on battery slaves
+                                if inner_func == FC_READ_INPUT && (60..120).contains(&start_addr) {
                                     Some((slave - 0x33 + 1) as usize)
                                 } else {
                                     None
@@ -301,7 +339,8 @@ pub async fn run_modbus_server(
                                     drop(store_guard);
                                     let mut data = Vec::with_capacity(count as usize * 2);
                                     for i in 0..count {
-                                        let idx = (start_addr - 60 + i) as usize;
+                                        let idx =
+                                            start_addr.saturating_sub(60) as usize + i as usize;
                                         let val = if idx < 60 { bms[idx] } else { 0 };
                                         data.extend_from_slice(&val.to_be_bytes());
                                     }
@@ -337,7 +376,13 @@ pub async fn run_modbus_server(
                             resp_payload.extend_from_slice(&count.to_be_bytes());
                             resp_payload.extend_from_slice(&reg_data);
 
-                            let resp = build_response(&serial, slave, inner_func, &resp_payload);
+                            let resp = build_response_with_padding(
+                                &serial,
+                                slave,
+                                inner_func,
+                                &resp_payload,
+                                0x8A,
+                            );
                             tracing::debug!(
                                 "Read response: slave=0x{:02X} fn=0x{:02X} start={} count={}",
                                 slave,

@@ -61,8 +61,32 @@ pub enum Command {
     CancelCalibration,
     /// Clear all active faults at once.
     FixAllFaults,
+    /// Set HR20 enable charge target flag.
+    SetEnableChargeTarget(bool),
+    /// Set HR50 active power rate percentage.
+    SetActivePowerRate(f64),
+    /// Set HR111 battery charge limit percentage.
+    SetBatteryChargeLimit(f64),
+    /// Set HR112 battery discharge limit percentage.
+    SetBatteryDischargeLimit(f64),
+    /// Simulate inverter reboot request.
+    InverterReboot,
+    /// Set HR318-320 battery pause controls.
+    SetBatteryPause {
+        mode: u16,
+        start: u16,
+        end: u16,
+    },
     /// Update the charge/discharge schedule.
     SetSchedule(Schedule),
+    /// Set HR166 enable RTC flag.
+    SetEnableRtc(bool),
+    /// Set HR114 battery discharge min power reserve (%).
+    SetBatteryDischargeMinPowerReserve(f64),
+    /// Set HR311 export priority (0=Battery, 1=Grid, 2=Load).
+    SetExportPriority(u16),
+    /// Set HR317 enable EPS mode.
+    SetEnableEps(bool),
     /// Change simulation time step (seconds per tick) — used for speed-up.
     SetTickInterval(u64),
 }
@@ -178,6 +202,46 @@ impl SimulationEngine {
                 }
                 Command::FixAllFaults => {
                     self.state.active_faults.clear();
+                }
+                Command::SetEnableChargeTarget(v) => {
+                    self.state.enable_charge_target = v;
+                }
+                Command::SetActivePowerRate(v) => {
+                    let pct = v.clamp(0.0, 100.0);
+                    self.state.active_power_rate_percent = pct;
+                    self.state.inverter.export_limit_w =
+                        self.state.config.max_ac_watts * pct / 100.0;
+                }
+                Command::SetBatteryChargeLimit(v) => {
+                    let pct = v.clamp(0.0, 50.0);
+                    self.state.battery_charge_limit_percent = pct;
+                }
+                Command::SetBatteryDischargeLimit(v) => {
+                    let pct = v.clamp(0.0, 50.0);
+                    self.state.battery_discharge_limit_percent = pct;
+                }
+                Command::InverterReboot => {
+                    self.state.inverter.temperature_celsius = 25.0;
+                    self.state.active_faults.clear();
+                    self.state.energy_totals = EnergyTotals::default();
+                    self.state.inverter.mode_state.set_user(InverterMode::Eco);
+                }
+                Command::SetBatteryPause { mode, start, end } => {
+                    self.state.battery_pause_mode = mode;
+                    self.state.battery_pause_slot_start = start;
+                    self.state.battery_pause_slot_end = end;
+                }
+                Command::SetEnableRtc(v) => {
+                    self.state.enable_rtc = v;
+                }
+                Command::SetBatteryDischargeMinPowerReserve(v) => {
+                    self.state.battery_discharge_min_power_reserve = v.clamp(4.0, 100.0);
+                }
+                Command::SetExportPriority(v) => {
+                    self.state.export_priority = v.min(2);
+                }
+                Command::SetEnableEps(v) => {
+                    self.state.enable_eps = v;
                 }
                 Command::SetSchedule(sched) => {
                     for device in &mut self.devices {
@@ -947,7 +1011,43 @@ impl DeviceModel for BatteryEngine {
         let hour = ctx.now.time().num_seconds_from_midnight() as f64 / 3600.0;
         let ambient = self.ambient_for_hour(hour);
 
+        // Check battery pause mode/slot
+        if state.battery_pause_mode == 1 && state.battery_pause_slot_start != 60 && state.battery_pause_slot_end != 60 {
+            let in_pause_window = if state.battery_pause_slot_start < state.battery_pause_slot_end {
+                let start_h = (state.battery_pause_slot_start / 100) as f64 + (state.battery_pause_slot_start % 100) as f64 / 60.0;
+                let end_h = (state.battery_pause_slot_end / 100) as f64 + (state.battery_pause_slot_end % 100) as f64 / 60.0;
+                hour >= start_h && hour < end_h
+            } else {
+                false
+            };
+            if in_pause_window {
+                for b in &mut state.batteries {
+                    b.power_kw = 0.0;
+                }
+                state.sync_battery_from_vec();
+                return;
+            }
+        }
+
+        // Apply battery charge/discharge limit percentages
+        // HR 111/112 use 0-50 range where 50 = full power (no cap)
+        // Linearly scale: at 25 = half power, at 50+ = no limit
+        let charge_scale = (state.battery_charge_limit_percent / 50.0).clamp(0.0, 1.0);
+        let discharge_scale = (state.battery_discharge_limit_percent / 50.0).clamp(0.0, 1.0);
+
         for b in &mut state.batteries {
+            // Calculate max power from c-rate first
+            let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
+            if b.power_kw > 0.0 {
+                // Charging: apply charge limit
+                let max_charge_kw = c_rate_kw * charge_scale.max(0.02);
+                b.power_kw = b.power_kw.min(max_charge_kw);
+            } else if b.power_kw < 0.0 {
+                // Discharging: apply discharge limit
+                let max_discharge_kw = c_rate_kw * discharge_scale.max(0.02);
+                b.power_kw = b.power_kw.max(-max_discharge_kw);
+            }
+
             // Apply thermal derating
             let derated_power = self.derate_power(b.power_kw, b.temperature_celsius);
             b.power_kw = derated_power;
@@ -1058,7 +1158,11 @@ impl DeviceModel for EnergyTracker {
 
         // Battery: positive = charging, negative = discharging
         if battery_kw > 0.0 {
-            totals.battery_charge_kwh += battery_kw * dt_hours;
+            let battery_charge_kwh = battery_kw * dt_hours;
+            totals.battery_charge_kwh += battery_charge_kwh;
+            if grid_w > 0.0 {
+                totals.ac_charge_kwh += battery_charge_kwh.min(grid_w / 1000.0 * dt_hours);
+            }
         } else {
             totals.battery_discharge_kwh += (-battery_kw) * dt_hours;
         }
@@ -1123,7 +1227,13 @@ impl DeviceModel for ScheduleEngine {
         };
 
         // Enable_charge = always-on: charge whenever SOC < target (no window restriction)
-        if self.schedule.enable_charge && soc < self.schedule.charge_target_soc {
+        // The global charge_target_soc is only respected when enable_charge_target is true.
+        let global_target = if state.enable_charge_target {
+            self.schedule.charge_target_soc
+        } else {
+            100.0
+        };
+        if self.schedule.enable_charge && soc < global_target {
             state.scheduled_charge = true;
             return;
         }
@@ -1134,7 +1244,7 @@ impl DeviceModel for ScheduleEngine {
             return;
         }
 
-        // Check charge slot 1
+        // Check charge slot 1 — uses slot target, not gated by enable_charge_target
         if self.schedule.charge_start != self.schedule.charge_end {
             if in_window(self.schedule.charge_start, self.schedule.charge_end, hour)
                 && soc < self.schedule.charge_target_soc
@@ -1157,28 +1267,32 @@ impl DeviceModel for ScheduleEngine {
             }
         }
 
-        // Check discharge slot 1
-        if self.schedule.discharge_start != self.schedule.discharge_end {
-            if in_window(
-                self.schedule.discharge_start,
-                self.schedule.discharge_end,
-                hour,
-            ) && soc > self.schedule.discharge_target_soc
-            {
-                state.scheduled_discharge = true;
-                return;
+        // Skip discharge slots for AC-coupled inverters (DTC prefix "3")
+        let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
+        if !is_ac_coupled {
+            // Check discharge slot 1
+            if self.schedule.discharge_start != self.schedule.discharge_end {
+                if in_window(
+                    self.schedule.discharge_start,
+                    self.schedule.discharge_end,
+                    hour,
+                ) && soc > self.schedule.discharge_target_soc
+                {
+                    state.scheduled_discharge = true;
+                    return;
+                }
             }
-        }
 
-        // Check discharge slot 2
-        if self.schedule.discharge_start_2 != self.schedule.discharge_end_2 {
-            if in_window(
-                self.schedule.discharge_start_2,
-                self.schedule.discharge_end_2,
-                hour,
-            ) && soc > self.schedule.discharge_target_soc_2
-            {
-                state.scheduled_discharge = true;
+            // Check discharge slot 2
+            if self.schedule.discharge_start_2 != self.schedule.discharge_end_2 {
+                if in_window(
+                    self.schedule.discharge_start_2,
+                    self.schedule.discharge_end_2,
+                    hour,
+                ) && soc > self.schedule.discharge_target_soc_2
+                {
+                    state.scheduled_discharge = true;
+                }
             }
         }
     }

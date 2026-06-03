@@ -371,7 +371,7 @@ fn response_frame_has_correct_givenergy_header() {
     assert_eq!(resp[7], 0x02);
     assert_eq!(&resp[8..18], &[b' '; 10]);
     let padding = u64::from_be_bytes(resp[18..26].try_into().unwrap());
-    assert_eq!(padding, 8);
+    assert_eq!(padding, 0x8A);
 }
 
 #[test]

@@ -134,6 +134,15 @@ impl RegisterStore {
 
     /// Update all register values from plant state.
     pub fn project_from_state(&mut self, state: &sim_models::PlantState) {
+        let u32_words = |engineering: f64, scaling: f64| -> (u16, u16) {
+            let raw = if scaling > 0.0 {
+                (engineering / scaling).max(0.0).round() as u32
+            } else {
+                engineering.max(0.0).round() as u32
+            };
+            ((raw >> 16) as u16, (raw & 0xFFFF) as u16)
+        };
+
         for def in &self.defs {
             let key = def.store_key();
 
@@ -160,10 +169,25 @@ impl RegisterStore {
                 ),
                 // IR 5: Grid voltage (×0.1 V)
                 "ge_ir_grid_voltage" => Some(240.0),
+                // IR 6-7: Battery throughput total (uint32, ×0.1 kWh)
+                "ge_ir_battery_throughput_high" | "ge_ir_battery_throughput_low" => {
+                    let total: f64 = state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    let (hi, lo) = u32_words(total, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
                 // IR 8: PV1 current (×0.1 A) — per-string: pv1_w / 350V
                 "ge_ir_pv1_current" => Some(state.solar.pv1_w / 350.0),
                 // IR 9: PV2 current (×0.1 A)
                 "ge_ir_pv2_current" => Some(state.solar.pv2_w / 350.0),
+                // IR 11-12: PV total lifetime (uint32, ×0.1 kWh)
+                "ge_ir_pv_total_high" | "ge_ir_pv_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
                 // IR 13: Grid frequency (×0.01 Hz)
                 "ge_ir_grid_frequency" => Some(50.0),
                 // IR 17: PV1 energy today (×0.1 kWh) — proportional to power split
@@ -188,6 +212,13 @@ impl RegisterStore {
                 }
                 // IR 20: PV2 power (W)
                 "ge_ir_pv2_power" => Some(state.solar.pv2_w),
+                // IR 21-22: Grid export total (uint32, ×0.1 kWh)
+                "ge_ir_grid_export_total_high" | "ge_ir_grid_export_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.grid_export_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
                 // IR 25: Export energy today (×0.1 kWh)
                 "ge_ir_today_export_energy" => Some(state.energy_totals.grid_export_kwh),
                 // IR 26: Import energy today (×0.1 kWh)
@@ -201,14 +232,34 @@ impl RegisterStore {
                     self.values.insert(key, clamped as i16 as u16);
                     continue;
                 }
-                // IR 35: Consumption today (×0.1 kWh)
-                "ge_ir_today_consumption" => Some(state.energy_totals.load_consumption_kwh),
+                // IR 32-33: Grid import total (uint32, ×0.1 kWh)
+                "ge_ir_grid_import_total_high" | "ge_ir_grid_import_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.grid_import_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                // IR 35: AC charge today (×0.1 kWh)
+                "ge_ir_ac_charge_today" => {
+                    let raw = (state.energy_totals.ac_charge_kwh * 10.0).round() as u16;
+                    self.values.insert(key, raw);
+                    continue;
+                }
                 // IR 36: Battery charge today (×0.1 kWh)
                 "ge_ir_today_charge_energy" => Some(state.energy_totals.battery_charge_kwh),
                 // IR 37: Battery discharge today (×0.1 kWh)
                 "ge_ir_today_discharge_energy" => Some(state.energy_totals.battery_discharge_kwh),
                 // IR 41: Inverter temperature (×0.1 °C)
                 "ge_ir_inverter_temperature" => Some(state.inverter.temperature_celsius),
+                // IR 44: PV generation today (×0.1 kWh)
+                "ge_ir_pv_generation_today" => Some(state.energy_totals.solar_generation_kwh),
+                // IR 45-46: PV generation total (uint32, ×0.1 kWh)
+                "ge_ir_pv_generation_total_high" | "ge_ir_pv_generation_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
                 // IR 50: Battery voltage (×0.01 V)
                 "ge_ir_battery_voltage" => {
                     let soc = state.aggregate_soc();
@@ -243,7 +294,7 @@ impl RegisterStore {
                 "ge_hr_device_type" => {
                     // Encode inverter type as DTC hex code
                     let dtc: u16 = match state.config.inverter_type.as_str() {
-                        "Gen1Hybrid" => 0x1001,
+                        "Gen1Hybrid" => 0x2001,
                         "Gen3Hybrid" => 0x2001,
                         "Gen3Hybrid8kW" => 0x2101,
                         "Gen3Hybrid10kW" => 0x2102,
@@ -283,17 +334,23 @@ impl RegisterStore {
                 }
                 // HR 21: ARM firmware version
                 "ge_hr_arm_firmware" => {
-                    self.values.insert(key, 300); // FW 3.xx = Gen3
+                    let fw = match state.config.inverter_type.as_str() {
+                        "Gen1Hybrid" => 100,
+                        "Gen3Hybrid" => 300,
+                        _ => 300,
+                    };
+                    self.values.insert(key, fw);
                     continue;
                 }
                 // HR 29: Battery calibration stage (0=off)
                 "ge_hr_battery_calibration_stage" => {
-                    self.values.insert(key, 0);
+                    self.values
+                        .insert(key, state.calibration.stage.as_u8() as u16);
                     continue;
                 }
                 // HR 20: Enable charge target
                 "ge_hr_enable_charge_target" => {
-                    self.values.insert(key, 0);
+                    self.values.insert(key, state.enable_charge_target as u16);
                     continue;
                 }
                 // HR 27: Battery power mode (0=export, 1=eco)
@@ -351,7 +408,7 @@ impl RegisterStore {
                     continue;
                 }
                 // HR 50: Active power rate (%)
-                "ge_hr_active_power_rate" => Some(100.0),
+                "ge_hr_active_power_rate" => Some(state.active_power_rate_percent),
                 // HR 55: Battery capacity in Ah (total system)
                 // kWh = Ah * nominal_voltage / 1000 → Ah = kWh * 1000 / V
                 "ge_hr_battery_capacity_ah" => {
@@ -406,9 +463,13 @@ impl RegisterStore {
                 // HR 110: Battery SOC reserve (%)
                 "ge_hr_battery_soc_reserve" => Some(state.min_aggregate_soc()),
                 // HR 111: Battery charge limit (%)
-                "ge_hr_battery_charge_limit" => Some(100.0),
+                "ge_hr_battery_charge_limit" => Some(state.battery_charge_limit_percent),
                 // HR 112: Battery discharge limit (%)
-                "ge_hr_battery_discharge_limit" => Some(100.0),
+                "ge_hr_battery_discharge_limit" => Some(state.battery_discharge_limit_percent),
+                // HR 114: Battery discharge min power reserve (%)
+                "ge_hr_battery_discharge_min_power_reserve" => {
+                    Some(state.battery_discharge_min_power_reserve)
+                }
                 // HR 116: Charge target SOC (%)
                 "ge_hr_charge_target_soc" => Some(100.0),
                 // HR 163: Inverter reboot (write-only, always reads 0)
@@ -416,19 +477,34 @@ impl RegisterStore {
                     self.values.insert(key, 0);
                     continue;
                 }
+                // HR 166: Enable RTC
+                "ge_hr_rtc_enable" => {
+                    self.values.insert(key, state.enable_rtc as u16);
+                    continue;
+                }
                 // HR 318: Battery pause mode
                 "ge_hr_battery_pause_mode" => {
-                    self.values.insert(key, 0); // not paused
+                    self.values.insert(key, state.battery_pause_mode);
                     continue;
                 }
                 // HR 319: Battery pause slot 1 start (HHMM)
                 "ge_hr_battery_pause_slot_1_start" => {
-                    self.values.insert(key, 60); // disabled sentinel
+                    self.values.insert(key, state.battery_pause_slot_start);
                     continue;
                 }
                 // HR 320: Battery pause slot 1 end (HHMM)
                 "ge_hr_battery_pause_slot_1_end" => {
-                    self.values.insert(key, 60); // disabled sentinel
+                    self.values.insert(key, state.battery_pause_slot_end);
+                    continue;
+                }
+                // HR 311: Export priority
+                "ge_hr_export_priority" => {
+                    self.values.insert(key, state.export_priority);
+                    continue;
+                }
+                // HR 317: Enable EPS
+                "ge_hr_enable_eps" => {
+                    self.values.insert(key, state.enable_eps as u16);
                     continue;
                 }
 
@@ -581,6 +657,13 @@ impl RegisterStore {
     /// Call after `project_from_state` — this overwrites the hardcoded
     /// "disabled sentinel" values with the actual schedule.
     pub fn project_schedule(&mut self, schedule: &sim_models::Schedule) {
+        self.project_schedule_for(schedule, "");
+    }
+
+    /// Like `project_schedule` but accepts inverter type string.
+    /// AC-coupled inverters (prefix "ACCoupled") skip discharge slot projection.
+    pub fn project_schedule_for(&mut self, schedule: &sim_models::Schedule, inverter_type: &str) {
+        let is_ac_coupled = inverter_type.starts_with("ACCoupled");
         let hrs_to_hhmm = |h: f64| -> u16 {
             if h <= 0.0 {
                 return 60; /* disabled */
@@ -604,16 +687,17 @@ impl RegisterStore {
         let cs2_end = hrs_to_hhmm(schedule.charge_end_2);
         self.write(31, cs2_start);
         self.write(32, cs2_end);
+        self.write(243, cs2_start);
+        self.write(244, cs2_end);
 
-        // Discharge slot 1 (HR 56-57)
-        let ds1_start = hrs_to_hhmm(schedule.discharge_start);
-        let ds1_end = hrs_to_hhmm(schedule.discharge_end);
+        // Discharge slots — skipped for AC-coupled inverters
+        let ds1_start = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start) };
+        let ds1_end = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end) };
         self.write(56, ds1_start);
         self.write(57, ds1_end);
 
-        // Discharge slot 2 (HR 44-45)
-        let ds2_start = hrs_to_hhmm(schedule.discharge_start_2);
-        let ds2_end = hrs_to_hhmm(schedule.discharge_end_2);
+        let ds2_start = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_start_2) };
+        let ds2_end = if is_ac_coupled { 60 } else { hrs_to_hhmm(schedule.discharge_end_2) };
         self.write(44, ds2_start);
         self.write(45, ds2_end);
 
@@ -628,8 +712,10 @@ impl RegisterStore {
         };
         self.write(96, charge_enabled);
 
-        // Enable discharge (HR 59) — enabled if any discharge window is set OR enable_discharge flag
-        let discharge_enabled = if schedule.enable_discharge
+        // Enable discharge (HR 59) — always disabled for AC-coupled
+        let discharge_enabled = if is_ac_coupled {
+            0
+        } else if schedule.enable_discharge
             || schedule.discharge_start != schedule.discharge_end
             || schedule.discharge_start_2 != schedule.discharge_end_2
         {
@@ -642,6 +728,28 @@ impl RegisterStore {
         // Charge target SOC (HR 116) — also write TPH mirror at HR 1111
         self.write(116, schedule.charge_target_soc as u16);
         self.write(1111, schedule.charge_target_soc as u16);
+        // TPH SOC reserve mirror (HR 1109) retains the default reserve value.
+        self.write(1109, 10);
+        // TPH enable flags.
+        let enable_charge = if schedule.enable_charge
+            || schedule.charge_start != schedule.charge_end
+            || schedule.charge_start_2 != schedule.charge_end_2
+        {
+            1
+        } else {
+            0
+        };
+        let enable_discharge = if schedule.enable_discharge
+            || schedule.discharge_start != schedule.discharge_end
+            || schedule.discharge_start_2 != schedule.discharge_end_2
+        {
+            1
+        } else {
+            0
+        };
+        self.write(1112, enable_charge);
+        self.write(1122, enable_discharge);
+        self.write(1123, enable_charge);
 
         // Per-slot target SOC registers (Gen3 extended) — shared with TPH
         // HR 242: CHARGE_TARGET_SOC_1 (slot 1)
@@ -650,8 +758,9 @@ impl RegisterStore {
         // HR 275: DISCHARGE_TARGET_SOC_2 (slot 2)
         self.write(242, schedule.charge_target_soc as u16);
         self.write(245, schedule.charge_target_soc_2 as u16);
-        self.write(272, schedule.discharge_target_soc as u16);
-        self.write(275, schedule.discharge_target_soc_2 as u16);
+        // Discharge target SOC — 0 for AC-coupled
+        self.write(272, if is_ac_coupled { 0 } else { schedule.discharge_target_soc as u16 });
+        self.write(275, if is_ac_coupled { 0 } else { schedule.discharge_target_soc_2 as u16 });
 
         // TPH mirror slot time registers (HR 1113-1121)
         // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
@@ -667,7 +776,14 @@ impl RegisterStore {
         self.write(1120, ds2_start);
         self.write(1121, ds2_end);
         // TPH_BATTERY_SOC_RESERVE = 1109 (mirrors HR 110)
-        self.write(1109, schedule.charge_target_soc as u16);
+        let reserve = self
+            .read_by_space(110, RegisterSpace::Holding)
+            .filter(|&v| v != 0)
+            .unwrap_or(10);
+        self.write(1109, reserve);
+        self.write(1112, if schedule.enable_charge { 1 } else { 0 });
+        self.write(1122, discharge_enabled);
+        self.write(1123, charge_enabled);
 
         // Internal schedule registers (HR 700-711)
         self.write(700, cs1_start);
@@ -842,6 +958,24 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Input,
         },
         RegisterDef {
+            address: 6,
+            name: "ge_ir_battery_throughput_high".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 7,
+            name: "ge_ir_battery_throughput_low".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
             address: 8,
             name: "ge_ir_pv1_current".into(),
             category: C::PV,
@@ -856,6 +990,24 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             category: C::PV,
             typ: T::U16,
             scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 11,
+            name: "ge_ir_pv_total_high".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 12,
+            name: "ge_ir_pv_total_low".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
             access: ReadOnly,
             space: Input,
         },
@@ -905,6 +1057,24 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Input,
         },
         RegisterDef {
+            address: 21,
+            name: "ge_ir_grid_export_total_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 22,
+            name: "ge_ir_grid_export_total_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
             address: 25,
             name: "ge_ir_today_export_energy".into(),
             category: C::Grid,
@@ -932,8 +1102,26 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Input,
         },
         RegisterDef {
+            address: 32,
+            name: "ge_ir_grid_import_total_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 33,
+            name: "ge_ir_grid_import_total_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
             address: 35,
-            name: "ge_ir_today_consumption".into(),
+            name: "ge_ir_ac_charge_today".into(),
             category: C::Grid,
             typ: T::U16,
             scaling_factor: 0.1,
@@ -964,6 +1152,33 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             category: C::Inverter,
             typ: T::S16,
             scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 44,
+            name: "ge_ir_pv_generation_today".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 45,
+            name: "ge_ir_pv_generation_total_high".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 46,
+            name: "ge_ir_pv_generation_total_low".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
             access: ReadOnly,
             space: Input,
         },
@@ -1306,6 +1521,96 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 114,
+            name: "ge_hr_battery_discharge_min_power_reserve".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 166,
+            name: "ge_hr_rtc_enable".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 242,
+            name: "ge_hr_charge_target_soc_1".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 243,
+            name: "ge_hr_charge_slot_2_start_ext".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 244,
+            name: "ge_hr_charge_slot_2_end_ext".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 245,
+            name: "ge_hr_charge_target_soc_2".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 272,
+            name: "ge_hr_discharge_target_soc_1".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 275,
+            name: "ge_hr_discharge_target_soc_2".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 313,
+            name: "ge_hr_battery_charge_limit_ac".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 314,
+            name: "ge_hr_battery_discharge_limit_ac".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
             address: 163,
             name: "ge_hr_inverter_reboot".into(),
             category: C::Configuration,
@@ -1336,6 +1641,447 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             address: 320,
             name: "ge_hr_battery_pause_slot_1_end".into(),
             category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 311,
+            name: "ge_hr_export_priority".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 317,
+            name: "ge_hr_enable_eps".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1078,
+            name: "tph_battery_discharge_min_power_reserve".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1108,
+            name: "tph_battery_discharge_limit_ac".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1109,
+            name: "tph_battery_soc_reserve".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1110,
+            name: "tph_battery_charge_limit_ac".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1111,
+            name: "tph_charge_target_soc".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1112,
+            name: "tph_ac_charge_enable".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1113,
+            name: "tph_charge_slot_1_start".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1114,
+            name: "tph_charge_slot_1_end".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1115,
+            name: "tph_charge_slot_2_start".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1116,
+            name: "tph_charge_slot_2_end".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1118,
+            name: "tph_discharge_slot_1_start".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1119,
+            name: "tph_discharge_slot_1_end".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1120,
+            name: "tph_discharge_slot_2_start".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1121,
+            name: "tph_discharge_slot_2_end".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1122,
+            name: "tph_force_discharge_enable".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 1123,
+            name: "tph_force_charge_enable".into(),
+            category: C::Schedules,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2040,
+            name: "ems_export_limit".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2044,
+            name: "ems_register_2044".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2045,
+            name: "ems_register_2045".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2046,
+            name: "ems_register_2046".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2047,
+            name: "ems_register_2047".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2048,
+            name: "ems_register_2048".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2049,
+            name: "ems_register_2049".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2050,
+            name: "ems_register_2050".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2051,
+            name: "ems_register_2051".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2052,
+            name: "ems_register_2052".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2053,
+            name: "ems_register_2053".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2054,
+            name: "ems_register_2054".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2055,
+            name: "ems_register_2055".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2056,
+            name: "ems_register_2056".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2057,
+            name: "ems_register_2057".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2058,
+            name: "ems_register_2058".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2059,
+            name: "ems_register_2059".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2060,
+            name: "ems_register_2060".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2061,
+            name: "ems_register_2061".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2062,
+            name: "ems_register_2062".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2063,
+            name: "ems_register_2063".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2064,
+            name: "ems_register_2064".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2065,
+            name: "ems_register_2065".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2066,
+            name: "ems_register_2066".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2067,
+            name: "ems_register_2067".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2068,
+            name: "ems_register_2068".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2069,
+            name: "ems_register_2069".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2070,
+            name: "ems_register_2070".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2071,
+            name: "ems_register_2071".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2072,
+            name: "ems_register_2072".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2073,
+            name: "ems_register_2073".into(),
+            category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -1898,6 +2644,89 @@ mod tests {
         assert_eq!(ir0, Some(1));
         assert_eq!(hr0, Some(0x2001));
         assert_ne!(ir0, hr0, "IR 0 and HR 0 must not collide");
+    }
+
+    #[test]
+    fn ge_input_reference_energy_registers_project() {
+        let mut state = PlantState::new(test_ts());
+        state.energy_totals.solar_generation_kwh = 12.5;
+        state.energy_totals.grid_export_kwh = 3.0;
+        state.energy_totals.grid_import_kwh = 1.5;
+        state.energy_totals.ac_charge_kwh = 0.7;
+        state.batteries[0].throughput_kwh = 8.4;
+        state.sync_battery_from_vec();
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert_eq!(store.read_by_space(6, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(7, RegisterSpace::Input), Some(84));
+        assert_eq!(store.read_by_space(11, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(12, RegisterSpace::Input), Some(125));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(22, RegisterSpace::Input), Some(30));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(33, RegisterSpace::Input), Some(15));
+        assert_eq!(store.read_by_space(35, RegisterSpace::Input), Some(7));
+        assert_eq!(store.read_by_space(44, RegisterSpace::Input), Some(125));
+        assert_eq!(store.read_by_space(45, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(46, RegisterSpace::Input), Some(125));
+    }
+
+    #[test]
+    fn gen1_hybrid_uses_real_hybrid_dtc_with_gen1_firmware_century() {
+        let now = test_ts();
+        let mut s = PlantState::new(now);
+        s.config.inverter_type = "Gen1Hybrid".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x2001));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(100));
+    }
+
+    #[test]
+    fn extended_givtcp_schedule_registers_are_catalogued_and_projected() {
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let mut sched = sim_models::Schedule::default();
+        sched.charge_start = 1.5;
+        sched.charge_end = 2.5;
+        sched.charge_start_2 = 3.0;
+        sched.charge_end_2 = 4.0;
+        sched.charge_target_soc = 80.0;
+        sched.charge_target_soc_2 = 90.0;
+        sched.discharge_start = 18.0;
+        sched.discharge_end = 19.0;
+        sched.discharge_start_2 = 20.0;
+        sched.discharge_end_2 = 21.0;
+        sched.discharge_target_soc = 20.0;
+        sched.discharge_target_soc_2 = 30.0;
+        sched.enable_charge = true;
+        sched.enable_discharge = true;
+
+        store.project_schedule(&sched);
+
+        for addr in [
+            242, 243, 244, 245, 272, 275, 1109, 1111, 1112, 1113, 1114, 1115, 1116, 1118, 1119,
+            1120, 1121, 1122, 1123,
+        ] {
+            assert!(
+                store.write(addr, 42),
+                "HR {addr} should be catalogued ReadWrite"
+            );
+        }
+        store.project_schedule(&sched);
+        assert_eq!(store.read_by_space(242, RegisterSpace::Holding), Some(80));
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(300));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(400));
+        assert_eq!(store.read_by_space(245, RegisterSpace::Holding), Some(90));
+        assert_eq!(store.read_by_space(272, RegisterSpace::Holding), Some(20));
+        assert_eq!(store.read_by_space(275, RegisterSpace::Holding), Some(30));
+        assert_eq!(store.read_by_space(1109, RegisterSpace::Holding), Some(10));
+        assert_eq!(store.read_by_space(1111, RegisterSpace::Holding), Some(80));
+        assert_eq!(store.read_by_space(1113, RegisterSpace::Holding), Some(130));
+        assert_eq!(store.read_by_space(1115, RegisterSpace::Holding), Some(300));
+        assert_eq!(store.read_by_space(1122, RegisterSpace::Holding), Some(1));
+        assert_eq!(store.read_by_space(1123, RegisterSpace::Holding), Some(1));
     }
 
     // ===================================================================

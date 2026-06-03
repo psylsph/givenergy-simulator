@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-03
+
+### Added
+- Heartbeat (main function 0x01) support in Modbus server — keeps client connections alive
+- FC 0x16 (Read Meter Product Registers) support in Modbus server
+- Battery pause mode enforcement — battery power zeroed during pause window when mode=1
+- Battery charge/discharge limit enforcement (HR 111/112) scaled from 0-50 range
+- `enable_charge_target` flag gates global charge target in ScheduleEngine
+- New PlantState fields: `battery_discharge_min_power_reserve`, `enable_rtc`, `export_priority`, `enable_eps`
+- New commands: `SetEnableRtc`, `SetBatteryDischargeMinPowerReserve`, `SetExportPriority`, `SetEnableEps`
+- `scheduled_charge` / `scheduled_discharge` now excluded from JSON persistence (`#[serde(skip)]`)
+- AC-coupled inverter detection — discharge slots, pause slot, and charge slot 2 hidden in GUI and disabled in engine
+- `project_schedule_for()` method accepting inverter type for AC-coupled-aware register projection
+- `apply_schedule_updates()` helper shared between `run_scenario` and `serve_config`
+
+### Fixed
+- `create_plant` now resets stored schedule to default — old schedule no longer leaks from previous session
+- `serve_config` now passes and updates shared battery state vector — BMS registers read real data
+- Pause slot writes (HR 319-320) routed to `SetBatteryPause` in both Tauri drain loops
+- BMS reads return battery state in `serve_config` mode (was always empty Vec)
+- HR 114 (`battery_discharge_min_power_reserve`) projects from correct PlantState field
+- HR 166, 311, 317 added to catalogue with projection
+- Duplicate HR 166 catalogue entry removed
+- `ScheduleDto::from_state` HHMM conversion now matches register projector — 0.0 → disabled (60)
+- `enable_charge`/`enable_discharge` in DTO correctly computed: requires `start > 0.0` to be active
+- `run_scenario` now runs a ScheduleEngine and accumulates Modbus schedule writes
+- Test count: 216
+
 ## [0.7.1] - 2026-06-03
 
 ### Added

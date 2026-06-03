@@ -145,7 +145,12 @@ pub async fn create_plant(
     };
     plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
 
-    // Ensure a default schedule exists (charge slot 00:00-05:30)
+    // Reset schedule to default — a new plant shouldn't inherit old schedule settings
+    {
+        let mut sched = state.schedule.lock().await;
+        *sched = Some(sim_core::Schedule::default());
+    }
+    // Ensure a default schedule exists
     {
         let mut sched = state.schedule.lock().await;
         if sched.is_none() {
@@ -179,7 +184,12 @@ pub async fn create_plant(
     let plant_state = {
         let mut eng = state.engine.lock().await;
         *eng = Some(engine);
-        eng.as_ref().map(|e| e.state.clone()).unwrap()
+        let mut s = eng.as_ref().map(|e| e.state.clone()).unwrap();
+        // Ensure scheduled_charge is false at startup — no tick has run yet.
+        // This prevents stale persisted state from leaking into the first snapshot.
+        s.scheduled_charge = false;
+        s.scheduled_discharge = false;
+        s
     };
 
     let dto = PlantStateDto::with_schedule(&plant_state, schedule_opt.as_ref());
@@ -268,6 +278,8 @@ pub async fn load_scenario(
 /// Handles both GE-native (HR 27, 59, 96, 110, etc.) and internal addresses.
 fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
     match address {
+        // HR 20: enable charge target
+        20 => Some(Command::SetEnableChargeTarget(value != 0)),
         // HR 27: Battery power mode (0=export, 1=eco)
         27 => {
             let mode = match value {
@@ -277,12 +289,34 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
             Some(Command::SetInverterMode(mode))
         }
         // HR 50: Active power rate (%) → export limit = rate% of max
-        50 => None, // handled in register store
-        // HR 96: Enable charge — handled via schedule update below
+        50 => Some(Command::SetActivePowerRate(value as f64)),
+        // HR 96
         // HR 110: Battery SOC reserve (%)
         110 => Some(Command::SetMinSoc(value as f64)),
-        // HR 111: Battery charge limit (%) — register-only
-        111 => None,
+        // HR 111/112: Battery charge/discharge limits (%)
+        111 => Some(Command::SetBatteryChargeLimit(value as f64)),
+        112 => Some(Command::SetBatteryDischargeLimit(value as f64)),
+        313 | 1110 => Some(Command::SetBatteryChargeLimit(value as f64)),
+        314 | 1108 => Some(Command::SetBatteryDischargeLimit(value as f64)),
+        29 => {
+            if value == 0 {
+                Some(Command::CancelCalibration)
+            } else {
+                Some(Command::StartCalibration { module: None })
+            }
+        }
+        163 => {
+            if value == 100 {
+                Some(Command::InverterReboot)
+            } else {
+                None
+            }
+        }
+        318 => Some(Command::SetBatteryPause {
+            mode: value,
+            start: 60,
+            end: 60,
+        }),
         // HR 100: Inverter mode (internal)
         100 => {
             let mode = match value {
@@ -323,8 +357,8 @@ fn is_schedule_register(addr: u16) -> bool {
     matches!(
         addr,
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
-            | 242 | 245 | 272 | 275
-            | 1109 | 1111 | 1113..=1116 | 1118..=1121
+            | 242..=245 | 272 | 275
+            | 1109 | 1111..=1116 | 1118..=1123
     )
 }
 
@@ -465,6 +499,10 @@ pub async fn start_simulation(
                                             sched_updates.insert(cmd.address, cmd.value);
                                             sched_dirty = true;
                                         }
+                                        // Also collect pause slot registers
+                                        if matches!(cmd.address, 318 | 319 | 320) {
+                                            sched_updates.insert(cmd.address, cmd.value);
+                                        }
                                         if let Some(sim_cmd) =
                                             modbus_address_to_command(cmd.address, cmd.value)
                                         {
@@ -489,6 +527,20 @@ pub async fn start_simulation(
                                 }
                             }
                         }
+                        // Handle pause slot updates (HR 318-320) after MutexGuards dropped
+                        if let Some(&mode) = sched_updates.get(&318) {
+                            e.enqueue(Command::SetBatteryPause {
+                                mode,
+                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                            });
+                        } else if sched_updates.contains_key(&319) || sched_updates.contains_key(&320) {
+                            e.enqueue(Command::SetBatteryPause {
+                                mode: e.state.battery_pause_mode,
+                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                            });
+                        }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
@@ -499,11 +551,15 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Charge slot 2 (HR 31-32)
-                            if let Some(&v) = sched_updates.get(&31) {
+                            // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
+                            if let Some(&v) =
+                                sched_updates.get(&31).or_else(|| sched_updates.get(&243))
+                            {
                                 sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            if let Some(&v) = sched_updates.get(&32) {
+                            if let Some(&v) =
+                                sched_updates.get(&32).or_else(|| sched_updates.get(&244))
+                            {
                                 sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Discharge slot 1 (HR 56-57) — primary
@@ -561,6 +617,18 @@ pub async fn start_simulation(
                                 }
                             }
                             // TPH charge target SOC (HR 1111) — same as HR 116
+                            if let Some(&v) = sched_updates.get(&1111) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&1112) {
+                                sched.enable_charge = v != 0;
+                            }
+                            if let Some(&v) = sched_updates.get(&1122) {
+                                sched.enable_discharge = v != 0;
+                            }
+                            if let Some(&v) = sched_updates.get(&1123) {
+                                sched.enable_charge = v != 0;
+                            }
                             if let Some(&v) = sched_updates.get(&1113) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
@@ -586,7 +654,8 @@ pub async fn start_simulation(
                                 sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
-                            *schedule_arc.lock().await = Some(sched);
+                            *schedule_arc.lock().await = Some(sched.clone());
+                            e.enqueue(Command::SetSchedule(sched));
                         }
 
                         e.tick();
@@ -595,7 +664,7 @@ pub async fn start_simulation(
                             rs.project_from_state(&e.state);
                             let sched_ref = schedule_arc.lock().await.clone();
                             if let Some(ref s) = sched_ref {
-                                rs.project_schedule(s);
+                                rs.project_schedule_for(s, &e.state.config.inverter_type);
                             }
                         }
                         // Update battery snapshot for Modbus BMS reads
@@ -666,6 +735,10 @@ pub async fn start_simulation(
                                             sched_updates.insert(cmd.address, cmd.value);
                                             sched_dirty = true;
                                         }
+                                        // Also collect pause slot registers
+                                        if matches!(cmd.address, 318 | 319 | 320) {
+                                            sched_updates.insert(cmd.address, cmd.value);
+                                        }
                                         if let Some(sim_cmd) =
                                             modbus_address_to_command(cmd.address, cmd.value)
                                         {
@@ -690,6 +763,20 @@ pub async fn start_simulation(
                                 }
                             }
                         }
+                        // Handle pause slot updates (HR 318-320) after MutexGuards dropped
+                        if let Some(&mode) = sched_updates.get(&318) {
+                            e.enqueue(Command::SetBatteryPause {
+                                mode,
+                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                            });
+                        } else if sched_updates.contains_key(&319) || sched_updates.contains_key(&320) {
+                            e.enqueue(Command::SetBatteryPause {
+                                mode: e.state.battery_pause_mode,
+                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                            });
+                        }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
@@ -700,11 +787,15 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&95) {
                                 sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            // Charge slot 2 (HR 31-32)
-                            if let Some(&v) = sched_updates.get(&31) {
+                            // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
+                            if let Some(&v) =
+                                sched_updates.get(&31).or_else(|| sched_updates.get(&243))
+                            {
                                 sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
-                            if let Some(&v) = sched_updates.get(&32) {
+                            if let Some(&v) =
+                                sched_updates.get(&32).or_else(|| sched_updates.get(&244))
+                            {
                                 sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Discharge slot 1 (HR 56-57) — primary
@@ -762,6 +853,18 @@ pub async fn start_simulation(
                                 }
                             }
                             // TPH charge target SOC (HR 1111) — same as HR 116
+                            if let Some(&v) = sched_updates.get(&1111) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&1112) {
+                                sched.enable_charge = v != 0;
+                            }
+                            if let Some(&v) = sched_updates.get(&1122) {
+                                sched.enable_discharge = v != 0;
+                            }
+                            if let Some(&v) = sched_updates.get(&1123) {
+                                sched.enable_charge = v != 0;
+                            }
                             if let Some(&v) = sched_updates.get(&1113) {
                                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
                             }
@@ -787,7 +890,8 @@ pub async fn start_simulation(
                                 sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
                             }
                             // Charge target SOC (HR 116)
-                            *schedule_arc.lock().await = Some(sched);
+                            *schedule_arc.lock().await = Some(sched.clone());
+                            e.enqueue(Command::SetSchedule(sched));
                         }
 
                         e.tick();
@@ -796,7 +900,7 @@ pub async fn start_simulation(
                             rs.project_from_state(&e.state);
                             let sched_ref = schedule_arc.lock().await.clone();
                             if let Some(ref s) = sched_ref {
-                                rs.project_schedule(s);
+                                rs.project_schedule_for(s, &e.state.config.inverter_type);
                             }
                         }
                         // Update battery snapshot for Modbus BMS reads

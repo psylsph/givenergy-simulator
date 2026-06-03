@@ -308,6 +308,9 @@ pub struct EnergyTotals {
     pub solar_generation_kwh: f64,
     /// Total energy consumed by household load (kWh).
     pub load_consumption_kwh: f64,
+    /// Energy used for AC/grid charging today (kWh).
+    #[serde(default)]
+    pub ac_charge_kwh: f64,
 }
 
 impl Default for EnergyTotals {
@@ -319,6 +322,7 @@ impl Default for EnergyTotals {
             battery_discharge_kwh: 0.0,
             solar_generation_kwh: 0.0,
             load_consumption_kwh: 0.0,
+            ac_charge_kwh: 0.0,
         }
     }
 }
@@ -352,6 +356,18 @@ fn default_inverter_type() -> String {
 }
 fn default_max_ac_watts() -> f64 {
     5000.0
+}
+fn default_percent_100() -> f64 {
+    100.0
+}
+fn default_percent_50() -> f64 {
+    50.0
+}
+fn default_percent_4() -> f64 {
+    4.0
+}
+fn default_disabled_hhmm() -> u16 {
+    60
 }
 
 impl Default for PlantConfig {
@@ -403,11 +419,46 @@ pub struct PlantState {
     pub calibration: CalibrationState,
     /// Set by ScheduleEngine each tick when a charge schedule window is active.
     /// InverterEngine reads this to charge from grid while staying in Eco/Normal mode.
-    #[serde(default)]
+    /// Never serialized — resets every tick, so persisted state would always be stale.
+    #[serde(skip)]
     pub scheduled_charge: bool,
     /// Set by ScheduleEngine each tick when a discharge schedule window is active.
-    #[serde(default)]
+    /// Never serialized — resets every tick.
+    #[serde(skip)]
     pub scheduled_discharge: bool,
+    /// HR20 enable charge target flag.
+    #[serde(default)]
+    pub enable_charge_target: bool,
+    /// HR50 active power rate percentage.
+    #[serde(default = "default_percent_100")]
+    pub active_power_rate_percent: f64,
+    /// HR111 battery charge limit percentage.
+    #[serde(default = "default_percent_50")]
+    pub battery_charge_limit_percent: f64,
+    /// HR112 battery discharge limit percentage.
+    #[serde(default = "default_percent_50")]
+    pub battery_discharge_limit_percent: f64,
+    /// HR318 battery pause mode.
+    #[serde(default)]
+    pub battery_pause_mode: u16,
+    /// HR319 battery pause slot start (HHMM).
+    #[serde(default = "default_disabled_hhmm")]
+    pub battery_pause_slot_start: u16,
+    /// HR320 battery pause slot end (HHMM).
+    #[serde(default = "default_disabled_hhmm")]
+    pub battery_pause_slot_end: u16,
+    /// HR114 battery discharge min power reserve (%).
+    #[serde(default = "default_percent_4")]
+    pub battery_discharge_min_power_reserve: f64,
+    /// HR166 enable RTC (for persisting settings to EEPROM).
+    #[serde(default)]
+    pub enable_rtc: bool,
+    /// HR311 export priority (0=Battery First, 1=Grid First, 2=Load First).
+    #[serde(default)]
+    pub export_priority: u16,
+    /// HR317 enable EPS (Emergency Power Supply) mode.
+    #[serde(default)]
+    pub enable_eps: bool,
 }
 
 impl PlantState {
@@ -431,6 +482,17 @@ impl PlantState {
             calibration: CalibrationState::default(),
             scheduled_charge: false,
             scheduled_discharge: false,
+            enable_charge_target: false,
+            active_power_rate_percent: 100.0,
+            battery_charge_limit_percent: 50.0,
+            battery_discharge_limit_percent: 50.0,
+            battery_pause_mode: 0,
+            battery_pause_slot_start: 60,
+            battery_pause_slot_end: 60,
+            battery_discharge_min_power_reserve: 4.0,
+            enable_rtc: false,
+            export_priority: 0,
+            enable_eps: false,
         }
     }
 
@@ -455,6 +517,17 @@ impl PlantState {
             calibration: CalibrationState::default(),
             scheduled_charge: false,
             scheduled_discharge: false,
+            enable_charge_target: false,
+            active_power_rate_percent: 100.0,
+            battery_charge_limit_percent: 50.0,
+            battery_discharge_limit_percent: 50.0,
+            battery_pause_mode: 0,
+            battery_pause_slot_start: 60,
+            battery_pause_slot_end: 60,
+            battery_discharge_min_power_reserve: 4.0,
+            enable_rtc: false,
+            export_priority: 0,
+            enable_eps: false,
         }
     }
 

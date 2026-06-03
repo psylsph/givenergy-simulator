@@ -4,7 +4,7 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 ## Golden Rule
 
-**Always run `cargo test` after every change.** The suite is fast (~3s, 211 tests). Don't move on without green tests.
+**Always run `cargo test` after every change.** The suite is fast (~3s, 216 tests). Don't move on without green tests.
 
 ## Workspace
 
@@ -223,7 +223,7 @@ CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, sc
 ## Running Tests
 
 ```bash
-# Full suite (211 tests)
+# Full suite (216 tests)
 cargo test
 
 # Single crate
@@ -264,4 +264,5 @@ Battery sizes: `BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0]` (ne
 - v0.5.0: 59
 - v0.6.0: 82
 - v0.7.0: 165
-- v0.7.1: 211
+- v0.7.1: 216
+- v0.8.0: 216

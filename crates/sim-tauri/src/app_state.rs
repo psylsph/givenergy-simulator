@@ -133,9 +133,9 @@ pub struct ScheduleDto {
 impl ScheduleDto {
     fn from_state(state: &PlantState, schedule: Option<&sim_core::Schedule>) -> Self {
         // Convert decimal hours (e.g. 5.5) to HHMM (e.g. 530).
-        // 0 = 00:00, 60 = disabled sentinel (minutes > 59).
+        // 0 or negative = disabled sentinel 60 (matches register projector).
         let hhmm = |decimal_hours: f64| -> u16 {
-            if decimal_hours < 0.0 {
+            if decimal_hours <= 0.0 {
                 return 60;
             }
             let h = decimal_hours.floor() as u16;
@@ -166,9 +166,11 @@ impl ScheduleDto {
             ),
         };
 
+        let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
         Self {
-            enable_charge: cs != ce || cs2 != ce2,
-            enable_discharge: ds != de || ds2 != de2,
+            enable_charge: cs > 0.0 && cs != ce || cs2 > 0.0 && cs2 != ce2,
+            // AC-coupled inverters don't have timed discharge slots.
+            enable_discharge: if is_ac_coupled { false } else { ds > 0.0 && ds != de || ds2 > 0.0 && ds2 != de2 },
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct1,
             charge_target_soc_2: ct2,
