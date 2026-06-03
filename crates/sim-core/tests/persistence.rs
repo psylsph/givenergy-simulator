@@ -48,6 +48,11 @@ fn test_schedule() -> Schedule {
         discharge_start_10: 0.0, discharge_end_10: 0.0, discharge_target_soc_10: 10.0,
         enable_charge: false,
         enable_discharge: false,
+        export_start_1: 0.0, export_end_1: 0.0, export_target_soc_1: 50.0,
+        export_start_2: 0.0, export_end_2: 0.0, export_target_soc_2: 50.0,
+        export_start_3: 0.0, export_end_3: 0.0, export_target_soc_3: 50.0,
+        export_power_limit_w: 0.0,
+        enable_export_schedule: false,
     }
 }
 
@@ -189,6 +194,11 @@ fn schedule_roundtrip_preserves_all_fields() {
         discharge_start_10: 0.0, discharge_end_10: 0.0, discharge_target_soc_10: 10.0,
         enable_charge: true,
         enable_discharge: true,
+        export_start_1: 0.0, export_end_1: 0.0, export_target_soc_1: 50.0,
+        export_start_2: 0.0, export_end_2: 0.0, export_target_soc_2: 50.0,
+        export_start_3: 0.0, export_end_3: 0.0, export_target_soc_3: 50.0,
+        export_power_limit_w: 0.0,
+        enable_export_schedule: false,
     };
     let json = serde_json::to_string(&sched).unwrap();
     let restored: Schedule = serde_json::from_str(&json).unwrap();

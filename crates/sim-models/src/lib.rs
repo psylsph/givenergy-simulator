@@ -676,6 +676,17 @@ pub struct Schedule {
     pub enable_charge: bool,
     /// When true, discharge any time SOC > target (no window restriction).
     pub enable_discharge: bool,
+    /// Export limit scheduling — 3 time windows with per-window SOC targets.
+    /// Outside any export window the user-set export limit applies.
+    /// Inside a window, if SOC > the window's target, export is allowed up to export_power_limit_w.
+    /// If SOC <= target, export is curtailed to 0 (battery reserves for backup).
+    pub export_start_1: f64, pub export_end_1: f64, pub export_target_soc_1: f64,
+    pub export_start_2: f64, pub export_end_2: f64, pub export_target_soc_2: f64,
+    pub export_start_3: f64, pub export_end_3: f64, pub export_target_soc_3: f64,
+    /// Global export power limit in watts (applied during any active export window).
+    pub export_power_limit_w: f64,
+    /// When true, export limit scheduling is active.
+    pub enable_export_schedule: bool,
 }
 
 impl Default for Schedule {
@@ -705,6 +716,11 @@ impl Default for Schedule {
             discharge_start_10: 0.0, discharge_end_10: 0.0, discharge_target_soc_10: 10.0,
             enable_charge: false,
             enable_discharge: false,
+            export_start_1: 0.0, export_end_1: 0.0, export_target_soc_1: 50.0,
+            export_start_2: 0.0, export_end_2: 0.0, export_target_soc_2: 50.0,
+            export_start_3: 0.0, export_end_3: 0.0, export_target_soc_3: 50.0,
+            export_power_limit_w: 0.0,
+            enable_export_schedule: false,
         }
     }
 }

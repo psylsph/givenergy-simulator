@@ -807,6 +807,15 @@ impl RegisterStore {
             .unwrap_or(10);
         self.write(1109, reserve);
 
+        // Export schedule slots (HR 2062-2071)
+        let es1_s = hrs_to_hhmm(schedule.export_start_1); let es1_e = hrs_to_hhmm(schedule.export_end_1);
+        self.write(2062, es1_s); self.write(2063, es1_e); self.write(2064, schedule.export_target_soc_1 as u16);
+        let es2_s = hrs_to_hhmm(schedule.export_start_2); let es2_e = hrs_to_hhmm(schedule.export_end_2);
+        self.write(2065, es2_s); self.write(2066, es2_e); self.write(2067, schedule.export_target_soc_2 as u16);
+        let es3_s = hrs_to_hhmm(schedule.export_start_3); let es3_e = hrs_to_hhmm(schedule.export_end_3);
+        self.write(2068, es3_s); self.write(2069, es3_e); self.write(2070, schedule.export_target_soc_3 as u16);
+        self.write(2071, schedule.export_power_limit_w as u16);
+
         // Internal schedule registers (HR 700-729)
         self.write(700, cs1_start); self.write(701, cs1_end);
         self.write(702, ds1_start); self.write(703, ds1_end);

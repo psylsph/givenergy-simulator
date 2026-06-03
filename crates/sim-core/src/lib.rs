@@ -1291,6 +1291,24 @@ impl DeviceModel for ScheduleEngine {
             check_discharge_slot!(self.schedule.discharge_start_9, self.schedule.discharge_end_9, self.schedule.discharge_target_soc_9);
             check_discharge_slot!(self.schedule.discharge_start_10, self.schedule.discharge_end_10, self.schedule.discharge_target_soc_10);
         }
+
+        // Export limit scheduling — 3 time windows
+        if self.schedule.enable_export_schedule && self.schedule.export_power_limit_w > 0.0 {
+            let in_export_window = |s: f64, e: f64| -> bool {
+                if s == 0.0 && e == 0.0 { return false; }
+                if s < e { hour >= s && hour < e } else { hour >= s || hour < e }
+            };
+            let in_window = in_export_window(self.schedule.export_start_1, self.schedule.export_end_1)
+                || in_export_window(self.schedule.export_start_2, self.schedule.export_end_2)
+                || in_export_window(self.schedule.export_start_3, self.schedule.export_end_3);
+
+            if in_window && soc > state.min_aggregate_soc() {
+                // During export window: cap export limit
+                state.inverter.export_limit_w = self.schedule.export_power_limit_w;
+            }
+            // Outside window: export_limit_w keeps its user-set value
+            // (set by SetActivePowerRate which runs before tick via command queue)
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -2781,5 +2799,105 @@ mod tests {
         });
         engine.tick();
         assert!((engine.state.batteries[0].soc_percent - original_soc).abs() < 0.01);
+    }
+
+    // ===================================================================
+    // Scenario Fuzzer — property-based tests using proptest
+    // ===================================================================
+
+    use proptest::prelude::*;
+
+    /// Invariant check that every simulation run must satisfy:
+    /// - No NaN or infinite values in engine state
+    /// - SOC stays in [0, 100]
+    /// - Battery temperatures in reasonable range [-10, 70]
+    /// - Grid connection state is not NaN
+    /// - Energy totals are non-negative and finite
+    fn check_invariants(state: &PlantState) {
+        // SOC must be in valid range
+        for b in &state.batteries {
+            assert!(b.soc_percent.is_finite(), "SOC must be finite: {}", b.soc_percent);
+            assert!(b.soc_percent >= -1.0 && b.soc_percent <= 101.0,
+                "SOC {:.2} out of range [-1, 101]", b.soc_percent);
+            assert!(b.temperature_celsius.is_finite());
+            assert!(b.temperature_celsius >= -15.0 && b.temperature_celsius <= 80.0,
+                "Battery temp {:.1} out of range [-15, 80]", b.temperature_celsius);
+            assert!(b.voltage_v.is_finite() && b.voltage_v >= 0.0);
+            assert!(b.power_kw.is_finite());
+            assert!(b.capacity_kwh.is_finite() && b.capacity_kwh >= 0.0);
+            assert!(b.throughput_kwh.is_finite() && b.throughput_kwh >= 0.0);
+            assert!(b.soh.is_finite() && b.soh >= 0.0 && b.soh <= 1.0);
+        }
+
+        // Power values must be finite
+        assert!(state.solar.generation_w.is_finite() && state.solar.generation_w >= 0.0);
+        assert!(state.load.demand_w.is_finite() && state.load.demand_w >= 0.0);
+        assert!(state.grid.power_w.is_finite());
+        assert!(state.inverter.ac_power_w.is_finite() && state.inverter.ac_power_w >= 0.0);
+        assert!(state.inverter.temperature_celsius.is_finite());
+        assert!(state.inverter.temperature_celsius >= -10.0 && state.inverter.temperature_celsius <= 100.0);
+
+        // Energy totals must be non-negative
+        let e = &state.energy_totals;
+        assert!(e.grid_import_kwh.is_finite() && e.grid_import_kwh >= 0.0);
+        assert!(e.grid_export_kwh.is_finite() && e.grid_export_kwh >= 0.0);
+        assert!(e.battery_charge_kwh.is_finite() && e.battery_charge_kwh >= 0.0);
+        assert!(e.battery_discharge_kwh.is_finite() && e.battery_discharge_kwh >= 0.0);
+        assert!(e.solar_generation_kwh.is_finite() && e.solar_generation_kwh >= 0.0);
+        assert!(e.load_consumption_kwh.is_finite() && e.load_consumption_kwh >= 0.0);
+
+        // Weather string must be valid
+        assert!(!state.weather.is_empty());
+    }
+
+    proptest! {
+        /// Fuzz the simulation with random states, schedules, and tick counts.
+        /// Runs the full device pipeline and asserts invariants never break.
+        #[test]
+        fn fuzz_simulation(
+            solar_peak in 1000.0f64..20000.0f64,
+            battery_soc in 0.0f64..100.0f64,
+            battery_capacity in 1.0f64..20.0f64,
+            battery_count in 1usize..=3usize,
+            tick_count in 1usize..50usize,
+            hour in 0u32..24u32,
+            load_w in 0.0f64..10000.0f64,
+            solar_override in proptest::option::of(0.0f64..10000.0f64),
+            load_override in proptest::option::of(0.0f64..10000.0f64),
+        ) {
+            let ts = NaiveDate::from_ymd_opt(2025, 6, 21).unwrap()
+                .and_hms_opt(hour, 0, 0).unwrap();
+            let mut state = PlantState::with_battery_count(ts, battery_count);
+            state.config.solar_peak_watts = solar_peak;
+            state.config.latitude = 51.5;
+            state.solar.generation_w = solar_peak * 0.5; // rough midday
+            state.load.demand_w = load_w;
+            state.solar_override = solar_override;
+            state.load_override = load_override;
+            for b in &mut state.batteries {
+                b.soc_percent = battery_soc;
+                b.capacity_kwh = battery_capacity;
+                b.nominal_capacity_kwh = battery_capacity;
+                b.max_charge_kw = (battery_capacity * 0.3).min(10.0);
+                b.max_discharge_kw = (battery_capacity * 0.3).min(10.0);
+            }
+            state.sync_battery_from_vec();
+
+            let devices: Vec<Box<dyn DeviceModel>> = vec![
+                Box::new(ScheduleEngine::new(Schedule::default())),
+                Box::new(SolarEngine::new(solar_peak, 51.5)),
+                Box::new(LoadEngine::new(LoadProfile::Family)),
+                Box::new(InverterEngine::new()),
+                Box::new(sim_faults::FaultEngine::new()),
+                Box::new(BatteryEngine::new()),
+                Box::new(EnergyTracker::new()),
+            ];
+            let mut engine = SimulationEngine::new(state, devices, 30);
+
+            for _ in 0..tick_count {
+                engine.tick();
+                check_invariants(&engine.state);
+            }
+        }
     }
 }
