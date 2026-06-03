@@ -146,7 +146,7 @@ impl ScheduleDto {
             h * 100 + m
         };
 
-        let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct1, ct2, dt1, dt2) = match schedule {
+        let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct1, ct2, _dt1, dt2) = match schedule {
             Some(s) => (
                 s.charge_start,
                 s.charge_end,
