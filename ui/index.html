@@ -978,8 +978,10 @@
     el('btn-create').addEventListener('click', async () => {
       try {
         const moduleSelects = document.querySelectorAll('.battery-size');
-        const batteryModules = Array.from(moduleSelects).map(sel => ({
-          capacity_kwh: parseFloat(sel.value)
+        const sohSliders = document.querySelectorAll('.battery-soh');
+        const batteryModules = Array.from(moduleSelects).map((sel, i) => ({
+          capacity_kwh: parseFloat(sel.value),
+          soh: sohSliders[i] ? parseFloat(sohSliders[i].value) / 100.0 : 1.0,
         }));
         const inverterType = el('inverter-type').value;
 

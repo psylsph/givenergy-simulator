@@ -20,6 +20,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub struct BatteryModuleConfig {
     /// Capacity in kWh.
     pub capacity_kwh: f64,
+    /// State of Health (0.0–1.0). Defaults to 1.0 (100%).
+    #[serde(default = "default_soh")]
+    pub soh: f64,
+}
+
+fn default_soh() -> f64 {
+    1.0
 }
 
 #[derive(serde::Deserialize)]
@@ -91,10 +98,14 @@ pub async fn create_plant(
             .into_iter()
             .take(3)
             .map(|m| {
-                let c_rate_kw = (m.capacity_kwh * 0.3).min(10.0);
+                let soh = m.soh.clamp(0.0, 1.0);
+                let capacity = m.capacity_kwh.max(1.0);
+                let effective_capacity = capacity * soh;
+                let c_rate_kw = (effective_capacity * 0.3).min(10.0);
                 BatteryState {
-                    capacity_kwh: m.capacity_kwh.max(1.0),
-                    nominal_capacity_kwh: m.capacity_kwh.max(1.0),
+                    capacity_kwh: effective_capacity,
+                    nominal_capacity_kwh: capacity,
+                    soh,
                     max_charge_kw: c_rate_kw.min(max_batt_kw),
                     max_discharge_kw: c_rate_kw.min(max_batt_kw),
                     ..BatteryState::default()
