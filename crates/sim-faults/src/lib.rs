@@ -232,7 +232,9 @@ mod tests {
         state.inverter.ac_power_w = 3000.0;
         state.batteries[0].power_kw = 2.0;
         state.sync_battery_from_vec();
-        state.active_faults.push(well_known::INVERTER_TRIP.to_string());
+        state
+            .active_faults
+            .push(well_known::INVERTER_TRIP.to_string());
 
         let mut engine = FaultEngine::new();
         let ctx = TickContext {
@@ -250,7 +252,9 @@ mod tests {
         let mut state = PlantState::new(ts(12));
         state.batteries[0].power_kw = 3.0; // charging
         state.sync_battery_from_vec();
-        state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
+        state
+            .active_faults
+            .push(well_known::BATTERY_OVER_TEMP.to_string());
 
         let mut engine = FaultEngine::new();
         let ctx = TickContext {
@@ -267,7 +271,9 @@ mod tests {
         let mut state = PlantState::new(ts(12));
         state.batteries[0].power_kw = -2.0; // discharging
         state.sync_battery_from_vec();
-        state.active_faults.push(well_known::BATTERY_OVER_TEMP.to_string());
+        state
+            .active_faults
+            .push(well_known::BATTERY_OVER_TEMP.to_string());
 
         let mut engine = FaultEngine::new();
         let ctx = TickContext {

@@ -15,9 +15,9 @@ const MODBUS_PORT: u16 = 8899;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let reg_cat = sim_registers::default_register_catalogue();
-    let register_store = Arc::new(tokio::sync::Mutex::new(
-        sim_registers::RegisterStore::new(reg_cat),
-    ));
+    let register_store = Arc::new(tokio::sync::Mutex::new(sim_registers::RegisterStore::new(
+        reg_cat,
+    )));
     let modbus_cmds: Arc<std::sync::Mutex<Vec<ModbusCommand>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let battery_snapshot = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -68,31 +68,37 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         if let Ok(json) = tokio::fs::read_to_string(&save_path).await {
                             // Try PersistedState first, fall back to plain PlantState
-                            let (plant_state, schedule_opt) =
-                                if let Ok(ps) = serde_json::from_str::<crate::app_state::PersistedState>(&json) {
-                                    (ps.plant, ps.schedule)
-                                } else if let Ok(ps) = serde_json::from_str::<sim_models::PlantState>(&json) {
-                                    (ps, None)
-                                } else {
-                                    return;
-                                };
+                            let (plant_state, schedule_opt) = if let Ok(ps) =
+                                serde_json::from_str::<crate::app_state::PersistedState>(&json)
+                            {
+                                (ps.plant, ps.schedule)
+                            } else if let Ok(ps) =
+                                serde_json::from_str::<sim_models::PlantState>(&json)
+                            {
+                                (ps, None)
+                            } else {
+                                return;
+                            };
 
-                                let app_state = app_handle.state::<AppState>();
-                                let peak_watts = plant_state.config.solar_peak_watts;
-                                let latitude = plant_state.config.latitude;
-                                let tick_interval = plant_state.config.tick_interval_secs;
+                            let app_state = app_handle.state::<AppState>();
+                            let peak_watts = plant_state.config.solar_peak_watts;
+                            let latitude = plant_state.config.latitude;
+                            let tick_interval = plant_state.config.tick_interval_secs;
 
-                                // Restore schedule
-                                {
-                                    let mut sched = app_state.schedule.lock().await;
-                                    *sched = schedule_opt.clone();
-                                }
+                            // Restore schedule
+                            {
+                                let mut sched = app_state.schedule.lock().await;
+                                *sched = schedule_opt.clone();
+                            }
 
-                                let devices: Vec<Box<dyn sim_models::DeviceModel>> = if let Some(ref sched) = schedule_opt {
+                            let devices: Vec<Box<dyn sim_models::DeviceModel>> =
+                                if let Some(ref sched) = schedule_opt {
                                     vec![
                                         Box::new(sim_core::ScheduleEngine::new(sched.clone())),
                                         Box::new(sim_core::SolarEngine::new(peak_watts, latitude)),
-                                        Box::new(sim_core::LoadEngine::new(sim_core::LoadProfile::Family)),
+                                        Box::new(sim_core::LoadEngine::new(
+                                            sim_core::LoadProfile::Family,
+                                        )),
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
@@ -101,7 +107,9 @@ pub fn run() {
                                 } else {
                                     vec![
                                         Box::new(sim_core::SolarEngine::new(peak_watts, latitude)),
-                                        Box::new(sim_core::LoadEngine::new(sim_core::LoadProfile::Family)),
+                                        Box::new(sim_core::LoadEngine::new(
+                                            sim_core::LoadProfile::Family,
+                                        )),
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
@@ -109,15 +117,22 @@ pub fn run() {
                                     ]
                                 };
 
-                                let engine = sim_core::SimulationEngine::new(plant_state, devices, tick_interval);
-                                let dto = crate::app_state::PlantStateDto::with_schedule(&engine.state, schedule_opt.as_ref());
-                                {
-                                    let mut eng = app_state.engine.lock().await;
-                                    *eng = Some(engine);
-                                }
-                                let _ = app_handle.emit("state_changed", &dto);
-                                tracing::info!("Auto-loaded saved plant from {}", save_path.display());
+                            let engine = sim_core::SimulationEngine::new(
+                                plant_state,
+                                devices,
+                                tick_interval,
+                            );
+                            let dto = crate::app_state::PlantStateDto::with_schedule(
+                                &engine.state,
+                                schedule_opt.as_ref(),
+                            );
+                            {
+                                let mut eng = app_state.engine.lock().await;
+                                *eng = Some(engine);
                             }
+                            let _ = app_handle.emit("state_changed", &dto);
+                            tracing::info!("Auto-loaded saved plant from {}", save_path.display());
+                        }
                     });
                 }
             }
@@ -143,7 +158,8 @@ pub fn run() {
                     .expect("invalid Modbus addr");
                 tracing::info!("Modbus TCP server listening on {addr}");
                 if let Err(e) =
-                    sim_modbus::run_modbus_server(addr, modbus_store, modbus_tx, modbus_batteries).await
+                    sim_modbus::run_modbus_server(addr, modbus_store, modbus_tx, modbus_batteries)
+                        .await
                 {
                     tracing::error!("Modbus server error: {e}");
                 }

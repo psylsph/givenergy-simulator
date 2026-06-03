@@ -54,9 +54,7 @@ pub struct Scenario {
 pub fn parse_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::Error>> {
     let raw: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(yaml)?;
 
-    let days = raw.get("days")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
+    let days = raw.get("days").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
     let mut events: Vec<(NaiveTime, ScenarioEvent)> = raw
         .into_iter()
@@ -86,9 +84,7 @@ pub fn parse_named_scenario(yaml: &str) -> Result<Scenario, Box<dyn std::error::
         .unwrap_or("unnamed")
         .to_string();
 
-    let days = raw.get("days")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
+    let days = raw.get("days").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
     let mut events: Vec<(NaiveTime, ScenarioEvent)> = raw
         .iter()
@@ -174,9 +170,7 @@ pub fn check_assertions(
     check_lt!("solar_lt", state.solar.generation_w);
 
     // grid_connected
-    if let Some(expected) = expect.get("grid_connected")
-        .and_then(|v| v.as_f64())
-    {
+    if let Some(expected) = expect.get("grid_connected").and_then(|v| v.as_f64()) {
         let actual = if state.grid.connected { 1.0 } else { 0.0 };
         if actual != expected {
             failures.push(format!(
@@ -200,7 +194,9 @@ pub fn check_assertions(
         if is_charging != *expected {
             failures.push(format!(
                 "battery_charging: expected {}, got {} (total_power_kw={:.2})",
-                expected, is_charging, state.total_battery_power_kw()
+                expected,
+                is_charging,
+                state.total_battery_power_kw()
             ));
         }
     }
@@ -346,7 +342,10 @@ name: grid outage test
         let mut state = PlantState::new(test_ts());
         state.active_faults.push("grid_loss".into());
         let mut expect = HashMap::new();
-        expect.insert("fault_active".into(), serde_yaml::Value::String("grid_loss".into()));
+        expect.insert(
+            "fault_active".into(),
+            serde_yaml::Value::String("grid_loss".into()),
+        );
         assert!(check_assertions(&expect, &state).is_ok());
     }
 
@@ -355,7 +354,10 @@ name: grid outage test
         let mut state = PlantState::new(test_ts());
         state.grid.power_w = -2000.0;
         let mut expect = HashMap::new();
-        expect.insert("grid_export_gt".into(), serde_yaml::Value::Number(1000.into()));
+        expect.insert(
+            "grid_export_gt".into(),
+            serde_yaml::Value::Number(1000.into()),
+        );
         assert!(check_assertions(&expect, &state).is_ok());
     }
 
@@ -383,7 +385,10 @@ days: 2
         state.energy_totals.grid_export_kwh = 15.0;
         let mut expect = HashMap::new();
         expect.insert("solar_kwh_gt".into(), serde_yaml::Value::Number(25.into()));
-        expect.insert("grid_export_kwh_gt".into(), serde_yaml::Value::Number(10.into()));
+        expect.insert(
+            "grid_export_kwh_gt".into(),
+            serde_yaml::Value::Number(10.into()),
+        );
         assert!(check_assertions(&expect, &state).is_ok());
     }
 }

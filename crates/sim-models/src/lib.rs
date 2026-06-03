@@ -343,8 +343,12 @@ pub struct PlantConfig {
     pub pv2_peak_watts: f64,
 }
 
-fn default_inverter_type() -> String { "Gen3".to_string() }
-fn default_max_ac_watts() -> f64 { 5000.0 }
+fn default_inverter_type() -> String {
+    "Gen3".to_string()
+}
+fn default_max_ac_watts() -> f64 {
+    5000.0
+}
 
 impl Default for PlantConfig {
     fn default() -> Self {
@@ -504,12 +508,20 @@ impl PlantState {
 
     /// Maximum SOC across all modules.
     pub fn max_aggregate_soc(&self) -> f64 {
-        self.batteries.iter().map(|b| b.max_soc).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(100.0)
+        self.batteries
+            .iter()
+            .map(|b| b.max_soc)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(100.0)
     }
 
     /// Minimum SOC across all modules.
     pub fn min_aggregate_soc(&self) -> f64 {
-        self.batteries.iter().map(|b| b.min_soc).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0)
+        self.batteries
+            .iter()
+            .map(|b| b.min_soc)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0)
     }
 
     /// Average battery temperature across all modules.
@@ -517,6 +529,10 @@ impl PlantState {
         if self.batteries.is_empty() {
             return 25.0;
         }
-        self.batteries.iter().map(|b| b.temperature_celsius).sum::<f64>() / self.batteries.len() as f64
+        self.batteries
+            .iter()
+            .map(|b| b.temperature_celsius)
+            .sum::<f64>()
+            / self.batteries.len() as f64
     }
 }

@@ -44,11 +44,19 @@ pub enum Command {
     SetLoadOverride(Option<f64>),
     SetSimulationTime(NaiveDateTime),
     /// Set SOC of a specific battery module (index, soc%).
-    SetBatterySoc { module: usize, soc: f64 },
+    SetBatterySoc {
+        module: usize,
+        soc: f64,
+    },
     /// Set SOH of a specific battery module (index, soh 0.0–1.0). Adjusts capacity_kwh.
-    SetBatterySoH { module: usize, soh: f64 },
+    SetBatterySoH {
+        module: usize,
+        soh: f64,
+    },
     /// Start battery calibration cycle (optional module index, None = all).
-    StartCalibration { module: Option<usize> },
+    StartCalibration {
+        module: Option<usize>,
+    },
     /// Cancel in-progress calibration.
     CancelCalibration,
     /// Clear all active faults at once.
@@ -153,7 +161,10 @@ impl SimulationEngine {
                         total_elapsed_secs: 0.0,
                     };
                     // Override inverter to ForceCharge during calibration
-                    self.state.inverter.mode_state.set_user(InverterMode::ForceCharge);
+                    self.state
+                        .inverter
+                        .mode_state
+                        .set_user(InverterMode::ForceCharge);
                 }
                 Command::CancelCalibration => {
                     self.state.calibration = CalibrationState::default();
@@ -262,8 +273,7 @@ impl SolarEngine {
         let lat_rad = self.latitude.to_radians();
         let declination = 23.45_f64.to_radians()
             * (2.0 * std::f64::consts::PI * (day_of_year as f64 + 284.0) / 365.0).sin();
-        let cos_hour_angle =
-            (-lat_rad.tan() * declination.tan()).min(1.0).max(-1.0);
+        let cos_hour_angle = (-lat_rad.tan() * declination.tan()).min(1.0).max(-1.0);
         12.0 - cos_hour_angle.acos().to_degrees() / 15.0
     }
 
@@ -578,10 +588,9 @@ impl InverterEngine {
             // Solar covers load. Excess charges battery.
             let excess = net;
             let max_charge_w = state.total_max_charge_kw() * 1000.0;
-            let soc_headroom =
-                (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let charge_limit = max_charge_w.min(soc_headroom).min(inv_max_w).max(0.0);
             let to_battery = excess.min(charge_limit);
             let to_grid = excess - to_battery;
@@ -593,10 +602,9 @@ impl InverterEngine {
             // Solar deficit. Battery supplies first, then grid.
             let deficit = -net;
             let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
-            let soc_available =
-                (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let discharge_limit = max_discharge_w.min(soc_available).min(inv_max_w).max(0.0);
             let from_battery = deficit.min(discharge_limit);
             let from_grid = deficit - from_battery;
@@ -619,10 +627,9 @@ impl InverterEngine {
         if net >= 0.0 {
             let excess = net;
             let max_charge_w = state.total_max_charge_kw() * 1000.0;
-            let soc_headroom =
-                (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let charge_limit = max_charge_w.min(soc_headroom).min(inv_max_w).max(0.0);
 
             let eco_charge_limit = charge_limit;
@@ -636,10 +643,9 @@ impl InverterEngine {
         } else {
             let deficit = -net;
             let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
-            let soc_available =
-                (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let discharge_limit = max_discharge_w.min(soc_available).min(inv_max_w).max(0.0);
             let from_battery = deficit.min(discharge_limit);
             let from_grid = deficit - from_battery;
@@ -673,10 +679,9 @@ impl InverterEngine {
         let inv_max_w = state.config.max_ac_watts;
 
         let max_charge_w = state.total_max_charge_kw() * 1000.0;
-        let soc_headroom =
-            (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
+        let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
+            * state.total_battery_capacity()
+            * 1000.0;
         let charge_capacity = max_charge_w.min(soc_headroom.max(0.0)).min(inv_max_w);
 
         let from_solar = solar_surplus.min(charge_capacity);
@@ -696,10 +701,9 @@ impl InverterEngine {
         let inv_max_w = state.config.max_ac_watts;
 
         let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
-        let soc_available =
-            (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
+        let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
+            * state.total_battery_capacity()
+            * 1000.0;
         let discharge = max_discharge_w.min(soc_available.max(0.0)).min(inv_max_w);
 
         state.distribute_battery_power(-discharge / 1000.0);
@@ -724,10 +728,9 @@ impl InverterEngine {
         if net >= 0.0 {
             let excess = net;
             let max_charge_w = state.total_max_charge_kw() * 1000.0;
-            let soc_headroom =
-                (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let charge_limit = max_charge_w.min(soc_headroom).max(0.0);
             let to_battery = excess.min(charge_limit);
 
@@ -736,10 +739,9 @@ impl InverterEngine {
         } else {
             let deficit = -net;
             let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
-            let soc_available =
-                (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
+            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
+                * state.total_battery_capacity()
+                * 1000.0;
             let discharge_limit = max_discharge_w.min(soc_available).max(0.0);
             let from_battery = deficit.min(discharge_limit);
 
@@ -793,8 +795,13 @@ impl CalibrationEngine {
 
         match state.calibration.stage {
             CalibrationStage::ChargeToFull => {
-                state.inverter.mode_state.set_user(InverterMode::ForceCharge);
-                let all_full = targets.iter().all(|&i| state.batteries[i].soc_percent >= 99.5);
+                state
+                    .inverter
+                    .mode_state
+                    .set_user(InverterMode::ForceCharge);
+                let all_full = targets
+                    .iter()
+                    .all(|&i| state.batteries[i].soc_percent >= 99.5);
                 if all_full {
                     state.calibration.stage = CalibrationStage::HoldingFull;
                     state.calibration.stage_elapsed_secs = 0.0;
@@ -802,20 +809,29 @@ impl CalibrationEngine {
             }
 
             CalibrationStage::HoldingFull => {
-                state.inverter.mode_state.set_user(InverterMode::ForceCharge);
+                state
+                    .inverter
+                    .mode_state
+                    .set_user(InverterMode::ForceCharge);
                 if state.calibration.stage_elapsed_secs >= Self::HOLD_SECONDS {
                     state.calibration.stage = CalibrationStage::DischargeToEmpty;
                     state.calibration.stage_elapsed_secs = 0.0;
-                    state.inverter.mode_state.set_user(InverterMode::ForceDischarge);
+                    state
+                        .inverter
+                        .mode_state
+                        .set_user(InverterMode::ForceDischarge);
                 }
             }
 
             CalibrationStage::DischargeToEmpty => {
-                state.inverter.mode_state.set_user(InverterMode::ForceDischarge);
+                state
+                    .inverter
+                    .mode_state
+                    .set_user(InverterMode::ForceDischarge);
                 let reserve = state.min_aggregate_soc().min(state.max_aggregate_soc());
-                let all_empty = targets.iter().all(|&i| {
-                    state.batteries[i].soc_percent <= (reserve + 0.5)
-                });
+                let all_empty = targets
+                    .iter()
+                    .all(|&i| state.batteries[i].soc_percent <= (reserve + 0.5));
                 if all_empty {
                     state.calibration.stage = CalibrationStage::Complete;
                     state.calibration.stage_elapsed_secs = 0.0;
@@ -924,8 +940,7 @@ impl DeviceModel for BatteryEngine {
                 power_kw / b.discharge_efficiency.max(0.01)
             };
 
-            let delta_soc =
-                (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
+            let delta_soc = (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
 
             b.soc_percent += delta_soc;
 
@@ -1129,7 +1144,6 @@ impl DeviceModel for ScheduleEngine {
                     .inverter
                     .mode_state
                     .set_schedule(InverterMode::ForceDischarge);
-                
             }
         }
     }
@@ -1144,7 +1158,7 @@ mod tests {
     #![allow(
         clippy::bool_assert_comparison,
         clippy::field_reassign_with_default,
-        clippy::manual_range_contains,
+        clippy::manual_range_contains
     )]
     use super::*;
     use chrono::{NaiveDate, NaiveDateTime};
@@ -1268,9 +1282,7 @@ mod tests {
         };
         load.update(&ctx, &mut state);
         // 19:00 in family profile → 3000W
-        assert!(
-            state.load.demand_w > 0.0,
-        );
+        assert!(state.load.demand_w > 0.0,);
     }
 
     #[test]
@@ -1292,32 +1304,47 @@ mod tests {
     #[test]
     fn load_custom_interpolation() {
         // Two points: 0W at midnight, 1000W at 12:00, wraps back
-        let profile = LoadProfile::Custom(vec![
-            (0.0, 0.0),
-            (12.0, 1000.0),
-        ]);
+        let profile = LoadProfile::Custom(vec![(0.0, 0.0), (12.0, 1000.0)]);
         let mut load = LoadEngine::new(profile);
 
         // At 6:00 → should be 500W (midpoint)
         let mut state = PlantState::new(ts(6));
-        let ctx = TickContext { now: ts(6), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(6),
+            dt_hours: 1.0,
+        };
         load.update(&ctx, &mut state);
-        assert!((state.load.demand_w - 500.0).abs() < 1.0,
-            "At 06:00 should be ~500W, got {}", state.load.demand_w);
+        assert!(
+            (state.load.demand_w - 500.0).abs() < 1.0,
+            "At 06:00 should be ~500W, got {}",
+            state.load.demand_w
+        );
 
         // At 12:00 → should be 1000W
         let mut state2 = PlantState::new(ts(12));
-        let ctx2 = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx2 = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         load.update(&ctx2, &mut state2);
-        assert!((state2.load.demand_w - 1000.0).abs() < 1.0,
-            "At 12:00 should be ~1000W, got {}", state2.load.demand_w);
+        assert!(
+            (state2.load.demand_w - 1000.0).abs() < 1.0,
+            "At 12:00 should be ~1000W, got {}",
+            state2.load.demand_w
+        );
 
         // At 18:00 → should be 500W (halfway from 12→24+0)
         let mut state3 = PlantState::new(ts(18));
-        let ctx3 = TickContext { now: ts(18), dt_hours: 1.0 };
+        let ctx3 = TickContext {
+            now: ts(18),
+            dt_hours: 1.0,
+        };
         load.update(&ctx3, &mut state3);
-        assert!((state3.load.demand_w - 500.0).abs() < 1.0,
-            "At 18:00 should be ~500W, got {}", state3.load.demand_w);
+        assert!(
+            (state3.load.demand_w - 500.0).abs() < 1.0,
+            "At 18:00 should be ~500W, got {}",
+            state3.load.demand_w
+        );
     }
 
     #[test]
@@ -1333,11 +1360,22 @@ mod tests {
         let mut load = LoadEngine::new(profile);
 
         // At 07:00 → between 500 and 2000 = 1250
-        let mut state = PlantState::new(NaiveDate::from_ymd_opt(2025,6,1).unwrap().and_hms_opt(7,0,0).unwrap());
-        let ctx = TickContext { now: state.timestamp, dt_hours: 1.0 };
+        let mut state = PlantState::new(
+            NaiveDate::from_ymd_opt(2025, 6, 1)
+                .unwrap()
+                .and_hms_opt(7, 0, 0)
+                .unwrap(),
+        );
+        let ctx = TickContext {
+            now: state.timestamp,
+            dt_hours: 1.0,
+        };
         load.update(&ctx, &mut state);
-        assert!((state.load.demand_w - 1250.0).abs() < 1.0,
-            "At 07:00 should be ~1250W, got {}", state.load.demand_w);
+        assert!(
+            (state.load.demand_w - 1250.0).abs() < 1.0,
+            "At 07:00 should be ~1250W, got {}",
+            state.load.demand_w
+        );
     }
 
     #[test]
@@ -1345,7 +1383,10 @@ mod tests {
         let profile = LoadProfile::Custom(vec![]);
         let mut load = LoadEngine::new(profile);
         let mut state = PlantState::new(ts(12));
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         load.update(&ctx, &mut state);
         assert_eq!(state.load.demand_w, 0.0);
     }
@@ -1507,7 +1548,10 @@ mod tests {
         normal_state.load.demand_w = 1000.0;
         normal_state.batteries[0].soc_percent = 50.0;
         normal_state.batteries[0].max_charge_kw = 3.0;
-        normal_state.inverter.mode_state.set_user(InverterMode::Normal);
+        normal_state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::Normal);
         normal_state.sync_battery_from_vec();
 
         let mut eco_state = normal_state.clone();
@@ -1528,7 +1572,8 @@ mod tests {
         assert!(
             (eco_charge - normal_charge).abs() < 0.01,
             "Eco and Normal should charge at the same rate: eco={}, normal={}",
-            eco_charge, normal_charge
+            eco_charge,
+            normal_charge
         );
     }
 
@@ -1540,7 +1585,10 @@ mod tests {
         normal_state.load.demand_w = 2000.0;
         normal_state.batteries[0].soc_percent = 80.0;
         normal_state.batteries[0].max_discharge_kw = 3.0;
-        normal_state.inverter.mode_state.set_user(InverterMode::Normal);
+        normal_state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::Normal);
         normal_state.sync_battery_from_vec();
 
         let mut eco_state = normal_state.clone();
@@ -1624,7 +1672,8 @@ mod tests {
         assert!(
             storm_solar < clear_solar,
             "Storm should reduce solar: storm={}, clear={}",
-            storm_solar, clear_solar
+            storm_solar,
+            clear_solar
         );
     }
 
@@ -1659,7 +1708,8 @@ mod tests {
         assert!(
             state2.batteries[0].soc_percent < perfect_soc,
             "With efficiency losses, SOC should be lower: got {}, perfect={}",
-            state2.batteries[0].soc_percent, perfect_soc
+            state2.batteries[0].soc_percent,
+            perfect_soc
         );
         // 3kW * 0.9 = 2.7kW effective → +27%
         assert!((state2.batteries[0].soc_percent - 77.0).abs() < 0.1);
@@ -1737,7 +1787,10 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut bat = BatteryEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         bat.update(&ctx, &mut state);
 
         // Heat generated = losses = 3.0 - 3.0*0.95 = 0.15 kW
@@ -1760,7 +1813,10 @@ mod tests {
         // At 50°C (above derate_temp=45°C, below shutdown=55°C)
         let derated = bat.derate_power(3.0, 50.0);
         assert!(derated < 3.0, "Should derate at 50°C: got {derated}");
-        assert!(derated > 0.0, "Should not fully block at 50°C: got {derated}");
+        assert!(
+            derated > 0.0,
+            "Should not fully block at 50°C: got {derated}"
+        );
 
         // At 55°C (shutdown)
         let blocked = bat.derate_power(3.0, 55.0);
@@ -1777,7 +1833,7 @@ mod tests {
     fn schedule_forces_charge_during_window() {
         let mut sched = Schedule::default();
         sched.charge_start = 2.0; // 02:00
-        sched.charge_end = 6.0;   // 06:00
+        sched.charge_end = 6.0; // 06:00
         sched.charge_target_soc = 90.0;
 
         let mut engine = ScheduleEngine::new(sched);
@@ -1786,10 +1842,16 @@ mod tests {
         state.batteries[0].soc_percent = 50.0;
         state.sync_battery_from_vec();
 
-        let ctx = TickContext { now: ts(4), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(4),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx, &mut state);
 
-        assert_eq!(state.inverter.mode_state.effective, InverterMode::ForceCharge);
+        assert_eq!(
+            state.inverter.mode_state.effective,
+            InverterMode::ForceCharge
+        );
     }
 
     #[test]
@@ -1805,7 +1867,10 @@ mod tests {
         state.batteries[0].soc_percent = 95.0; // above target
         state.sync_battery_from_vec();
 
-        let ctx = TickContext { now: ts(4), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(4),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx, &mut state);
 
         assert_eq!(state.inverter.mode_state.effective, InverterMode::Normal); // not changed
@@ -1815,7 +1880,7 @@ mod tests {
     fn schedule_forces_discharge_during_window() {
         let mut sched = Schedule::default();
         sched.discharge_start = 17.0; // 17:00
-        sched.discharge_end = 20.0;   // 20:00
+        sched.discharge_end = 20.0; // 20:00
         sched.discharge_target_soc = 20.0;
 
         let mut engine = ScheduleEngine::new(sched);
@@ -1824,17 +1889,23 @@ mod tests {
         state.batteries[0].soc_percent = 60.0;
         state.sync_battery_from_vec();
 
-        let ctx = TickContext { now: ts(18), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(18),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx, &mut state);
 
-        assert_eq!(state.inverter.mode_state.effective, InverterMode::ForceDischarge);
+        assert_eq!(
+            state.inverter.mode_state.effective,
+            InverterMode::ForceDischarge
+        );
     }
 
     #[test]
     fn schedule_wraps_midnight() {
         let mut sched = Schedule::default();
         sched.charge_start = 22.0; // 22:00
-        sched.charge_end = 6.0;    // 06:00 (wraps midnight)
+        sched.charge_end = 6.0; // 06:00 (wraps midnight)
         sched.charge_target_soc = 100.0;
 
         let mut engine = ScheduleEngine::new(sched);
@@ -1844,18 +1915,30 @@ mod tests {
         state.inverter.mode_state.set_user(InverterMode::Normal);
         state.batteries[0].soc_percent = 30.0;
         state.sync_battery_from_vec();
-        let ctx = TickContext { now: ts(23), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(23),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx, &mut state);
-        assert_eq!(state.inverter.mode_state.effective, InverterMode::ForceCharge);
+        assert_eq!(
+            state.inverter.mode_state.effective,
+            InverterMode::ForceCharge
+        );
 
         // Test at 03:00 (inside window)
         let mut state2 = PlantState::new(ts(3));
         state2.inverter.mode_state.set_user(InverterMode::Normal);
         state2.batteries[0].soc_percent = 30.0;
         state2.sync_battery_from_vec();
-        let ctx2 = TickContext { now: ts(3), dt_hours: 1.0 };
+        let ctx2 = TickContext {
+            now: ts(3),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx2, &mut state2);
-        assert_eq!(state2.inverter.mode_state.effective, InverterMode::ForceCharge);
+        assert_eq!(
+            state2.inverter.mode_state.effective,
+            InverterMode::ForceCharge
+        );
     }
 
     #[test]
@@ -1870,7 +1953,10 @@ mod tests {
 
         let mut state = PlantState::new(ts(4));
         state.inverter.mode_state.set_user(InverterMode::Normal);
-        let ctx = TickContext { now: ts(4), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(4),
+            dt_hours: 1.0,
+        };
         engine.update(&ctx, &mut state);
         assert_eq!(state.inverter.mode_state.effective, InverterMode::Normal);
     }
@@ -1886,7 +1972,10 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut bat = BatteryEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         bat.update(&ctx, &mut state);
 
         // 3kW charging for 1h → 3 kWh throughput
@@ -1905,14 +1994,20 @@ mod tests {
         let mut bat = BatteryEngine::new();
         // Run 100 hours of cycling
         for _ in 0..100 {
-            let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+            let ctx = TickContext {
+                now: ts(12),
+                dt_hours: 1.0,
+            };
             bat.update(&ctx, &mut state);
             state.batteries[0].power_kw = -state.batteries[0].power_kw;
             state.sync_battery_from_vec();
         }
 
         assert!(state.batteries[0].soh < 1.0, "SOH should have degraded");
-        assert!(state.batteries[0].capacity_kwh < 10.0, "Capacity should have decreased");
+        assert!(
+            state.batteries[0].capacity_kwh < 10.0,
+            "Capacity should have decreased"
+        );
         assert!(
             (state.batteries[0].soh - 0.99).abs() < 0.005,
             "Expected SOH ~0.99, got {}",
@@ -1938,14 +2033,14 @@ mod tests {
         let mut bat = BatteryEngine::new();
 
         // 1 charge tick (1h) + 1 discharge tick (1h) = 1 cycle
-        let ctx_charge = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx_charge = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         bat.update(&ctx_charge, &mut state);
 
         let soc_diff = (state.batteries[0].soc_percent - state.batteries[1].soc_percent).abs();
-        assert!(
-            soc_diff > 0.2,
-            "SOC should diverge after 1 tick"
-        );
+        assert!(soc_diff > 0.2, "SOC should diverge after 1 tick");
     }
 
     // --- Inverter Temperature ---
@@ -1963,7 +2058,10 @@ mod tests {
         state.sync_battery_from_vec();
         state.inverter.temperature_celsius = 25.0;
 
-        let ctx = TickContext { now: ts(14), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(14),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Excess power (4000W) should flow through inverter, generating heat
@@ -1981,7 +2079,10 @@ mod tests {
         state.inverter.ac_power_w = 0.0;
         state.inverter.temperature_celsius = 50.0;
 
-        let ctx = TickContext { now: ts(2), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(2),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Should cool down with no load (50 → ~37.5°C after 1h)
@@ -2004,11 +2105,17 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut inv = InverterEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Normal mode: excess solar charges battery
-        assert!(state.total_battery_power_kw() > 0.0, "Battery should charge");
+        assert!(
+            state.total_battery_power_kw() > 0.0,
+            "Battery should charge"
+        );
     }
 
     #[test]
@@ -2023,11 +2130,17 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut inv = InverterEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Normal mode with 2 batteries should distribute power
-        assert!(state.total_battery_power_kw() > 0.0, "Battery bank should charge");
+        assert!(
+            state.total_battery_power_kw() > 0.0,
+            "Battery bank should charge"
+        );
         assert!(
             (state.batteries[0].power_kw - state.batteries[1].power_kw).abs() < 0.01,
             "Power should be evenly distributed"
@@ -2047,7 +2160,10 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut inv = InverterEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Eco mode no longer caps daytime charging (matches real inverter behavior)
@@ -2056,14 +2172,24 @@ mod tests {
         // The remaining 1kW goes to grid
         let total_power = state.total_battery_power_kw();
         assert!(total_power > 0.0, "Battery bank should charge in Eco");
-        assert!((total_power - 5.0).abs() < 0.01, "Should charge at inverter cap: got {}", total_power);
-        assert!((state.grid.power_w + 1000.0).abs() < 1.0, "Should export 1kW excess above inverter cap");
+        assert!(
+            (total_power - 5.0).abs() < 0.01,
+            "Should charge at inverter cap: got {}",
+            total_power
+        );
+        assert!(
+            (state.grid.power_w + 1000.0).abs() < 1.0,
+            "Should export 1kW excess above inverter cap"
+        );
     }
 
     #[test]
     fn combo_force_charge_with_fault() {
         let mut state = PlantState::new(ts(2));
-        state.inverter.mode_state.set_user(InverterMode::ForceCharge);
+        state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::ForceCharge);
         state.batteries[0].soc_percent = 30.0;
         state.batteries[0].max_charge_kw = 3.0;
         state.sync_battery_from_vec();
@@ -2073,7 +2199,10 @@ mod tests {
 
         let mut inv = InverterEngine::new();
         let mut faults = sim_faults::FaultEngine::new();
-        let ctx = TickContext { now: ts(2), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(2),
+            dt_hours: 1.0,
+        };
 
         // Faults run first (prevents grid interaction)
         faults.update(&ctx, &mut state);
@@ -2091,7 +2220,10 @@ mod tests {
         let mut state = PlantState::with_battery_count(ts(12), 2);
         state.solar.generation_w = 8000.0;
         state.load.demand_w = 1000.0;
-        state.inverter.mode_state.set_user(InverterMode::ExportLimit);
+        state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::ExportLimit);
         state.inverter.export_limit_w = 1000.0;
         for b in &mut state.batteries {
             b.soc_percent = 50.0;
@@ -2100,7 +2232,10 @@ mod tests {
         state.sync_battery_from_vec();
 
         let mut inv = InverterEngine::new();
-        let ctx = TickContext { now: ts(12), dt_hours: 1.0 };
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
         inv.update(&ctx, &mut state);
 
         // Export limit should cap export at 1000W
@@ -2113,7 +2248,10 @@ mod tests {
         // Verify force discharge works similarly for 1, 2, and 3 batteries
         for count in [1usize, 2usize, 3usize] {
             let mut state = PlantState::with_battery_count(ts(20), count);
-            state.inverter.mode_state.set_user(InverterMode::ForceDischarge);
+            state
+                .inverter
+                .mode_state
+                .set_user(InverterMode::ForceDischarge);
             for b in &mut state.batteries {
                 b.soc_percent = 80.0;
                 b.max_discharge_kw = 3.0;
@@ -2121,7 +2259,10 @@ mod tests {
             state.sync_battery_from_vec();
 
             let mut inv = InverterEngine::new();
-            let ctx = TickContext { now: ts(20), dt_hours: 1.0 };
+            let ctx = TickContext {
+                now: ts(20),
+                dt_hours: 1.0,
+            };
             inv.update(&ctx, &mut state);
 
             assert!(
@@ -2143,83 +2284,101 @@ mod tests {
 
     #[test]
     fn solar_override_fixes_generation() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = Some(2000.0);
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(SolarEngine::new(5000.0, 51.5)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.tick();
-        assert_eq!(engine.state.solar.generation_w, 2000.0,
-            "Solar override should fix generation to 2000W");
+        assert_eq!(
+            engine.state.solar.generation_w, 2000.0,
+            "Solar override should fix generation to 2000W"
+        );
     }
 
     #[test]
     fn solar_override_none_uses_engine() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = None;
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(SolarEngine::new(5000.0, 51.5)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.tick();
-        assert!(engine.state.solar.generation_w > 0.0,
-            "Solar should generate without override");
+        assert!(
+            engine.state.solar.generation_w > 0.0,
+            "Solar should generate without override"
+        );
     }
 
     #[test]
     fn solar_override_zero() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = Some(0.0);
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(SolarEngine::new(5000.0, 51.5)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.tick();
-        assert_eq!(engine.state.solar.generation_w, 0.0,
-            "Solar override 0 should zero generation");
+        assert_eq!(
+            engine.state.solar.generation_w, 0.0,
+            "Solar override 0 should zero generation"
+        );
     }
 
     #[test]
     fn load_override_fixes_demand() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(18, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.load_override = Some(1500.0);
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(LoadEngine::new(LoadProfile::Family)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> =
+            vec![Box::new(LoadEngine::new(LoadProfile::Family))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.tick();
-        assert_eq!(engine.state.load.demand_w, 1500.0,
-            "Load override should fix demand to 1500W");
+        assert_eq!(
+            engine.state.load.demand_w, 1500.0,
+            "Load override should fix demand to 1500W"
+        );
     }
 
     #[test]
     fn load_override_none_uses_engine() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(18, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.load_override = None;
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(LoadEngine::new(LoadProfile::Family)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> =
+            vec![Box::new(LoadEngine::new(LoadProfile::Family))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.tick();
-        assert!(engine.state.load.demand_w > 0.0,
-            "Load should generate demand without override");
+        assert!(
+            engine.state.load.demand_w > 0.0,
+            "Load should generate demand without override"
+        );
     }
 
     #[test]
     fn solar_override_at_night_overrides_zero_generation() {
         // 22:00 — sunset → normal engine would set generation=0
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(22, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(22, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = Some(250.0); // 250W override at night
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(SolarEngine::new(5000.0, 51.5)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.enqueue(Command::SetSolarOverride(Some(250.0)));
         engine.tick();
@@ -2231,11 +2390,12 @@ mod tests {
 
     #[test]
     fn solar_override_via_command() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let state = PlantState::new(ts);
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(SolarEngine::new(5000.0, 51.5)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.enqueue(Command::SetSolarOverride(Some(3000.0)));
         engine.tick();
@@ -2243,17 +2403,21 @@ mod tests {
         // Clear override
         engine.enqueue(Command::SetSolarOverride(None));
         engine.tick();
-        assert!(engine.state.solar.generation_w != 3000.0,
-            "After clearing override, engine should control solar");
+        assert!(
+            engine.state.solar.generation_w != 3000.0,
+            "After clearing override, engine should control solar"
+        );
     }
 
     #[test]
     fn load_override_via_command() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let state = PlantState::new(ts);
-        let devices: Vec<Box<dyn DeviceModel>> = vec![
-            Box::new(LoadEngine::new(LoadProfile::Family)),
-        ];
+        let devices: Vec<Box<dyn DeviceModel>> =
+            vec![Box::new(LoadEngine::new(LoadProfile::Family))];
         let mut engine = SimulationEngine::new(state, devices, 1);
         engine.enqueue(Command::SetLoadOverride(Some(999.0)));
         engine.tick();
@@ -2265,7 +2429,10 @@ mod tests {
 
     #[test]
     fn override_persists_across_ticks() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = Some(1234.0);
         state.load_override = Some(567.0);
@@ -2283,7 +2450,10 @@ mod tests {
 
     #[test]
     fn override_survives_serialization_roundtrip() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         state.solar_override = Some(2500.0);
         state.load_override = Some(800.0);
@@ -2295,7 +2465,10 @@ mod tests {
 
     #[test]
     fn override_missing_in_json_means_none() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let mut state = PlantState::new(ts);
         // Serialize without overrides, then parse — should get None
         state.solar_override = None;
@@ -2309,41 +2482,65 @@ mod tests {
 
     #[test]
     fn set_battery_soc_command() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let state = PlantState::with_battery_count(ts, 3);
         let devices: Vec<Box<dyn DeviceModel>> = vec![];
         let mut engine = SimulationEngine::new(state, devices, 1);
         // Set module 1 to 75%
-        engine.enqueue(Command::SetBatterySoc { module: 1, soc: 75.0 });
+        engine.enqueue(Command::SetBatterySoc {
+            module: 1,
+            soc: 75.0,
+        });
         engine.tick();
         assert!((engine.state.batteries[1].soc_percent - 75.0).abs() < 0.01);
         // Module 0 unchanged (default SOC)
-        assert!((engine.state.batteries[0].soc_percent - engine.state.batteries[1].soc_percent).abs() > 1.0);
+        assert!(
+            (engine.state.batteries[0].soc_percent - engine.state.batteries[1].soc_percent).abs()
+                > 1.0
+        );
     }
 
     #[test]
     fn set_battery_soc_clamps_0_100() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let state = PlantState::new(ts);
         let devices: Vec<Box<dyn DeviceModel>> = vec![];
         let mut engine = SimulationEngine::new(state, devices, 1);
-        engine.enqueue(Command::SetBatterySoc { module: 0, soc: 150.0 });
+        engine.enqueue(Command::SetBatterySoc {
+            module: 0,
+            soc: 150.0,
+        });
         engine.tick();
         assert!((engine.state.batteries[0].soc_percent - 100.0).abs() < 0.01);
-        engine.enqueue(Command::SetBatterySoc { module: 0, soc: -10.0 });
+        engine.enqueue(Command::SetBatterySoc {
+            module: 0,
+            soc: -10.0,
+        });
         engine.tick();
         assert!((engine.state.batteries[0].soc_percent - 0.0).abs() < 0.01);
     }
 
     #[test]
     fn set_battery_soc_invalid_index_ignored() {
-        let ts = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let state = PlantState::new(ts);
         let devices: Vec<Box<dyn DeviceModel>> = vec![];
         let mut engine = SimulationEngine::new(state, devices, 1);
         let original_soc = engine.state.batteries[0].soc_percent;
         // Index 99 doesn't exist — should not panic, module 0 unchanged
-        engine.enqueue(Command::SetBatterySoc { module: 99, soc: 50.0 });
+        engine.enqueue(Command::SetBatterySoc {
+            module: 99,
+            soc: 50.0,
+        });
         engine.tick();
         assert!((engine.state.batteries[0].soc_percent - original_soc).abs() < 0.01);
     }

@@ -1,7 +1,6 @@
 //! Shared application state for Tauri commands.
 
 use sim_core::{PlantState, Schedule};
-use sim_models;
 use sim_recording::RecordingFrame;
 use sim_registers::RegisterStore;
 use std::sync::Arc;
@@ -37,7 +36,8 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         let reg_cat = sim_registers::default_register_catalogue();
-        let (_modbus_cmd_tx, _) = tokio::sync::mpsc::unbounded_channel::<sim_modbus::ModbusCommand>();
+        let (_modbus_cmd_tx, _) =
+            tokio::sync::mpsc::unbounded_channel::<sim_modbus::ModbusCommand>();
         Self {
             engine: Arc::new(Mutex::new(None)),
             register_store: Arc::new(Mutex::new(RegisterStore::new(reg_cat))),
@@ -133,20 +133,31 @@ impl ScheduleDto {
         // Convert decimal hours (e.g. 5.5) to HHMM (e.g. 530).
         // 60 = disabled sentinel (minutes > 59).
         let hhmm = |decimal_hours: f64| -> u16 {
-            if decimal_hours <= 0.0 { return 60; }
+            if decimal_hours <= 0.0 {
+                return 60;
+            }
             let h = decimal_hours.floor() as u16;
             let m = ((decimal_hours - h as f64) * 60.0).round() as u16;
             h * 100 + m
         };
 
         let (cs, ce, ds, de, ct, _dt) = match schedule {
-            Some(s) => (s.charge_start, s.charge_end, s.discharge_start, s.discharge_end, s.charge_target_soc, s.discharge_target_soc),
+            Some(s) => (
+                s.charge_start,
+                s.charge_end,
+                s.discharge_start,
+                s.discharge_end,
+                s.charge_target_soc,
+                s.discharge_target_soc,
+            ),
             None => (0.0, 0.0, 0.0, 0.0, 100.0, 10.0),
         };
 
         Self {
-            enable_charge: cs != ce && state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge,
-            enable_discharge: ds != de && state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge,
+            enable_charge: cs != ce
+                && state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge,
+            enable_discharge: ds != de
+                && state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge,
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct,
             charge_slot_1_start: hhmm(cs),
@@ -190,7 +201,8 @@ impl From<&PlantState> for PlantStateDto {
             inverter_mode: format!("{:?}", state.inverter.mode_state.effective),
             battery_mode: {
                 let eco = state.inverter.mode_state.effective == sim_models::InverterMode::Eco;
-                let enable_discharge = state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge;
+                let enable_discharge =
+                    state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge;
                 let soc_reserve = state.min_aggregate_soc();
                 match (eco, enable_discharge, (soc_reserve.round() as u16) == 100) {
                     (true, false, false) => "Eco",
@@ -199,7 +211,8 @@ impl From<&PlantState> for PlantStateDto {
                     (false, true, _) => "TimedExport",
                     (false, false, false) => "ExportPaused",
                     (false, false, true) => "ExportPaused",
-                }.to_string()
+                }
+                .to_string()
             },
             inverter_type: state.config.inverter_type.clone(),
             inverter_ac_power_w: state.inverter.ac_power_w,

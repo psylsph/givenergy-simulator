@@ -57,7 +57,10 @@ mod tests {
         let midday = recording.get(1440).unwrap(); // ~12:00
         // Holding register at address 300 has key 10000+300
         let solar_reg = midday.register_snapshot[&(10000u32 + 300)];
-        assert!(solar_reg > 0, "Midday solar register should be > 0, got {solar_reg}");
+        assert!(
+            solar_reg > 0,
+            "Midday solar register should be > 0, got {solar_reg}"
+        );
 
         // Verify SOC changed
         assert_ne!(engine.state.aggregate_soc(), 50.0);
@@ -121,7 +124,10 @@ mod tests {
         engine.enqueue(Command::SetInverterMode(InverterMode::ForceCharge));
         engine.tick();
 
-        assert_eq!(engine.state.inverter.mode_state.effective, InverterMode::ForceCharge);
+        assert_eq!(
+            engine.state.inverter.mode_state.effective,
+            InverterMode::ForceCharge
+        );
         assert!(
             engine.state.grid.power_w > 0.0 || engine.state.total_battery_power_kw() > 0.0,
             "Force charge should be importing from grid or charging battery"
@@ -175,10 +181,14 @@ mod tests {
         engine.tick();
 
         // Both batteries should have the same power distribution
-        assert_eq!(engine.state.batteries[0].power_kw, engine.state.batteries[1].power_kw,
-            "Both batteries should get equal power");
-        assert!(engine.state.batteries[0].power_kw > 0.0,
-            "Battery should be charging");
+        assert_eq!(
+            engine.state.batteries[0].power_kw, engine.state.batteries[1].power_kw,
+            "Both batteries should get equal power"
+        );
+        assert!(
+            engine.state.batteries[0].power_kw > 0.0,
+            "Battery should be charging"
+        );
     }
 
     #[test]
@@ -205,7 +215,10 @@ mod tests {
         // Both batteries should discharge equally (same power_kw)
         assert!(engine.state.batteries[0].power_kw < 0.0);
         assert!(engine.state.batteries[1].power_kw < 0.0);
-        assert_eq!(engine.state.batteries[0].power_kw, engine.state.batteries[1].power_kw);
+        assert_eq!(
+            engine.state.batteries[0].power_kw,
+            engine.state.batteries[1].power_kw
+        );
 
         // But their SOCs should differ based on initial values
         assert!(engine.state.batteries[0].soc_percent < 30.0);
@@ -214,18 +227,28 @@ mod tests {
         // Both should lose the same absolute SOC percentage
         let delta0 = 30.0 - engine.state.batteries[0].soc_percent;
         let delta1 = 80.0 - engine.state.batteries[1].soc_percent;
-        assert!((delta0 - delta1).abs() < 0.01,
-            "Both batteries should lose the same SOC percentage: delta0={}, delta1={}", delta0, delta1);
+        assert!(
+            (delta0 - delta1).abs() < 0.01,
+            "Both batteries should lose the same SOC percentage: delta0={}, delta1={}",
+            delta0,
+            delta1
+        );
     }
 
     #[test]
     fn three_batteries_double_capacity() {
         let state = PlantState::with_battery_count(ts(12), 3);
         // Default: each module is 9.5 kWh, so total = 28.5 kWh
-        assert!((state.total_battery_capacity() - 28.5).abs() < 0.01,
-            "3 batteries should have 3x capacity: {}", state.total_battery_capacity());
-        assert!((state.total_max_charge_kw() - 9.0).abs() < 0.01,
-            "3 batteries should have 3x charge rate: {}", state.total_max_charge_kw());
+        assert!(
+            (state.total_battery_capacity() - 28.5).abs() < 0.01,
+            "3 batteries should have 3x capacity: {}",
+            state.total_battery_capacity()
+        );
+        assert!(
+            (state.total_max_charge_kw() - 9.0).abs() < 0.01,
+            "3 batteries should have 3x charge rate: {}",
+            state.total_max_charge_kw()
+        );
     }
 
     #[test]

@@ -24,8 +24,8 @@
 //! - Inner function 0x06 — Write Single Register
 
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 // ---------------------------------------------------------------------------
 // GivEnergy frame constants
@@ -125,7 +125,12 @@ pub fn build_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, payload: &
 }
 
 /// Build a GivEnergy error response frame.
-pub fn build_error_response(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, exception: u8) -> Vec<u8> {
+pub fn build_error_response(
+    serial: &[u8; SERIAL_LEN],
+    slave: u8,
+    func: u8,
+    exception: u8,
+) -> Vec<u8> {
     build_response(serial, slave, func | 0x80, &[exception])
 }
 
@@ -243,7 +248,10 @@ pub async fn run_modbus_server(
                             if inner_payload.len() < 4 {
                                 tracing::warn!("Read request payload too short");
                                 let resp = build_error_response(
-                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
                                 );
                                 let _ = stream.write_all(&resp).await;
                                 pending.drain(..frame_len);
@@ -255,7 +263,10 @@ pub async fn run_modbus_server(
 
                             if count == 0 || count > 125 {
                                 let resp = build_error_response(
-                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
                                 );
                                 let _ = stream.write_all(&resp).await;
                                 pending.drain(..frame_len);
@@ -309,7 +320,9 @@ pub async fn run_modbus_server(
                                 let store_guard = store.lock().await;
                                 let mut data = Vec::with_capacity(count as usize * 2);
                                 for i in 0..count {
-                                    let val = store_guard.read_by_space(start_addr + i, space).unwrap_or(0);
+                                    let val = store_guard
+                                        .read_by_space(start_addr + i, space)
+                                        .unwrap_or(0);
                                     data.extend_from_slice(&val.to_be_bytes());
                                 }
                                 data
@@ -327,7 +340,10 @@ pub async fn run_modbus_server(
                             let resp = build_response(&serial, slave, inner_func, &resp_payload);
                             tracing::debug!(
                                 "Read response: slave=0x{:02X} fn=0x{:02X} start={} count={}",
-                                slave, inner_func, start_addr, count
+                                slave,
+                                inner_func,
+                                start_addr,
+                                count
                             );
                             let _ = stream.write_all(&resp).await;
                         }
@@ -335,16 +351,17 @@ pub async fn run_modbus_server(
                         FC_WRITE_SINGLE => {
                             if inner_payload.len() < 4 {
                                 let resp = build_error_response(
-                                    &serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS,
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
                                 );
                                 let _ = stream.write_all(&resp).await;
                                 pending.drain(..frame_len);
                                 continue;
                             }
-                            let address =
-                                u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
-                            let value =
-                                u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
+                            let address = u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
+                            let value = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
 
                             let success = {
                                 let mut store = store.lock().await;
@@ -364,9 +381,7 @@ pub async fn run_modbus_server(
                                     build_response(&serial, slave, inner_func, &resp_payload);
                                 let _ = stream.write_all(&resp).await;
                                 let _ = cmd_tx.send(ModbusCommand { address, value });
-                                tracing::info!(
-                                    "Modbus write: addr={address}, value={value}"
-                                );
+                                tracing::info!("Modbus write: addr={address}, value={value}");
                             } else {
                                 let resp = build_error_response(
                                     &serial,
@@ -375,18 +390,17 @@ pub async fn run_modbus_server(
                                     EC_ILLEGAL_DATA_ADDRESS,
                                 );
                                 let _ = stream.write_all(&resp).await;
-                                tracing::warn!(
-                                    "Modbus write rejected: addr={address} (read-only)"
-                                );
+                                tracing::warn!("Modbus write rejected: addr={address} (read-only)");
                             }
                         }
 
                         _ => {
-                            tracing::warn!(
-                                "Unsupported inner function code 0x{inner_func:02X}"
-                            );
+                            tracing::warn!("Unsupported inner function code 0x{inner_func:02X}");
                             let resp = build_error_response(
-                                &serial, slave, inner_func, EC_ILLEGAL_FUNCTION,
+                                &serial,
+                                slave,
+                                inner_func,
+                                EC_ILLEGAL_FUNCTION,
                             );
                             let _ = stream.write_all(&resp).await;
                         }
@@ -398,4 +412,3 @@ pub async fn run_modbus_server(
         });
     }
 }
-

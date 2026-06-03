@@ -84,8 +84,18 @@ pub fn write_csv<W: Write>(writer: &mut W, frames: &[RecordingFrame]) -> std::io
     )?;
     for frame in frames {
         let faults = frame.plant_state.active_faults.join(";");
-        let b2 = frame.plant_state.batteries.get(1).map(|b| b.soc_percent).unwrap_or(-1.0);
-        let b3 = frame.plant_state.batteries.get(2).map(|b| b.soc_percent).unwrap_or(-1.0);
+        let b2 = frame
+            .plant_state
+            .batteries
+            .get(1)
+            .map(|b| b.soc_percent)
+            .unwrap_or(-1.0);
+        let b3 = frame
+            .plant_state
+            .batteries
+            .get(2)
+            .map(|b| b.soc_percent)
+            .unwrap_or(-1.0);
         let total_cap = frame.plant_state.total_battery_capacity();
         let total_pwr = frame.plant_state.total_battery_power_kw();
         let e = &frame.plant_state.energy_totals;
@@ -94,7 +104,12 @@ pub fn write_csv<W: Write>(writer: &mut W, frames: &[RecordingFrame]) -> std::io
             "{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.0},{:.0},{:.0},{},{:?},\"{}\",{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
             frame.timestamp,
             frame.plant_state.aggregate_soc(),
-            frame.plant_state.batteries.first().map(|b| b.soc_percent).unwrap_or(-1.0),
+            frame
+                .plant_state
+                .batteries
+                .first()
+                .map(|b| b.soc_percent)
+                .unwrap_or(-1.0),
             b2,
             b3,
             total_cap,

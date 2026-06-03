@@ -5,8 +5,8 @@
 
 use crate::app_state::{AppState, PlantStateDto};
 use sim_core::{
-    BatteryEngine, Command, EnergyTracker, InverterEngine, LoadEngine, LoadProfile,
-    InverterMode, ScheduleEngine, SimulationEngine, SolarEngine, WeatherCondition,
+    BatteryEngine, Command, EnergyTracker, InverterEngine, InverterMode, LoadEngine, LoadProfile,
+    ScheduleEngine, SimulationEngine, SolarEngine, WeatherCondition,
 };
 use sim_models::{BatteryState, DeviceModel};
 use sim_recording::RecordingFrame;
@@ -179,10 +179,14 @@ pub async fn create_plant(
         plant: plant_state,
         schedule: schedule_opt,
     };
-    let data_dir = app.path().app_data_dir().map_err(|e| format!("Cannot get app data dir: {e}"))?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot get app data dir: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("Cannot create data dir: {e}"))?;
     let path = data_dir.join("plant_state.json");
-    let json = serde_json::to_string_pretty(&persisted).map_err(|e| format!("Serialize error: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(&persisted).map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))?;
     tracing::info!("Auto-saved plant to {}", path.display());
 
@@ -280,9 +284,7 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
             }
         }
         // HR 110: Battery SOC reserve (%)
-        110 => {
-            Some(Command::SetMinSoc(value as f64))
-        }
+        110 => Some(Command::SetMinSoc(value as f64)),
         // HR 111: Battery charge limit (%)
         111 => {
             // Scale max charge — no Command variant, so store in register store directly
@@ -427,52 +429,54 @@ pub async fn start_simulation(
                             }
                         }
 
-                            // Drain and apply Modbus write commands before tick
-                            {
-                                if let Ok(mut cmds) = modbus_cmds.lock() {
-                                    if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                        for cmd in cmds.drain(..) {
-                                            match cmd.address {
-                                                35 => time_buf[0] = Some(cmd.value),
-                                                36 => time_buf[1] = Some(cmd.value),
-                                                37 => time_buf[2] = Some(cmd.value),
-                                                38 => time_buf[3] = Some(cmd.value),
-                                                39 => time_buf[4] = Some(cmd.value),
-                                                40 => time_buf[5] = Some(cmd.value),
-                                                _ => {}
-                                            }
-                                            if let Some(sim_cmd) = modbus_address_to_command(cmd.address, cmd.value) {
-                                                e.enqueue(sim_cmd);
-                                            }
+                        // Drain and apply Modbus write commands before tick
+                        {
+                            if let Ok(mut cmds) = modbus_cmds.lock() {
+                                if let Ok(mut time_buf) = pending_time_regs.lock() {
+                                    for cmd in cmds.drain(..) {
+                                        match cmd.address {
+                                            35 => time_buf[0] = Some(cmd.value),
+                                            36 => time_buf[1] = Some(cmd.value),
+                                            37 => time_buf[2] = Some(cmd.value),
+                                            38 => time_buf[3] = Some(cmd.value),
+                                            39 => time_buf[4] = Some(cmd.value),
+                                            40 => time_buf[5] = Some(cmd.value),
+                                            _ => {}
                                         }
-                                        if time_buf.iter().all(|r| r.is_some()) {
-                                            let y = time_buf[0].unwrap() as i32;
-                                            let m = time_buf[1].unwrap() as u32;
-                                            let d = time_buf[2].unwrap() as u32;
-                                            let h = time_buf[3].unwrap() as u32;
-                                            let min = time_buf[4].unwrap() as u32;
-                                            let s = time_buf[5].unwrap() as u32;
-                                            if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
-                                                .and_then(|date| date.and_hms_opt(h, min, s))
-                                            {
-                                                e.enqueue(Command::SetSimulationTime(dt));
-                                            }
-                                            *time_buf = [None; 6];
+                                        if let Some(sim_cmd) =
+                                            modbus_address_to_command(cmd.address, cmd.value)
+                                        {
+                                            e.enqueue(sim_cmd);
                                         }
+                                    }
+                                    if time_buf.iter().all(|r| r.is_some()) {
+                                        let y = time_buf[0].unwrap() as i32;
+                                        let m = time_buf[1].unwrap() as u32;
+                                        let d = time_buf[2].unwrap() as u32;
+                                        let h = time_buf[3].unwrap() as u32;
+                                        let min = time_buf[4].unwrap() as u32;
+                                        let s = time_buf[5].unwrap() as u32;
+                                        if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
+                                            .and_then(|date| date.and_hms_opt(h, min, s))
+                                        {
+                                            e.enqueue(Command::SetSimulationTime(dt));
+                                        }
+                                        *time_buf = [None; 6];
                                     }
                                 }
                             }
+                        }
 
-                            e.tick();
-                            {
-                                let mut rs = register_store.lock().await;
-                                rs.project_from_state(&e.state);
-                            }
-                            // Update battery snapshot for Modbus BMS reads
-                            {
-                                let mut bs = battery_snapshot.lock().await;
-                                *bs = e.state.batteries.clone();
-                            }
+                        e.tick();
+                        {
+                            let mut rs = register_store.lock().await;
+                            rs.project_from_state(&e.state);
+                        }
+                        // Update battery snapshot for Modbus BMS reads
+                        {
+                            let mut bs = battery_snapshot.lock().await;
+                            *bs = e.state.batteries.clone();
+                        }
                         let frame = RecordingFrame {
                             timestamp: e.state.timestamp,
                             plant_state: e.state.clone(),
@@ -494,7 +498,10 @@ pub async fn start_simulation(
                     let plant = engine.lock().await.as_ref().map(|e| e.state.clone());
                     if let (Some(plant), Some(ref dir)) = (plant, &save_dir) {
                         let sched = schedule_arc.lock().await.clone();
-                        let persisted = crate::app_state::PersistedState { plant, schedule: sched };
+                        let persisted = crate::app_state::PersistedState {
+                            plant,
+                            schedule: sched,
+                        };
                         let path = dir.join("plant_state.json");
                         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
                             let _ = std::fs::write(&path, json);
@@ -511,52 +518,54 @@ pub async fn start_simulation(
                 let tick_result = {
                     let mut eng = engine.lock().await;
                     if let Some(ref mut e) = *eng {
-                            // Drain and apply Modbus write commands before tick
-                            {
-                                if let Ok(mut cmds) = modbus_cmds.lock() {
-                                    if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                        for cmd in cmds.drain(..) {
-                                            match cmd.address {
-                                                35 => time_buf[0] = Some(cmd.value),
-                                                36 => time_buf[1] = Some(cmd.value),
-                                                37 => time_buf[2] = Some(cmd.value),
-                                                38 => time_buf[3] = Some(cmd.value),
-                                                39 => time_buf[4] = Some(cmd.value),
-                                                40 => time_buf[5] = Some(cmd.value),
-                                                _ => {}
-                                            }
-                                            if let Some(sim_cmd) = modbus_address_to_command(cmd.address, cmd.value) {
-                                                e.enqueue(sim_cmd);
-                                            }
+                        // Drain and apply Modbus write commands before tick
+                        {
+                            if let Ok(mut cmds) = modbus_cmds.lock() {
+                                if let Ok(mut time_buf) = pending_time_regs.lock() {
+                                    for cmd in cmds.drain(..) {
+                                        match cmd.address {
+                                            35 => time_buf[0] = Some(cmd.value),
+                                            36 => time_buf[1] = Some(cmd.value),
+                                            37 => time_buf[2] = Some(cmd.value),
+                                            38 => time_buf[3] = Some(cmd.value),
+                                            39 => time_buf[4] = Some(cmd.value),
+                                            40 => time_buf[5] = Some(cmd.value),
+                                            _ => {}
                                         }
-                                        if time_buf.iter().all(|r| r.is_some()) {
-                                            let y = time_buf[0].unwrap() as i32;
-                                            let m = time_buf[1].unwrap() as u32;
-                                            let d = time_buf[2].unwrap() as u32;
-                                            let h = time_buf[3].unwrap() as u32;
-                                            let min = time_buf[4].unwrap() as u32;
-                                            let s = time_buf[5].unwrap() as u32;
-                                            if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
-                                                .and_then(|date| date.and_hms_opt(h, min, s))
-                                            {
-                                                e.enqueue(Command::SetSimulationTime(dt));
-                                            }
-                                            *time_buf = [None; 6];
+                                        if let Some(sim_cmd) =
+                                            modbus_address_to_command(cmd.address, cmd.value)
+                                        {
+                                            e.enqueue(sim_cmd);
                                         }
+                                    }
+                                    if time_buf.iter().all(|r| r.is_some()) {
+                                        let y = time_buf[0].unwrap() as i32;
+                                        let m = time_buf[1].unwrap() as u32;
+                                        let d = time_buf[2].unwrap() as u32;
+                                        let h = time_buf[3].unwrap() as u32;
+                                        let min = time_buf[4].unwrap() as u32;
+                                        let s = time_buf[5].unwrap() as u32;
+                                        if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
+                                            .and_then(|date| date.and_hms_opt(h, min, s))
+                                        {
+                                            e.enqueue(Command::SetSimulationTime(dt));
+                                        }
+                                        *time_buf = [None; 6];
                                     }
                                 }
                             }
+                        }
 
-                            e.tick();
-                            {
-                                let mut rs = register_store.lock().await;
-                                rs.project_from_state(&e.state);
-                            }
-                            // Update battery snapshot for Modbus BMS reads
-                            {
-                                let mut bs = battery_snapshot.lock().await;
-                                *bs = e.state.batteries.clone();
-                            }
+                        e.tick();
+                        {
+                            let mut rs = register_store.lock().await;
+                            rs.project_from_state(&e.state);
+                        }
+                        // Update battery snapshot for Modbus BMS reads
+                        {
+                            let mut bs = battery_snapshot.lock().await;
+                            *bs = e.state.batteries.clone();
+                        }
                         let frame = RecordingFrame {
                             timestamp: e.state.timestamp,
                             plant_state: e.state.clone(),
@@ -577,7 +586,10 @@ pub async fn start_simulation(
                     let plant = engine.lock().await.as_ref().map(|e| e.state.clone());
                     if let (Some(plant), Some(ref dir)) = (plant, &save_dir) {
                         let sched = schedule_arc.lock().await.clone();
-                        let persisted = crate::app_state::PersistedState { plant, schedule: sched };
+                        let persisted = crate::app_state::PersistedState {
+                            plant,
+                            schedule: sched,
+                        };
                         let path = dir.join("plant_state.json");
                         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
                             let _ = std::fs::write(&path, json);
@@ -749,7 +761,10 @@ pub async fn set_battery_soc(
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
-        e.enqueue(Command::SetBatterySoc { module: params.module, soc: params.soc });
+        e.enqueue(Command::SetBatterySoc {
+            module: params.module,
+            soc: params.soc,
+        });
         // Apply immediately and emit
         e.tick();
         let sched_ref = state.schedule.lock().await.clone();
@@ -767,7 +782,10 @@ pub async fn set_battery_soh(
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
-        e.enqueue(Command::SetBatterySoH { module: params.module, soh: params.soh });
+        e.enqueue(Command::SetBatterySoH {
+            module: params.module,
+            soh: params.soh,
+        });
         e.tick();
         let sched_ref = state.schedule.lock().await.clone();
         let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
@@ -793,7 +811,9 @@ pub async fn start_calibration(
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
-        e.enqueue(Command::StartCalibration { module: params.module });
+        e.enqueue(Command::StartCalibration {
+            module: params.module,
+        });
         e.tick();
         let sched_ref = state.schedule.lock().await.clone();
         let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
@@ -803,10 +823,7 @@ pub async fn start_calibration(
 }
 
 #[tauri::command]
-pub async fn cancel_calibration(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn cancel_calibration(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
         e.enqueue(Command::CancelCalibration);
@@ -868,7 +885,8 @@ pub async fn export_recording(
             sim_storage::save_recording(path, &recording).map_err(|e| e.to_string())?;
         }
         "json" => {
-            let json = serde_json::to_string_pretty(&recording as &Vec<RecordingFrame>).map_err(|e| e.to_string())?;
+            let json = serde_json::to_string_pretty(&recording as &Vec<RecordingFrame>)
+                .map_err(|e| e.to_string())?;
             std::fs::write(path, json).map_err(|e| e.to_string())?;
         }
         _ => return Err(format!("Unknown format: {}", params.format)),
@@ -900,12 +918,10 @@ pub async fn get_current_state(state: State<'_, AppState>) -> Result<PlantStateD
 
 /// Save the current plant state + schedule to a JSON file in the app data directory.
 #[tauri::command]
-pub async fn save_plant(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn save_plant(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let eng = state.engine.lock().await;
-    let plant_state = eng.as_ref()
+    let plant_state = eng
+        .as_ref()
         .map(|e| e.state.clone())
         .ok_or_else(|| "No plant created yet".to_string())?;
     drop(eng);
@@ -947,7 +963,8 @@ pub async fn load_plant(
         if let Ok(ps) = serde_json::from_str::<crate::app_state::PersistedState>(&json) {
             (ps.plant, ps.schedule)
         } else {
-            let ps = serde_json::from_str::<sim_models::PlantState>(&json).map_err(|e| e.to_string())?;
+            let ps =
+                serde_json::from_str::<sim_models::PlantState>(&json).map_err(|e| e.to_string())?;
             (ps, None)
         };
 
@@ -986,7 +1003,9 @@ pub async fn load_plant(
     let dto = {
         let mut eng = tauri_state.engine.lock().await;
         *eng = Some(engine);
-        eng.as_ref().map(|e| PlantStateDto::with_schedule(&e.state, schedule_opt.as_ref())).unwrap()
+        eng.as_ref()
+            .map(|e| PlantStateDto::with_schedule(&e.state, schedule_opt.as_ref()))
+            .unwrap()
     };
 
     let _ = app.emit("state_changed", &dto);

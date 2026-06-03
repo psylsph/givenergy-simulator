@@ -4,18 +4,20 @@
 //!
 //! Outputs: JSON report, JUnit XML, CSV traces, JSONL recording.
 
+#![allow(clippy::too_many_arguments, clippy::collapsible_if, clippy::ptr_arg)]
+
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
 use sim_core::{
-    BatteryEngine, Command, InverterEngine, LoadEngine, LoadProfile, PlantState,
-    SimulationEngine, SolarEngine, WeatherCondition,
+    BatteryEngine, Command, InverterEngine, LoadEngine, LoadProfile, PlantState, SimulationEngine,
+    SolarEngine, WeatherCondition,
 };
 use sim_faults::FaultEngine;
 use sim_models::DeviceModel;
 use sim_recording::{RecordingFrame, write_csv, write_frame, write_json_report, write_junit_xml};
 use sim_scenarios::{AssertionResult, ScenarioResult, parse_named_scenario};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 // ---------------------------------------------------------------------------
 // CLI
@@ -113,10 +115,7 @@ fn parse_profile(s: &str) -> LoadProfile {
 fn load_custom_profile(path: &std::path::Path) -> Result<LoadProfile, Box<dyn std::error::Error>> {
     let yaml = std::fs::read_to_string(path)?;
     let entries: Vec<LoadProfileEntry> = serde_yaml::from_str(&yaml)?;
-    let mut points: Vec<(f64, f64)> = entries
-        .into_iter()
-        .map(|e| (e.hour, e.watts))
-        .collect();
+    let mut points: Vec<(f64, f64)> = entries.into_iter().map(|e| (e.hour, e.watts)).collect();
     points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(LoadProfile::Custom(points))
 }
@@ -144,7 +143,9 @@ fn _parse_weather_cmd(s: &str) -> Option<WeatherCondition> {
     // Return None only if it looks like garbage; our parser defaults to Clear
     // so check if the input matches a known variant
     match s.to_lowercase().as_str() {
-        "clear" | "partlycloudy" | "partly-cloudy" | "partly_cloudy" | "overcast" | "storm" => Some(w),
+        "clear" | "partlycloudy" | "partly-cloudy" | "partly_cloudy" | "overcast" | "storm" => {
+            Some(w)
+        }
         _ => None,
     }
 }
@@ -236,14 +237,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             recording,
             diff,
             format,
-        } => {
-            replay_recording(&recording, diff.as_ref(), &format).await
-        }
+        } => replay_recording(&recording, diff.as_ref(), &format).await,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_scenario(
-    scenario_path: &PathBuf,
+    scenario_path: &Path,
     tick_interval: u64,
     date: &str,
     peak_watts: f64,
@@ -317,7 +317,14 @@ async fn run_scenario(
         let server_store = store.clone();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            if let Err(e) = sim_modbus::run_modbus_server(addr, server_store, cmd_tx, Arc::new(tokio::sync::Mutex::new(Vec::new()))).await {
+            if let Err(e) = sim_modbus::run_modbus_server(
+                addr,
+                server_store,
+                cmd_tx,
+                Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            )
+            .await
+            {
                 tracing::error!("Modbus server error: {e}");
             }
         });
@@ -456,11 +463,7 @@ async fn run_scenario(
                         });
                     }
                     Err(failures) => {
-                        tracing::error!(
-                            "[{}] ✗ assertion failures: {:?}",
-                            time_str,
-                            failures,
-                        );
+                        tracing::error!("[{}] ✗ assertion failures: {:?}", time_str, failures,);
                         scenario_result.failed += 1;
                         scenario_result.assertions.push(AssertionResult {
                             time: time_str,
@@ -495,7 +498,11 @@ async fn run_scenario(
         for frame in &recording {
             write_frame(&mut f, frame)?;
         }
-        tracing::info!("Recording: {} ({} frames)", jsonl_path.display(), recording.len());
+        tracing::info!(
+            "Recording: {} ({} frames)",
+            jsonl_path.display(),
+            recording.len()
+        );
 
         // CSV traces
         let csv_path = dir.join(format!("{base_name}.csv"));
@@ -530,11 +537,19 @@ async fn replay_recording(
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let frames = sim_storage::load_recording(path)?;
-    tracing::info!("Loaded recording: {} ({} frames)", path.display(), frames.len());
+    tracing::info!(
+        "Loaded recording: {} ({} frames)",
+        path.display(),
+        frames.len()
+    );
 
     if let Some(diff) = diff_path {
         let other = sim_storage::load_recording(diff)?;
-        tracing::info!("Loaded diff recording: {} ({} frames)", diff.display(), other.len());
+        tracing::info!(
+            "Loaded diff recording: {} ({} frames)",
+            diff.display(),
+            other.len()
+        );
 
         let diffs = sim_recording::diff_recordings(&frames, &other);
 
@@ -574,12 +589,30 @@ async fn replay_recording(
             }
             _ => {
                 // Summary
-                let first = frames.first().map(|f| f.timestamp.to_string()).unwrap_or_default();
-                let last = frames.last().map(|f| f.timestamp.to_string()).unwrap_or_default();
-                let first_soc = frames.first().map(|f| f.plant_state.aggregate_soc()).unwrap_or(0.0);
-                let last_soc = frames.last().map(|f| f.plant_state.aggregate_soc()).unwrap_or(0.0);
-                let first_solar = frames.first().map(|f| f.plant_state.solar.generation_w).unwrap_or(0.0);
-                let last_solar = frames.last().map(|f| f.plant_state.solar.generation_w).unwrap_or(0.0);
+                let first = frames
+                    .first()
+                    .map(|f| f.timestamp.to_string())
+                    .unwrap_or_default();
+                let last = frames
+                    .last()
+                    .map(|f| f.timestamp.to_string())
+                    .unwrap_or_default();
+                let first_soc = frames
+                    .first()
+                    .map(|f| f.plant_state.aggregate_soc())
+                    .unwrap_or(0.0);
+                let last_soc = frames
+                    .last()
+                    .map(|f| f.plant_state.aggregate_soc())
+                    .unwrap_or(0.0);
+                let first_solar = frames
+                    .first()
+                    .map(|f| f.plant_state.solar.generation_w)
+                    .unwrap_or(0.0);
+                let last_solar = frames
+                    .last()
+                    .map(|f| f.plant_state.solar.generation_w)
+                    .unwrap_or(0.0);
 
                 let totals = frames.last().map(|f| &f.plant_state.energy_totals);
 

@@ -7,16 +7,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::sync::{Mutex, mpsc};
+use tokio::time::{Duration, sleep};
 
 use sim_modbus::{
-    crc16, ModbusCommand,
-    FC_READ_INPUT, FC_READ_HOLDING, FC_WRITE_SINGLE,
-    HEADER_SIZE, SERIAL_LEN,
+    FC_READ_HOLDING, FC_READ_INPUT, FC_WRITE_SINGLE, HEADER_SIZE, ModbusCommand, SERIAL_LEN, crc16,
 };
-use sim_registers::{default_register_catalogue, RegisterStore};
 use sim_models::{BatteryState, PlantState};
+use sim_registers::{RegisterStore, default_register_catalogue};
 
 // ---------------------------------------------------------------------------
 // Frame helpers (same logic as givenergy_protocol.rs)
@@ -41,12 +39,7 @@ fn build_read_request(
     wrap_inner(serial, slave, func, &payload)
 }
 
-fn build_write_request(
-    serial: &[u8; SERIAL_LEN],
-    slave: u8,
-    start: u16,
-    value: u16,
-) -> Vec<u8> {
+fn build_write_request(serial: &[u8; SERIAL_LEN], slave: u8, start: u16, value: u16) -> Vec<u8> {
     let mut payload = Vec::with_capacity(4);
     payload.extend_from_slice(&start.to_be_bytes());
     payload.extend_from_slice(&value.to_be_bytes());
@@ -77,7 +70,11 @@ fn wrap_inner(serial: &[u8; SERIAL_LEN], slave: u8, func: u8, payload: &[u8]) ->
 /// Decode a response frame into (slave, func, payload_bytes).
 /// Payload has CRC stripped.
 fn decode_response(data: &[u8]) -> (u8, u8, Vec<u8>) {
-    assert!(data.len() >= HEADER_SIZE + 4, "Response too short: {} bytes", data.len());
+    assert!(
+        data.len() >= HEADER_SIZE + 4,
+        "Response too short: {} bytes",
+        data.len()
+    );
     let inner_pdu = &data[HEADER_SIZE..];
     let slave = inner_pdu[0];
     let func = inner_pdu[1];
@@ -87,7 +84,11 @@ fn decode_response(data: &[u8]) -> (u8, u8, Vec<u8>) {
 
 /// Parse read-response payload: serial(10) + start(2) + count(2) + data(N×2).
 fn parse_read_payload(payload: &[u8]) -> (u16, u16, Vec<u16>) {
-    assert!(payload.len() >= 14, "Read payload too short: {}", payload.len());
+    assert!(
+        payload.len() >= 14,
+        "Read payload too short: {}",
+        payload.len()
+    );
     let _serial = &payload[..10];
     let start = u16::from_be_bytes([payload[10], payload[11]]);
     let count = u16::from_be_bytes([payload[12], payload[13]]);
@@ -103,7 +104,13 @@ fn parse_read_payload(payload: &[u8]) -> (u16, u16, Vec<u16>) {
 // ---------------------------------------------------------------------------
 
 /// Start the real `run_modbus_server` with a pre-populated state.
-async fn start_server(state: &PlantState) -> (SocketAddr, Arc<Mutex<RegisterStore>>, mpsc::UnboundedReceiver<ModbusCommand>) {
+async fn start_server(
+    state: &PlantState,
+) -> (
+    SocketAddr,
+    Arc<Mutex<RegisterStore>>,
+    mpsc::UnboundedReceiver<ModbusCommand>,
+) {
     let mut store = RegisterStore::new(default_register_catalogue());
     store.project_from_state(state);
     let store = Arc::new(Mutex::new(store));
@@ -150,8 +157,10 @@ async fn send_recv(stream: &mut TcpStream, frame: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn read_input_registers_end_to_end() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _store, _rx) = start_server(&state).await;
 
@@ -181,8 +190,10 @@ async fn read_input_registers_end_to_end() {
 #[tokio::test]
 async fn read_holding_device_type() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _store, _rx) = start_server(&state).await;
 
@@ -202,8 +213,10 @@ async fn read_holding_device_type() {
 #[tokio::test]
 async fn read_write_holding_inverter_mode() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _store, _rx) = start_server(&state).await;
 
@@ -248,8 +261,10 @@ async fn read_write_holding_inverter_mode() {
 #[tokio::test]
 async fn read_battery_soc_via_input_register() {
     let mut state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     state.batteries[0].soc_percent = 75.0;
     state.sync_battery_from_vec();
@@ -269,8 +284,10 @@ async fn read_battery_soc_via_input_register() {
 #[tokio::test]
 async fn write_command_sent_to_channel() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _store, mut rx) = start_server(&state).await;
     let serial = serial_arr();
@@ -293,8 +310,10 @@ async fn write_command_sent_to_channel() {
 #[tokio::test]
 async fn multi_register_read_crosses_register_types() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _store, _rx) = start_server(&state).await;
     let serial = serial_arr();
@@ -317,8 +336,10 @@ async fn multi_register_read_crosses_register_types() {
 #[tokio::test]
 async fn read_battery_bms_on_slave_0x32() {
     let mut state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
-            .and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     state.batteries[0].soc_percent = 50.0;
     state.sync_battery_from_vec();

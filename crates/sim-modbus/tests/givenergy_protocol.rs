@@ -13,10 +13,10 @@
 //! - State projection: verify register values reflect PlantState
 
 use sim_modbus::*;
-use sim_registers::{RegisterStore, default_register_catalogue, RegisterSpace};
+use sim_registers::{RegisterSpace, RegisterStore, default_register_catalogue};
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use std::net::SocketAddr;
 
 // ===========================================================================
 // Helpers
@@ -69,7 +69,11 @@ fn build_write_request(address: u16, value: u16) -> Vec<u8> {
 
 /// Decode a response frame → (slave, func, inner_payload_no_crc).
 fn decode_response(data: &[u8]) -> (u8, u8, Vec<u8>) {
-    assert!(data.len() >= HEADER_SIZE + 4, "Response too short: {} bytes", data.len());
+    assert!(
+        data.len() >= HEADER_SIZE + 4,
+        "Response too short: {} bytes",
+        data.len()
+    );
     let inner_pdu = &data[HEADER_SIZE..];
     let slave = inner_pdu[0];
     let func = inner_pdu[1];
@@ -79,7 +83,11 @@ fn decode_response(data: &[u8]) -> (u8, u8, Vec<u8>) {
 
 /// Parse read-response payload: serial(10) + start(2) + count(2) + data(N×2).
 fn parse_read_payload(payload: &[u8]) -> (u16, u16, Vec<u16>) {
-    assert!(payload.len() >= 14, "Read payload too short: {}", payload.len());
+    assert!(
+        payload.len() >= 14,
+        "Read payload too short: {}",
+        payload.len()
+    );
     let start = u16::from_be_bytes([payload[10], payload[11]]);
     let count = u16::from_be_bytes([payload[12], payload[13]]);
     let data = payload[14..]
@@ -90,7 +98,13 @@ fn parse_read_payload(payload: &[u8]) -> (u16, u16, Vec<u16>) {
 }
 
 /// Start a TCP test server with pre-populated state.
-async fn start_server_with_state(state: &sim_models::PlantState) -> (SocketAddr, RegisterStore, tokio::sync::mpsc::UnboundedReceiver<ModbusCommand>) {
+async fn start_server_with_state(
+    state: &sim_models::PlantState,
+) -> (
+    SocketAddr,
+    RegisterStore,
+    tokio::sync::mpsc::UnboundedReceiver<ModbusCommand>,
+) {
     let store = RegisterStore::new(default_register_catalogue());
     let mut store_clone = store.clone();
     store_clone.project_from_state(state);
@@ -105,55 +119,105 @@ async fn start_server_with_state(state: &sim_models::PlantState) -> (SocketAddr,
         let mut buf = [0u8; 512];
         let mut pending: Vec<u8> = Vec::new();
         loop {
-            let n = match stream.read(&mut buf).await { Ok(0) => break, Ok(n) => n, Err(_) => break };
+            let n = match stream.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
             pending.extend_from_slice(&buf[..n]);
             loop {
-                if pending.len() < HEADER_SIZE { break; }
+                if pending.len() < HEADER_SIZE {
+                    break;
+                }
                 let length = u16::from_be_bytes([pending[4], pending[5]]) as usize;
                 let frame_len = 6 + length;
-                if pending.len() < frame_len { break; }
+                if pending.len() < frame_len {
+                    break;
+                }
                 let frame = &pending[..frame_len];
                 let mut serial = [b' '; SERIAL_LEN];
                 serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
                 let inner_pdu = &frame[HEADER_SIZE..];
-                if inner_pdu.len() < 4 { pending.drain(..frame_len); continue; }
+                if inner_pdu.len() < 4 {
+                    pending.drain(..frame_len);
+                    continue;
+                }
                 let slave = inner_pdu[0];
                 let inner_func = inner_pdu[1];
                 let inner_payload = &inner_pdu[2..inner_pdu.len() - 2];
                 match inner_func {
                     FC_READ_HOLDING | FC_READ_INPUT => {
-                        if inner_payload.len() < 4 { pending.drain(..frame_len); continue; }
+                        if inner_payload.len() < 4 {
+                            pending.drain(..frame_len);
+                            continue;
+                        }
                         let start_addr = u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
                         let count = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
                         let s = store_ref.lock().await;
-                        let space = if inner_func == FC_READ_INPUT { RegisterSpace::Input } else { RegisterSpace::Holding };
+                        let space = if inner_func == FC_READ_INPUT {
+                            RegisterSpace::Input
+                        } else {
+                            RegisterSpace::Holding
+                        };
                         let mut reg_data = Vec::with_capacity(count as usize * 2);
-                        for i in 0..count { reg_data.extend_from_slice(&s.read_by_space(start_addr + i, space).unwrap_or(0).to_be_bytes()); }
+                        for i in 0..count {
+                            reg_data.extend_from_slice(
+                                &s.read_by_space(start_addr + i, space)
+                                    .unwrap_or(0)
+                                    .to_be_bytes(),
+                            );
+                        }
                         drop(s);
                         let mut resp_payload = Vec::with_capacity(SERIAL_LEN + 4 + reg_data.len());
                         resp_payload.extend_from_slice(&serial);
                         resp_payload.extend_from_slice(&start_addr.to_be_bytes());
                         resp_payload.extend_from_slice(&count.to_be_bytes());
                         resp_payload.extend_from_slice(&reg_data);
-                        let _ = stream.write_all(&build_response(&serial, slave, inner_func, &resp_payload)).await;
+                        let _ = stream
+                            .write_all(&build_response(&serial, slave, inner_func, &resp_payload))
+                            .await;
                     }
                     FC_WRITE_SINGLE => {
-                        if inner_payload.len() < 4 { pending.drain(..frame_len); continue; }
+                        if inner_payload.len() < 4 {
+                            pending.drain(..frame_len);
+                            continue;
+                        }
                         let address = u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
                         let value = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
-                        let ok = { let mut s = store_ref.lock().await; s.write(address, value) };
+                        let ok = {
+                            let mut s = store_ref.lock().await;
+                            s.write(address, value)
+                        };
                         if ok {
                             let mut p = Vec::with_capacity(SERIAL_LEN + 4);
                             p.extend_from_slice(&serial);
                             p.extend_from_slice(&address.to_be_bytes());
                             p.extend_from_slice(&value.to_be_bytes());
-                            let _ = stream.write_all(&build_response(&serial, slave, inner_func, &p)).await;
+                            let _ = stream
+                                .write_all(&build_response(&serial, slave, inner_func, &p))
+                                .await;
                             let _ = tx.send(ModbusCommand { address, value });
                         } else {
-                            let _ = stream.write_all(&build_error_response(&serial, slave, inner_func, EC_ILLEGAL_DATA_ADDRESS)).await;
+                            let _ = stream
+                                .write_all(&build_error_response(
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
+                                ))
+                                .await;
                         }
                     }
-                    _ => { let _ = stream.write_all(&build_error_response(&serial, slave, inner_func, EC_ILLEGAL_FUNCTION)).await; }
+                    _ => {
+                        let _ = stream
+                            .write_all(&build_error_response(
+                                &serial,
+                                slave,
+                                inner_func,
+                                EC_ILLEGAL_FUNCTION,
+                            ))
+                            .await;
+                    }
                 }
                 pending.drain(..frame_len);
             }
@@ -165,9 +229,15 @@ async fn start_server_with_state(state: &sim_models::PlantState) -> (SocketAddr,
 }
 
 /// Start an empty test server.
-async fn start_test_server() -> (SocketAddr, tokio::sync::mpsc::UnboundedReceiver<ModbusCommand>) {
+async fn start_test_server() -> (
+    SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<ModbusCommand>,
+) {
     let state = sim_models::PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     let (addr, _, rx) = start_server_with_state(&state).await;
     (addr, rx)
@@ -175,7 +245,10 @@ async fn start_test_server() -> (SocketAddr, tokio::sync::mpsc::UnboundedReceive
 
 fn test_state() -> sim_models::PlantState {
     let mut state = sim_models::PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     state.solar.generation_w = 4000.0;
     state.solar.pv1_w = 4000.0;
@@ -240,7 +313,11 @@ fn frame_padding_is_big_endian_8() {
 fn frame_length_field_matches_actual_length() {
     let frame = encode_frame(0x32, 0x03, &[0x00, 0x01]);
     let length = u16::from_be_bytes([frame[4], frame[5]]) as usize;
-    assert_eq!(6 + length, frame.len(), "Length field must be consistent with frame size");
+    assert_eq!(
+        6 + length,
+        frame.len(),
+        "Length field must be consistent with frame size"
+    );
 }
 
 #[test]
@@ -259,7 +336,10 @@ fn frame_crc_is_little_endian() {
     let crc_bytes = &inner_pdu[len - 2..];
     let received = u16::from_le_bytes([crc_bytes[0], crc_bytes[1]]);
     let expected = crc16(&inner_pdu[..len - 2]);
-    assert_eq!(received, expected, "CRC must be little-endian Modbus CRC-16");
+    assert_eq!(
+        received, expected,
+        "CRC must be little-endian Modbus CRC-16"
+    );
 }
 
 #[test]
@@ -374,9 +454,9 @@ async fn read_holding_spanning_defined_and_undefined() {
     let resp = send_recv(&mut stream, &build_read_request(99, 5)).await;
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
-    assert_eq!(data[0], 0);  // undefined
+    assert_eq!(data[0], 0); // undefined
     assert_eq!(data[1], 55); // written
-    assert_eq!(data[2], 0);  // undefined
+    assert_eq!(data[2], 0); // undefined
 }
 
 // ===========================================================================
@@ -397,7 +477,10 @@ async fn read_input_registers_returns_state_values() {
     let (_, _, data) = parse_read_payload(&payload);
     assert_eq!(data[0], 1, "IR 0 = status (1 = normal)");
     assert_eq!(data[1], 3500, "IR 1 = PV1 voltage (350.0V / 0.1 = 3500)");
-    assert_eq!(data[2], 0, "IR 2 = PV2 voltage (0 — no PV2 array configured)");
+    assert_eq!(
+        data[2], 0,
+        "IR 2 = PV2 voltage (0 — no PV2 array configured)"
+    );
 }
 
 #[tokio::test]
@@ -439,7 +522,10 @@ async fn read_input_grid_power_negative() {
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
     let signed = data[0] as i16;
-    assert!(signed > 0, "Grid power should be positive (exporting GE convention), got {signed}");
+    assert!(
+        signed > 0,
+        "Grid power should be positive (exporting GE convention), got {signed}"
+    );
 }
 
 #[tokio::test]
@@ -453,7 +539,10 @@ async fn read_input_grid_power_importing() {
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
     let signed = data[0] as i16;
-    assert!(signed < 0, "Grid power should be negative (importing GE convention), got {signed}");
+    assert!(
+        signed < 0,
+        "Grid power should be negative (importing GE convention), got {signed}"
+    );
 }
 
 #[tokio::test]
@@ -574,7 +663,10 @@ async fn read_holding_ge_device_type() {
 #[tokio::test]
 async fn read_holding_ge_battery_power_mode() {
     let mut state = test_state();
-    state.inverter.mode_state.set_user(sim_models::InverterMode::Eco);
+    state
+        .inverter
+        .mode_state
+        .set_user(sim_models::InverterMode::Eco);
     let (addr, _, _) = start_server_with_state(&state).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 
@@ -628,7 +720,10 @@ async fn read_holding_block_60_119() {
     assert_eq!(count, 60);
     assert_eq!(data.len(), 60);
     // HR 96 = enable charge, HR 110 = SOC reserve
-    assert!(data[96 - 60] == 0 || data[96 - 60] == 1, "HR 96 = enable charge (bool)");
+    assert!(
+        data[96 - 60] == 0 || data[96 - 60] == 1,
+        "HR 96 = enable charge (bool)"
+    );
 }
 
 // ===========================================================================
@@ -665,7 +760,10 @@ async fn write_readonly_register_returns_error() {
     assert_eq!(slave, 0x11);
     assert_eq!(func, FC_WRITE_SINGLE | 0x80);
     assert_eq!(payload[0], EC_ILLEGAL_DATA_ADDRESS);
-    assert!(rx.try_recv().is_err(), "No command should be dispatched for rejected write");
+    assert!(
+        rx.try_recv().is_err(),
+        "No command should be dispatched for rejected write"
+    );
 }
 
 #[tokio::test]
@@ -675,7 +773,11 @@ async fn write_to_unknown_register_rejected() {
 
     let resp = send_recv(&mut stream, &build_write_request(9999, 1)).await;
     let (_, func, _) = decode_response(&resp);
-    assert_eq!(func, FC_WRITE_SINGLE | 0x80, "Write to undefined address should fail");
+    assert_eq!(
+        func,
+        FC_WRITE_SINGLE | 0x80,
+        "Write to undefined address should fail"
+    );
     assert!(rx.try_recv().is_err());
 }
 
@@ -774,8 +876,16 @@ fn read_response_payload_contains_start_address() {
     let resp = build_response(&serial, 0x32, 0x03, &resp_payload);
     let inner_pdu = &resp[HEADER_SIZE..];
     let payload = &inner_pdu[2..inner_pdu.len() - 2];
-    assert_eq!(u16::from_be_bytes([payload[10], payload[11]]), 100, "Start address");
-    assert_eq!(u16::from_be_bytes([payload[12], payload[13]]), 5, "Register count");
+    assert_eq!(
+        u16::from_be_bytes([payload[10], payload[11]]),
+        100,
+        "Start address"
+    );
+    assert_eq!(
+        u16::from_be_bytes([payload[12], payload[13]]),
+        5,
+        "Register count"
+    );
 }
 
 #[test]
@@ -819,7 +929,11 @@ async fn multiple_reads_on_same_connection() {
     let resp3 = send_recv(&mut stream, &build_read_input_request(30, 1)).await;
     let (_, _, payload) = decode_response(&resp3);
     let (_, _, data) = parse_read_payload(&payload);
-    assert!((data[0] as i16) > 0, "Grid power should be positive (exporting, GE convention), got {}", data[0] as i16);
+    assert!(
+        (data[0] as i16) > 0,
+        "Grid power should be positive (exporting, GE convention), got {}",
+        data[0] as i16
+    );
 }
 
 #[tokio::test]
@@ -872,7 +986,10 @@ async fn input_and_holding_address_0_differ() {
     let (_, _, payload) = decode_response(&resp_hr);
     let (_, _, data_hr) = parse_read_payload(&payload);
 
-    assert_ne!(data_ir[0], data_hr[0], "IR 0 and HR 0 must return different values");
+    assert_ne!(
+        data_ir[0], data_hr[0],
+        "IR 0 and HR 0 must return different values"
+    );
     assert_eq!(data_ir[0], 1, "IR 0 = status");
     assert_eq!(data_hr[0], 0x2001, "HR 0 = device type");
 }
@@ -904,7 +1021,10 @@ async fn input_register_59_vs_holding_59() {
 #[tokio::test]
 async fn internal_inverter_mode_reflects_state() {
     let mut state = test_state();
-    state.inverter.mode_state.set_user(sim_models::InverterMode::ForceCharge);
+    state
+        .inverter
+        .mode_state
+        .set_user(sim_models::InverterMode::ForceCharge);
     let (addr, _, _) = start_server_with_state(&state).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 
@@ -935,7 +1055,10 @@ async fn internal_grid_power_negative() {
     let resp = send_recv(&mut stream, &build_read_request(400, 1)).await;
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
-    assert!((data[0] as i16) < 0, "Grid power should be stored as signed negative");
+    assert!(
+        (data[0] as i16) < 0,
+        "Grid power should be stored as signed negative"
+    );
 }
 
 // ===========================================================================
@@ -954,7 +1077,10 @@ async fn read_zero_count_returns_error() {
     // Follow up with a valid request to confirm the connection is still alive
     let resp = send_recv(&mut stream, &build_read_request(100, 1)).await;
     let (_, func, _) = decode_response(&resp);
-    assert_eq!(func, FC_READ_HOLDING, "Server should still work after bad request");
+    assert_eq!(
+        func, FC_READ_HOLDING,
+        "Server should still work after bad request"
+    );
 }
 
 #[tokio::test]
@@ -992,7 +1118,10 @@ async fn write_and_read_different_slave_addresses() {
 #[tokio::test]
 async fn multi_battery_input_registers() {
     let mut state = sim_models::PlantState::with_battery_count(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap(),
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
         3,
     );
     state.batteries[0].soc_percent = 50.0;
@@ -1140,7 +1269,10 @@ async fn battery_power_raw_negative_when_charging() {
     let raw = data[0];
     // Client does: battery_power = -signed(raw)
     // So raw should be negative for charging
-    assert!((raw as i16) < 0, "IR 52 raw should be negative when charging, got {raw}");
+    assert!(
+        (raw as i16) < 0,
+        "IR 52 raw should be negative when charging, got {raw}"
+    );
 }
 
 #[tokio::test]
@@ -1156,7 +1288,10 @@ async fn battery_power_raw_positive_when_discharging() {
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
     let raw = data[0];
-    assert!((raw as i16) > 0, "IR 52 raw should be positive when discharging, got {raw}");
+    assert!(
+        (raw as i16) > 0,
+        "IR 52 raw should be positive when discharging, got {raw}"
+    );
 }
 
 // ===========================================================================
@@ -1167,10 +1302,20 @@ use sim_modbus::{HEADER_SIZE, SERIAL_LEN, crc16};
 use std::sync::Arc;
 
 /// Start a modbus server with battery state for BMS testing.
-async fn start_server_with_batteries(batteries: &[sim_models::BatteryState]) -> (SocketAddr, Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>) {
+async fn start_server_with_batteries(
+    batteries: &[sim_models::BatteryState],
+) -> (
+    SocketAddr,
+    Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
+) {
     let cat = sim_registers::default_register_catalogue();
-    let store = Arc::new(tokio::sync::Mutex::new(sim_registers::RegisterStore::new(cat)));
-    let (tx, _rx): (tokio::sync::mpsc::UnboundedSender<sim_modbus::ModbusCommand>, _) = tokio::sync::mpsc::unbounded_channel();
+    let store = Arc::new(tokio::sync::Mutex::new(sim_registers::RegisterStore::new(
+        cat,
+    )));
+    let (tx, _rx): (
+        tokio::sync::mpsc::UnboundedSender<sim_modbus::ModbusCommand>,
+        _,
+    ) = tokio::sync::mpsc::unbounded_channel();
     let batt_state = Arc::new(tokio::sync::Mutex::new(batteries.to_vec()));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1191,30 +1336,47 @@ async fn start_server_with_batteries(batteries: &[sim_models::BatteryState]) -> 
                 let mut pending: Vec<u8> = Vec::new();
                 let mut stream = stream;
                 loop {
-                    let n = match stream.read(&mut buf).await { Ok(0) => break, Ok(n) => n, Err(_) => break };
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
                     pending.extend_from_slice(&buf[..n]);
                     loop {
-                        if pending.len() < HEADER_SIZE { break; }
+                        if pending.len() < HEADER_SIZE {
+                            break;
+                        }
                         let tx_id = u16::from_be_bytes([pending[0], pending[1]]);
-                        if tx_id != 0x5959 { return; }
+                        if tx_id != 0x5959 {
+                            return;
+                        }
                         let length = u16::from_be_bytes([pending[4], pending[5]]) as usize;
                         let frame_len = 6 + length;
-                        if pending.len() < frame_len { break; }
+                        if pending.len() < frame_len {
+                            break;
+                        }
                         let frame = &pending[..frame_len];
                         let mut serial = [b' '; SERIAL_LEN];
                         serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
                         let inner = &frame[HEADER_SIZE..];
                         let slave = inner[0];
                         let inner_func = inner[1];
-                        let payload = &inner[2..inner.len()-2];
+                        let payload = &inner[2..inner.len() - 2];
                         if inner_func == 0x03 || inner_func == 0x04 {
                             let start = u16::from_be_bytes([payload[0], payload[1]]);
                             let count = u16::from_be_bytes([payload[2], payload[3]]);
-                            let space = if inner_func == 0x04 { sim_registers::RegisterSpace::Input } else { sim_registers::RegisterSpace::Holding };
+                            let space = if inner_func == 0x04 {
+                                sim_registers::RegisterSpace::Input
+                            } else {
+                                sim_registers::RegisterSpace::Holding
+                            };
 
-                            let battery_index = if slave == 0x32 && inner_func == 0x04 && start >= 60 && start < 120 {
+                            let battery_index = if slave == 0x32
+                                && inner_func == 0x04
+                                && (60..120).contains(&start)
+                            {
                                 Some(0)
-                            } else if slave >= 0x33 && slave <= 0x37 && inner_func == 0x04 {
+                            } else if (0x33..=0x37).contains(&slave) && inner_func == 0x04 {
                                 Some((slave - 0x33 + 1) as usize)
                             } else {
                                 None
@@ -1229,23 +1391,39 @@ async fn start_server_with_batteries(batteries: &[sim_models::BatteryState]) -> 
                                     let mut d = Vec::with_capacity(count as usize * 2);
                                     for i in 0..count {
                                         let idx = (start - 60 + i) as usize;
-                                        d.extend_from_slice(&bms.get(idx).copied().unwrap_or(0).to_be_bytes());
+                                        d.extend_from_slice(
+                                            &bms.get(idx).copied().unwrap_or(0).to_be_bytes(),
+                                        );
                                     }
                                     d
-                                } else { vec![0u8; count as usize * 2] }
+                                } else {
+                                    vec![0u8; count as usize * 2]
+                                }
                             } else {
                                 let sg = store.lock().await;
                                 let mut d = Vec::with_capacity(count as usize * 2);
-                                for i in 0..count { d.extend_from_slice(&sg.read_by_space(start + i, space).unwrap_or(0).to_be_bytes()); }
+                                for i in 0..count {
+                                    d.extend_from_slice(
+                                        &sg.read_by_space(start + i, space)
+                                            .unwrap_or(0)
+                                            .to_be_bytes(),
+                                    );
+                                }
                                 d
                             };
 
-                            let mut resp_payload = Vec::with_capacity(SERIAL_LEN + 4 + reg_data.len());
+                            let mut resp_payload =
+                                Vec::with_capacity(SERIAL_LEN + 4 + reg_data.len());
                             resp_payload.extend_from_slice(&serial);
                             resp_payload.extend_from_slice(&start.to_be_bytes());
                             resp_payload.extend_from_slice(&count.to_be_bytes());
                             resp_payload.extend_from_slice(&reg_data);
-                            let resp = sim_modbus::build_response(&serial, slave, inner_func, &resp_payload);
+                            let resp = sim_modbus::build_response(
+                                &serial,
+                                slave,
+                                inner_func,
+                                &resp_payload,
+                            );
                             let _ = stream.write_all(&resp).await;
                         }
                         pending.drain(..frame_len);
@@ -1260,8 +1438,16 @@ async fn start_server_with_batteries(batteries: &[sim_models::BatteryState]) -> 
 #[tokio::test]
 async fn multi_slave_battery_bms_returns_soc() {
     let batts = vec![
-        sim_models::BatteryState { soc_percent: 75.0, voltage_v: 50.0, ..Default::default() },
-        sim_models::BatteryState { soc_percent: 30.0, voltage_v: 48.0, ..Default::default() },
+        sim_models::BatteryState {
+            soc_percent: 75.0,
+            voltage_v: 50.0,
+            ..Default::default()
+        },
+        sim_models::BatteryState {
+            soc_percent: 30.0,
+            voltage_v: 48.0,
+            ..Default::default()
+        },
     ];
     let (addr, _bs) = start_server_with_batteries(&batts).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -1277,8 +1463,16 @@ async fn multi_slave_battery_bms_returns_soc() {
 #[tokio::test]
 async fn multi_slave_battery_2_on_0x33() {
     let batts = vec![
-        sim_models::BatteryState { soc_percent: 75.0, voltage_v: 50.0, ..Default::default() },
-        sim_models::BatteryState { soc_percent: 30.0, voltage_v: 48.0, ..Default::default() },
+        sim_models::BatteryState {
+            soc_percent: 75.0,
+            voltage_v: 50.0,
+            ..Default::default()
+        },
+        sim_models::BatteryState {
+            soc_percent: 30.0,
+            voltage_v: 48.0,
+            ..Default::default()
+        },
     ];
     let (addr, _bs) = start_server_with_batteries(&batts).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -1293,9 +1487,10 @@ async fn multi_slave_battery_2_on_0x33() {
 
 #[tokio::test]
 async fn multi_slave_battery_3_not_present() {
-    let batts = vec![
-        sim_models::BatteryState { soc_percent: 75.0, ..Default::default() },
-    ];
+    let batts = vec![sim_models::BatteryState {
+        soc_percent: 75.0,
+        ..Default::default()
+    }];
     let (addr, _bs) = start_server_with_batteries(&batts).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 
@@ -1309,9 +1504,13 @@ async fn multi_slave_battery_3_not_present() {
 
 #[tokio::test]
 async fn multi_slave_battery_bms_full_block() {
-    let batts = vec![
-        sim_models::BatteryState { soc_percent: 50.0, voltage_v: 52.0, temperature_celsius: 28.0, capacity_kwh: 9.5, ..Default::default() },
-    ];
+    let batts = vec![sim_models::BatteryState {
+        soc_percent: 50.0,
+        voltage_v: 52.0,
+        temperature_celsius: 28.0,
+        capacity_kwh: 9.5,
+        ..Default::default()
+    }];
     let (addr, _bs) = start_server_with_batteries(&batts).await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 
@@ -1328,7 +1527,10 @@ async fn multi_slave_battery_bms_full_block() {
 
     // Voltage at IR 82-83 (uint32 mV)
     let v_mv = ((data[82 - 60] as u32) << 16) | data[83 - 60] as u32;
-    assert!(v_mv > 48000 && v_mv < 55000, "Voltage ~52V = ~52000 mV, got {v_mv}");
+    assert!(
+        v_mv > 48000 && v_mv < 55000,
+        "Voltage ~52V = ~52000 mV, got {v_mv}"
+    );
 }
 
 // Helper: build read request with custom slave address

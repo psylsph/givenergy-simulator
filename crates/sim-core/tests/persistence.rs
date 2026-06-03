@@ -2,13 +2,16 @@
 //!
 //! Tests the data model serialization that underpins save/load without Tauri runtime.
 
-use sim_models::PlantState;
 use sim_core::Schedule;
+use sim_models::PlantState;
 
 /// Helper: create a plant state with a known configuration.
 fn test_plant_state() -> PlantState {
     let mut state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(14, 30, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(14, 30, 0)
+            .unwrap(),
     );
     state.config.inverter_type = "ACCoupled".to_string();
     state.config.solar_peak_watts = 6000.0;
@@ -118,7 +121,10 @@ fn old_format_fallback_logic_works() {
 
     // Try as PersistedState (should fail)
     let result = serde_json::from_str::<PersistedState>(&plain_json);
-    assert!(result.is_err(), "Plain PlantState should not parse as PersistedState");
+    assert!(
+        result.is_err(),
+        "Plain PlantState should not parse as PersistedState"
+    );
 
     // Fallback to PlantState (should succeed)
     let restored: PlantState = serde_json::from_str(&plain_json).unwrap();
@@ -192,7 +198,10 @@ fn plant_preserves_overrides() {
 #[test]
 fn plant_default_mode_is_eco() {
     let state = PlantState::new(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap()
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
     );
     assert_eq!(
         state.inverter.mode_state.effective,
@@ -204,7 +213,10 @@ fn plant_default_mode_is_eco() {
 #[test]
 fn multi_battery_state_roundtrip() {
     let mut state = PlantState::with_battery_count(
-        chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(12, 0, 0).unwrap(),
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
         3,
     );
     state.batteries[0].soc_percent = 80.0;

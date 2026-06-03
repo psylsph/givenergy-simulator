@@ -17,7 +17,9 @@ pub fn save_recording(
 }
 
 /// Load recording frames from a JSON Lines file.
-pub fn load_recording(path: &Path) -> Result<Vec<sim_recording::RecordingFrame>, Box<dyn std::error::Error>> {
+pub fn load_recording(
+    path: &Path,
+) -> Result<Vec<sim_recording::RecordingFrame>, Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     Ok(sim_recording::read_frames(reader)?)
