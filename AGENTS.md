@@ -25,7 +25,7 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.7.1** — Dual PV, 12 inverter types, CI-clean, inverter caps, SOH recalc.
+**0.10.0** — Dual PV, 20 inverter types, CI-clean, meter simulation, export scheduling, proptest fuzzer.
 
 ## Common Gotchas
 
@@ -266,3 +266,5 @@ Battery sizes: `BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0]` (ne
 - v0.7.0: 165
 - v0.7.1: 216
 - v0.8.0: 216
+- v0.9.0: 217
+- v0.10.0: 217

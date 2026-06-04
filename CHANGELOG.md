@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-04
+
+### Added
+- CT clamp meter simulation (IR 60-89) with per-phase V/I/P, totals, PF, frequency, energy
+- Meter registers served on Modbus slave addresses 0x01-0x08
+- MeterState struct derived from PlantState grid data
+- 30 meter input register definitions in catalogue
+- Export limit scheduling with 3 time windows (HR 2062-2071)
+- Scenario fuzzer (proptest-based property testing)
+
+### Fixed
+- App renamed consistently to "GivEnergy Plant Simulator" across UI, CLI, and config
+- Tauri config version synced (was stale at 0.6.0)
+- Footer no longer shows stale hardcoded version
+- cargo fmt + clippy clean
+
 ## [0.9.0] - 2026-06-03
 
 ### Added

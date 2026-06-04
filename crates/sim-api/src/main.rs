@@ -31,7 +31,7 @@ struct PlantConfig {
 }
 
 #[derive(clap::Parser)]
-#[command(name = "giv-sim", version, about = "GivEnergy Plant simulator")]
+#[command(name = "giv-sim", version, about = "GivEnergy Plant Simulator")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
