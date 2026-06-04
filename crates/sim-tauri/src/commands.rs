@@ -399,6 +399,10 @@ pub async fn start_simulation(
     state: State<'_, AppState>,
     params: StartSimulationParams,
 ) -> Result<(), String> {
+    if state.engine.lock().await.is_none() {
+        return Err("No plant exists — create or load a plant first".into());
+    }
+
     {
         let mut running = state.running.lock().await;
         if *running {
@@ -1151,18 +1155,52 @@ pub async fn set_battery_soc(
     params: SetBatterySocParams,
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
-    if let Some(ref mut e) = *eng {
-        // Apply SOC directly WITHOUT running a full tick.
-        // Running tick() here would let BatteryEngine/InverterEngine override
-        // the user's chosen SOC (e.g. force-charge pushes it back to 100%).
-        if let Some(b) = e.state.batteries.get_mut(params.module) {
-            b.soc_percent = params.soc.clamp(0.0, 100.0);
-            e.state.sync_battery_from_vec();
+    let e = eng
+        .as_mut()
+        .ok_or_else(|| "No plant exists — create or load a plant first".to_string())?;
+
+    // Apply SOC directly WITHOUT running a full tick.
+    // Running tick() here would let BatteryEngine/InverterEngine override
+    // the user's chosen SOC (e.g. force-charge pushes it back to 100%).
+    let b = e
+        .state
+        .batteries
+        .get_mut(params.module)
+        .ok_or_else(|| format!("Battery module {} does not exist", params.module + 1))?;
+    b.soc_percent = params.soc.clamp(0.0, 100.0);
+    // Avoid stale pre-edit power/current making the UI look like it ignored the edit.
+    b.power_kw = 0.0;
+    b.current_a = 0.0;
+    e.state.sync_battery_from_vec();
+
+    let sched_ref = state.schedule.lock().await.clone();
+    {
+        let mut rs = state.register_store.lock().await;
+        rs.project_from_state(&e.state);
+        if let Some(ref sched) = sched_ref {
+            rs.project_schedule_for(sched, &e.state.config.inverter_type);
         }
-        let sched_ref = state.schedule.lock().await.clone();
-        let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
-        let _ = app.emit("state_changed", &dto);
     }
+    {
+        let mut bs = state.battery_snapshot.lock().await;
+        *bs = e.state.batteries.clone();
+    }
+
+    // Persist immediately so a reload does not restore the old SOC.
+    if let Ok(dir) = app.path().app_data_dir() {
+        let persisted = crate::app_state::PersistedState {
+            plant: e.state.clone(),
+            schedule: sched_ref.clone(),
+        };
+        let path = dir.join("plant_state.json");
+        if let Ok(json) = serde_json::to_string_pretty(&persisted) {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
+    let _ = app.emit("state_changed", &dto);
     Ok(())
 }
 

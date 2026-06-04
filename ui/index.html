@@ -694,13 +694,44 @@
     el('battery-count').addEventListener('change', updateBatteryModuleDropdowns);
 
     // ---- Update battery module display in main panel ----
+    // Track slider interaction to avoid resetting slider mid-drag.
+    // Use input/change events (not pointerdown) for reliable cross-browser support.
     let battSliding = false;
-    // Track slider interaction to avoid rebuilding mid-drag
-    el('battery-modules-display').addEventListener('pointerdown', (e) => {
-      if (e.target.classList.contains('batt-soc-slider')) battSliding = true;
-    });
-    el('battery-modules-display').addEventListener('pointerup', () => { battSliding = false; });
-    el('battery-modules-display').addEventListener('pointercancel', () => { battSliding = false; });
+    let slideTimer = null;
+    const socApplyTimers = new Map();
+    const pendingSoc = new Map();
+
+    function markSliding() {
+      battSliding = true;
+      if (slideTimer) clearTimeout(slideTimer);
+      // Reset after 1000ms of no input events
+      slideTimer = setTimeout(() => { battSliding = false; }, 1000);
+    }
+
+    async function applyBatterySoc(idx, val) {
+      pendingSoc.set(idx, val);
+      try {
+        if (invoke) {
+          await invoke('set_battery_soc', { params: { module: idx, soc: val } });
+          const footer = el('footer-info');
+          if (footer) footer.textContent = `Battery ${idx + 1} SOC set to ${val}%`;
+        }
+      } catch (err) {
+        console.error('set_battery_soc failed', err);
+        const footer = el('footer-info');
+        if (footer) footer.textContent = `Failed to set SOC: ${err}`;
+      } finally {
+        setTimeout(() => pendingSoc.delete(idx), 750);
+      }
+    }
+
+    function scheduleBatterySocApply(idx, val) {
+      if (socApplyTimers.has(idx)) clearTimeout(socApplyTimers.get(idx));
+      socApplyTimers.set(idx, setTimeout(() => {
+        socApplyTimers.delete(idx);
+        applyBatterySoc(idx, val);
+      }, 250));
+    }
 
     function updateBatteryDisplay(batteries) {
       const container = el('battery-modules-display');
@@ -708,12 +739,12 @@
         container.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No battery data</div>';
         return;
       }
-      // If user is actively dragging a slider, do an in-place update
-      // instead of rebuilding DOM (which would reset the slider).
+      // If user is actively dragging a slider, only update SOC text (not slider)
       if (battSliding) {
         batteries.forEach((b, i) => {
+          const shownSoc = pendingSoc.has(i) ? pendingSoc.get(i) : b.soc_percent;
           const socSpan = container.querySelector(`.batt-module-soc[data-batt-idx="${i}"]`);
-          if (socSpan) socSpan.textContent = `${b.soc_percent.toFixed(1)}%`;
+          if (socSpan) socSpan.textContent = `${Number(shownSoc).toFixed(1)}%`;
         });
         return;
       }
@@ -722,33 +753,35 @@
       if (existing.length === batteries.length) {
         batteries.forEach((b, i) => {
           const module = existing[i];
-          const socColor = b.soc_percent < 20 ? 'var(--red)' : b.soc_percent < 50 ? 'var(--yellow)' : 'var(--green)';
+          const shownSoc = pendingSoc.has(i) ? pendingSoc.get(i) : b.soc_percent;
+          const socColor = shownSoc < 20 ? 'var(--red)' : shownSoc < 50 ? 'var(--yellow)' : 'var(--green)';
           const powerLabel = b.power_kw > 0.01 ? 'Charging' : b.power_kw < -0.01 ? 'Discharging' : 'Idle';
           const powerColor = b.power_kw > 0.01 ? 'var(--accent)' : b.power_kw < -0.01 ? 'var(--orange)' : 'var(--text-muted)';
           const socSpan = module.querySelector('.batt-module-soc');
           if (socSpan) {
             socSpan.style.color = socColor;
-            socSpan.textContent = `${b.soc_percent.toFixed(1)}%`;
+            socSpan.textContent = `${Number(shownSoc).toFixed(1)}%`;
           }
           const gauge = module.querySelector('.soc-gauge-fill');
           if (gauge) {
-            gauge.style.width = `${b.soc_percent}%`;
+            gauge.style.width = `${shownSoc}%`;
             gauge.style.background = socColor;
           }
-          const slider = module.querySelector('.batt-soc-slider');
-          if (slider) slider.value = Math.round(b.soc_percent);
+          // NOTE: Do NOT update slider.value here — it would reset position
+          // mid-drag and prevent the user from setting SOC.
           const socLabel = module.querySelector('.batt-soc-label');
-          if (socLabel) socLabel.textContent = `${Math.round(b.soc_percent)}%`;
-          // Update text stats (skip slider)
+          if (socLabel) socLabel.textContent = `${Math.round(shownSoc)}%`;
+          // Update text stats. stats[0] is the SOC slider row.
           const stats = module.querySelectorAll('.batt-stat');
-          if (stats.length >= 6) {
-            stats[0].children[1].textContent = `${powerLabel} ${Math.abs(b.power_kw).toFixed(2)} kW`;
-            stats[0].children[1].style.color = powerColor;
-            stats[1].children[1].textContent = `${b.voltage_v.toFixed(1)} V`;
-            stats[2].children[1].textContent = `${b.current_a.toFixed(1)} A`;
-            stats[3].children[1].textContent = `${b.temperature_celsius.toFixed(1)}°C`;
-            stats[4].children[1].textContent = `${b.capacity_kwh.toFixed(1)} / ${b.nominal_capacity_kwh.toFixed(1)} kWh`;
-            stats[5].children[1].textContent = `${(b.soh * 100).toFixed(0)}%`;
+          if (stats.length >= 8) {
+            stats[1].children[1].textContent = `${powerLabel} ${Math.abs(b.power_kw).toFixed(2)} kW`;
+            stats[1].children[1].style.color = powerColor;
+            stats[2].children[1].textContent = `${b.voltage_v.toFixed(1)} V`;
+            stats[3].children[1].textContent = `${b.current_a.toFixed(1)} A`;
+            stats[4].children[1].textContent = `${b.temperature_celsius.toFixed(1)}°C`;
+            stats[5].children[1].textContent = `${b.capacity_kwh.toFixed(1)} / ${b.nominal_capacity_kwh.toFixed(1)} kWh`;
+            stats[6].children[1].textContent = `${(b.soh * 100).toFixed(0)}%`;
+            stats[7].children[1].textContent = `${b.cycle_count.toFixed(0)}`;
           }
         });
         return;
@@ -784,17 +817,27 @@
     // Event delegation for battery SOC sliders (survives innerHTML rebuilds)
     el('battery-modules-display').addEventListener('input', (e) => {
       if (e.target.classList.contains('batt-soc-slider')) {
+        markSliding();
         const idx = parseInt(e.target.dataset.battIdx);
         const val = parseFloat(e.target.value);
+        pendingSoc.set(idx, val);
         const label = el('battery-modules-display').querySelector(`.batt-soc-label[data-batt-idx="${idx}"]`);
         if (label) label.textContent = val + '%';
+        const socSpan = el('battery-modules-display').querySelector(`.batt-module-soc[data-batt-idx="${idx}"]`);
+        if (socSpan) socSpan.textContent = `${val.toFixed(1)}%`;
+        scheduleBatterySocApply(idx, val);
       }
     });
     el('battery-modules-display').addEventListener('change', (e) => {
       if (e.target.classList.contains('batt-soc-slider')) {
         const idx = parseInt(e.target.dataset.battIdx);
         const val = parseFloat(e.target.value);
-        if (invoke) invoke('set_battery_soc', { params: { module: idx, soc: val } });
+        if (slideTimer) clearTimeout(slideTimer);
+        if (socApplyTimers.has(idx)) clearTimeout(socApplyTimers.get(idx));
+        socApplyTimers.delete(idx);
+        applyBatterySoc(idx, val).finally(() => {
+          battSliding = false;
+        });
       }
     });
 
@@ -1088,7 +1131,14 @@
         document.querySelector('.status-dot').className = 'status-dot running';
         el('btn-start').disabled = true;
         el('btn-pause').disabled = false;
-      } catch (e) { console.error('start_simulation failed:', e); }
+      } catch (e) {
+        console.error('start_simulation failed:', e);
+        el('status-text').textContent = 'Idle';
+        document.querySelector('.status-dot').className = 'status-dot';
+        el('btn-start').disabled = false;
+        el('btn-pause').disabled = true;
+        el('footer-info').textContent = `Start failed: ${e}`;
+      }
     });
 
     el('btn-pause').addEventListener('click', async () => {
@@ -1098,7 +1148,10 @@
         document.querySelector('.status-dot').className = 'status-dot paused';
         el('btn-start').disabled = false;
         el('btn-pause').disabled = true;
-      } catch (e) { console.error('pause_simulation failed:', e); }
+      } catch (e) {
+        console.error('pause_simulation failed:', e);
+        el('footer-info').textContent = `Pause failed: ${e}`;
+      }
     });
 
     el('btn-reset').addEventListener('click', () => location.reload());
