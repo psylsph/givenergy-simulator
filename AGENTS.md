@@ -103,20 +103,29 @@ Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery 
 `SetBatterySoH` recalculates limits from new capacity.
 
 ### Inverter types (DTC hex order)
-| Inverter | DTC | AC max | Battery limit |
-|---|---|---|---|
-| Gen1Hybrid | 0x1001 | 5000W | 2500W |
-| Gen3Hybrid | 0x2001 | 5000W | 3600W |
-| Gen3Hybrid8kW | 0x2101 | 8000W | 8000W |
-| Gen3Hybrid10kW | 0x2102 | 10000W | 10000W |
-| ACCoupled | 0x3001 | 3000W | 3000W |
-| ACCoupled2 | 0x3002 | 3000W | 3000W |
-| ThreePhase | 0x4001 | 6000W | 6000W |
-| AllInOne6 | 0x8001 | 6000W | 6000W |
-| AllInOne | 0x8002 | 6000W | 6000W |
-| AllInOne5 | 0x8003 | 5000W | 5000W |
-| AIO8kW | 0x8102 | 8000W | 8000W |
-| AIO10kW | 0x8103 | 10000W | 10000W |
+
+0x2001 is a **family code** shared by Gen1/Gen2/Gen3 hybrids. The actual
+generation is decided by HR(21) ARM firmware century (fw/100):
+  - century 2 → Gen1Hybrid (arm_fw 252)
+  - century 3 → Gen3Hybrid (arm_fw 352)
+  - century 8/9 → Gen2Hybrid (arm_fw 852)
+  - other centuries → Gen1Hybrid (default)
+
+| Inverter | DTC | AC max | Battery limit | ARM FW |
+|---|---|---|---|---|
+| Gen1Hybrid | 0x2001 | 5000W | 2500W | 252 |
+| Gen2Hybrid | 0x2001 | 5000W | 3600W | 852 |
+| Gen3Hybrid | 0x2001 | 5000W | 3600W | 352 |
+| Gen3Hybrid8kW | 0x2101 | 8000W | 8000W | — |
+| Gen3Hybrid10kW | 0x2102 | 10000W | 10000W | — |
+| ACCoupled | 0x3001 | 3000W | 3000W | — |
+| ACCoupled2 | 0x3002 | 3000W | 3000W | — |
+| ThreePhase | 0x4001 | 6000W | 6000W | — |
+| AllInOne6 | 0x8001 | 6000W | 6000W | — |
+| AllInOne | 0x8002 | 6000W | 6000W | — |
+| AllInOne5 | 0x8003 | 5000W | 5000W | — |
+| AIO8kW | 0x8102 | 8000W | 8000W | — |
+| AIO10kW | 0x8103 | 10000W | 10000W | — |
 
 Dropdown and INVERTER_PRESETS are ordered by DTC hex value ascending.
 

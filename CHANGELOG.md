@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-06-04
+
+### Added
+- **Gen2Hybrid** inverter type (DTC 0x2001, arm_fw 852 → century 8)
+  - Dropdown entry: "Gen 2 Hybrid (0x2001, FW 8xx)"
+  - 5000W AC max, 3600W battery limit (same DC limit as Gen3)
+  - `gen2_hybrid_shares_family_dtc_but_reports_century_8_firmware` test
+
+### Changed
+- **0x2001 is now treated as a family code**, not a Gen3-specific DTC,
+  matching upstream `givenergy-modbus` / `giv_tcp`:
+  - Gen1Hybrid (was 0x1001) → 0x2001 with arm_fw 252 (century 2)
+  - Gen2Hybrid (new) → 0x2001 with arm_fw 852 (century 8)
+  - Gen3Hybrid → 0x2001 with arm_fw 352 (century 3)
+  - Plus variants → arm_fw 452 (century 4)
+- Frontend dropdown labels updated to show FW century: "(0x2001, FW 2xx)"
+- AGENTS.md inverter table extended with ARM FW column
+
 ## [0.11.0] - 2026-06-04
 
 ### Added

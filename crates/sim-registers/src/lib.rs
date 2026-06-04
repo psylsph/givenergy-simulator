@@ -419,10 +419,12 @@ impl RegisterStore {
 
                 // HR 0: Device type
                 "ge_hr_device_type" => {
-                    // Encode inverter type as DTC hex code
+                    // Encode inverter type as DTC hex code.
+                    // NOTE: 0x2001 is a FAMILY code shared by Gen1/Gen2/Gen3 hybrids.
+                    // Disambiguation happens via HR(21) ARM firmware century:
+                    //   century 2 → Gen1, century 3 → Gen3, century 8/9 → Gen2.
                     let dtc: u16 = match state.config.inverter_type.as_str() {
-                        "Gen1Hybrid" => 0x1001,
-                        "Gen3Hybrid" => 0x2001,
+                        "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" => 0x2001,
                         "Gen3Hybrid8kW" => 0x2101,
                         "Gen3Hybrid10kW" => 0x2102,
                         "Gen3Plus6kW" => 0x2201,
@@ -468,13 +470,16 @@ impl RegisterStore {
                     self.values.insert(key, (b'4' as u16) << 8 | b'5' as u16);
                     continue;
                 }
-                // HR 21: ARM firmware version
+                // HR 21: ARM firmware version. The century (fw/100) disambiguates
+                // the 0x2001 hybrid family:
+                //   2xx → Gen1, 3xx → Gen3, 8xx/9xx → Gen2.
                 "ge_hr_arm_firmware" => {
                     let fw = match state.config.inverter_type.as_str() {
-                        "Gen1Hybrid" => 100,
-                        "Gen3Hybrid" => 300,
-                        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 400,
-                        _ => 300,
+                        "Gen1Hybrid" => 252, // century 2 → Gen1
+                        "Gen2Hybrid" => 852, // century 8 → Gen2
+                        "Gen3Hybrid" => 352, // century 3 → Gen3
+                        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                        _ => 352,
                     };
                     self.values.insert(key, fw);
                     continue;
@@ -4378,8 +4383,22 @@ mod tests {
         s.config.inverter_type = "Gen1Hybrid".to_string();
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
-        assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x1001));
-        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(100));
+        // 0x2001 is the family code for ALL Gen1/Gen2/Gen3 hybrids.
+        // HR(21) century 2 (arm_fw 252) disambiguates as Gen1Hybrid.
+        assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x2001));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(252));
+    }
+
+    #[test]
+    fn gen2_hybrid_shares_family_dtc_but_reports_century_8_firmware() {
+        let now = test_ts();
+        let mut s = PlantState::new(now);
+        s.config.inverter_type = "Gen2Hybrid".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        // Same DTC as Gen1/Gen3, but HR(21) century 8 → Gen2.
+        assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x2001));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(852));
     }
 
     #[test]

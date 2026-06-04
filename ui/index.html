@@ -367,8 +367,9 @@
         <h3>Plant Setup</h3>
         <label>Inverter Type</label>
         <select id="inverter-type">
-          <option value="Gen1Hybrid">Gen 1 Hybrid (0x1001)</option>
-          <option value="Gen3Hybrid">Gen3 Hybrid (0x2001)</option>
+          <option value="Gen1Hybrid">Gen 1 Hybrid (0x2001, FW 2xx)</option>
+          <option value="Gen2Hybrid">Gen 2 Hybrid (0x2001, FW 8xx)</option>
+          <option value="Gen3Hybrid">Gen3 Hybrid (0x2001, FW 3xx)</option>
           <option value="Gen3Hybrid8kW">Polar 8kW (0x2101)</option>
           <option value="Gen3Hybrid10kW">Polar 10kW (0x2102)</option>
           <option value="Gen3Plus6kW">Gen3 Plus 6kW (0x2201)</option>
@@ -639,7 +640,8 @@
 
     // Inverter type presets: [max_ac_watts, default_export_limit]
     const INVERTER_PRESETS = {
-      Gen1Hybrid:      { dtc: 0x1001, label: 'Gen 1 Hybrid',     maxBattW: 2500, nomV: 51.2 },
+      Gen1Hybrid:      { dtc: 0x2001, label: 'Gen 1 Hybrid',     maxBattW: 2500, nomV: 51.2 },
+      Gen2Hybrid:      { dtc: 0x2001, label: 'Gen 2 Hybrid',     maxBattW: 3600, nomV: 51.2 },
       Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',     maxBattW: 3600, nomV: 51.2 },
       Gen3Hybrid8kW:   { dtc: 0x2101, label: 'Polar 8kW',        maxBattW: 8000, nomV: 51.2 },
       Gen3Hybrid10kW:  { dtc: 0x2102, label: 'Polar 10kW',       maxBattW: 10000,nomV: 51.2 },

@@ -66,6 +66,8 @@ pub async fn create_plant(
     let max_batt_w = match inv_type {
         // Gen 1 Hybrid 5.0: 2500W charge/discharge
         "Gen1Hybrid" => 2500.0,
+        // Gen2 Hybrid 5.0: 3600W charge/discharge (same DC limit as Gen3)
+        "Gen2Hybrid" => 3600.0,
         // Gen3 Hybrid 3.6/5.0: charge 3300W, discharge 3600W. Use 3600 as the DC battery limit.
         "Gen3Hybrid" => 3600.0,
         // Gen3 Hybrid 8.0: charge 8000W, discharge 8500W
@@ -156,6 +158,7 @@ pub async fn create_plant(
         "AllInOne" => 6000.0,
         "AllInOne5" => 5000.0,
         "Gen1Hybrid" => 5000.0,
+        "Gen2Hybrid" => 5000.0,
         "Gen3Hybrid" => 5000.0,
         _ => 5000.0,
     };
