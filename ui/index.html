@@ -1003,6 +1003,9 @@
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${targetText}</div>
         </div>`;
       };
+      const slotCompact = (title, start, end, target) => {
+        return `<span style="font-size:10px;border:1px solid var(--border);border-radius:4px;padding:2px 5px;white-space:nowrap">${title} ${hhmm(start)}–${hhmm(end)} ${target.toFixed(0)}%</span>`;
+      };
       const isAcCoupled = s.inverter_type && s.inverter_type.startsWith('ACCoupled');
       const acCols = isAcCoupled ? 2 : 6;
       el('schedule-display').innerHTML = `
@@ -1018,6 +1021,27 @@
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Mode: ${s.battery_mode || '—'}</div>
           </div>
         </div>
+        <details style="margin-top:6px;font-size:11px">
+          <summary style="cursor:pointer;color:var(--text-muted)">Extended Slots (3–10)</summary>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+            ${slotCompact('Chg 3', sch.charge_slot_3_start, sch.charge_slot_3_end, sch.charge_target_soc_3)}
+            ${slotCompact('Chg 4', sch.charge_slot_4_start, sch.charge_slot_4_end, sch.charge_target_soc_4)}
+            ${slotCompact('Chg 5', sch.charge_slot_5_start, sch.charge_slot_5_end, sch.charge_target_soc_5)}
+            ${slotCompact('Chg 6', sch.charge_slot_6_start, sch.charge_slot_6_end, sch.charge_target_soc_6)}
+            ${slotCompact('Chg 7', sch.charge_slot_7_start, sch.charge_slot_7_end, sch.charge_target_soc_7)}
+            ${slotCompact('Chg 8', sch.charge_slot_8_start, sch.charge_slot_8_end, sch.charge_target_soc_8)}
+            ${slotCompact('Chg 9', sch.charge_slot_9_start, sch.charge_slot_9_end, sch.charge_target_soc_9)}
+            ${slotCompact('Chg 10', sch.charge_slot_10_start, sch.charge_slot_10_end, sch.charge_target_soc_10)}
+            ${slotCompact('Dis 3', sch.discharge_slot_3_start, sch.discharge_slot_3_end, sch.discharge_target_soc_3)}
+            ${slotCompact('Dis 4', sch.discharge_slot_4_start, sch.discharge_slot_4_end, sch.discharge_target_soc_4)}
+            ${slotCompact('Dis 5', sch.discharge_slot_5_start, sch.discharge_slot_5_end, sch.discharge_target_soc_5)}
+            ${slotCompact('Dis 6', sch.discharge_slot_6_start, sch.discharge_slot_6_end, sch.discharge_target_soc_6)}
+            ${slotCompact('Dis 7', sch.discharge_slot_7_start, sch.discharge_slot_7_end, sch.discharge_target_soc_7)}
+            ${slotCompact('Dis 8', sch.discharge_slot_8_start, sch.discharge_slot_8_end, sch.discharge_target_soc_8)}
+            ${slotCompact('Dis 9', sch.discharge_slot_9_start, sch.discharge_slot_9_end, sch.discharge_target_soc_9)}
+            ${slotCompact('Dis 10', sch.discharge_slot_10_start, sch.discharge_slot_10_end, sch.discharge_target_soc_10)}
+          </div>
+        </details>
       `;
 
       // Footer
