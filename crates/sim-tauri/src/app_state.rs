@@ -147,14 +147,6 @@ impl ScheduleDto {
             }
             h * 100 + m
         };
-        // Helper: if start == end the slot is disabled → write 60/60.
-        let slot_pair = |start: f64, end: f64| -> (u16, u16) {
-            if (start - end).abs() < 0.001 {
-                (60, 60)
-            } else {
-                (hhmm(start), hhmm(end))
-            }
-        };
 
         let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct1, ct2, _dt1, dt2) = match schedule {
             Some(s) => (

@@ -331,6 +331,7 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         }
         311 => Some(Command::SetExportPriority(value)),
         317 => Some(Command::SetEnableEps(value != 0)),
+        2040 => Some(Command::SetEmsEnable(value != 0)),
         318 => Some(Command::SetBatteryPause {
             mode: value,
             start: 60,
@@ -380,6 +381,7 @@ fn is_schedule_register(addr: u16) -> bool {
             | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1123
             | 2062..=2071
+            | 2044..=2061
     )
 }
 
@@ -635,6 +637,63 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
+                            // EMS discharge slots 1-3 (HR 2044-2052)
+                            if let Some(&v) = sched_updates.get(&2044) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2045) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2046) {
+                                sched.discharge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2047) {
+                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2048) {
+                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2049) {
+                                sched.discharge_target_soc_2 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2050) {
+                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2051) {
+                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2052) {
+                                sched.discharge_target_soc_3 = v as f64;
+                            }
+                            // EMS charge slots 1-3 (HR 2053-2061)
+                            if let Some(&v) = sched_updates.get(&2053) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2054) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2055) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2056) {
+                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2057) {
+                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2058) {
+                                sched.charge_target_soc_2 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2059) {
+                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2060) {
+                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2061) {
+                                sched.charge_target_soc_3 = v as f64;
+                            }
+
                             // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
                             if let Some(&v) = sched_updates.get(&96) {
                                 if v == 0 {
@@ -885,6 +944,63 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
+                            // EMS discharge slots 1-3 (HR 2044-2052)
+                            if let Some(&v) = sched_updates.get(&2044) {
+                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2045) {
+                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2046) {
+                                sched.discharge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2047) {
+                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2048) {
+                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2049) {
+                                sched.discharge_target_soc_2 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2050) {
+                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2051) {
+                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2052) {
+                                sched.discharge_target_soc_3 = v as f64;
+                            }
+                            // EMS charge slots 1-3 (HR 2053-2061)
+                            if let Some(&v) = sched_updates.get(&2053) {
+                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2054) {
+                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2055) {
+                                sched.charge_target_soc = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2056) {
+                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2057) {
+                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2058) {
+                                sched.charge_target_soc_2 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&2059) {
+                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2060) {
+                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&2061) {
+                                sched.charge_target_soc_3 = v as f64;
+                            }
+
                             // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
                             if let Some(&v) = sched_updates.get(&96) {
                                 if v == 0 {

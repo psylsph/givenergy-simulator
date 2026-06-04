@@ -459,6 +459,10 @@ pub struct PlantState {
     /// HR317 enable EPS (Emergency Power Supply) mode.
     #[serde(default)]
     pub enable_eps: bool,
+    /// When true, EMS (Energy Management System) slot registers (HR 2044-2061)
+    /// control the charge/discharge schedule instead of inverter-native slots.
+    #[serde(default)]
+    pub ems_enabled: bool,
     /// When `Some(tick_count)`, the BatteryEngine must not change SOC for this many
     /// remaining ticks. Set by the GUI when the user manually drags the SOC slider.
     /// Allows the user's value to "stick" for a short wall-clock period before the
@@ -500,6 +504,7 @@ impl PlantState {
             export_priority: 0,
             enable_eps: false,
             manual_soc_hold_ticks: 0,
+            ems_enabled: false,
         }
     }
 
@@ -536,6 +541,7 @@ impl PlantState {
             export_priority: 0,
             enable_eps: false,
             manual_soc_hold_ticks: 0,
+            ems_enabled: false,
         }
     }
 

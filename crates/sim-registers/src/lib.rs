@@ -380,6 +380,40 @@ impl RegisterStore {
                 "meter_reserved" => Some(0.0),
 
                 // ================================================================
+                // EMS Input Registers (IR 2040-2095) — plant status & telemetry
+                // ================================================================
+                "ems_ir_status" => Some(1.0),
+                "ems_ir_inverter_count" => Some(state.batteries.len() as f64),
+                "ems_ir_inverter_1_soc" => Some(state.aggregate_soc()),
+                "ems_ir_inverter_1_power" => {
+                    let clamped =
+                        (state.total_battery_power_kw() * 1000.0).clamp(-32768.0, 32767.0) as i16;
+                    self.values.insert(key, clamped as u16);
+                    continue;
+                }
+                "ems_ir_inverter_1_temp" => Some(state.inverter.temperature_celsius),
+                "ems_ir_grid_meter_power" => {
+                    let clamped = state.grid.power_w.clamp(-32768.0, 32767.0) as i16;
+                    self.values.insert(key, clamped as u16);
+                    continue;
+                }
+                "ems_ir_total_battery_power" => {
+                    let clamped =
+                        (state.total_battery_power_kw() * 1000.0).clamp(-32768.0, 32767.0) as i16;
+                    self.values.insert(key, clamped as u16);
+                    continue;
+                }
+                "ems_ir_remaining_battery_wh" => {
+                    let wh = (state.aggregate_soc() / 100.0
+                        * state.total_battery_capacity()
+                        * 1000.0) as u16;
+                    self.values.insert(key, wh);
+                    continue;
+                }
+                // Catch-all for other EMS IR registers: default to 0
+                name if name.starts_with("ems_ir_") => Some(0.0),
+
+                // ================================================================
                 // GivEnergy-native Holding Registers (HR 0-119)
                 // ================================================================
 
@@ -608,6 +642,11 @@ impl RegisterStore {
                 // HR 317: Enable EPS
                 "ge_hr_enable_eps" => {
                     self.values.insert(key, state.enable_eps as u16);
+                    continue;
+                }
+                // HR 2040: EMS plant enable
+                "ems_plant_enable" => {
+                    self.values.insert(key, state.ems_enabled as u16);
                     continue;
                 }
 
@@ -1052,6 +1091,35 @@ impl RegisterStore {
         self.write(2069, es3_e);
         self.write(2070, schedule.export_target_soc_3 as u16);
         self.write(2071, schedule.export_power_limit_w as u16);
+
+        // EMS charge/discharge slots (HR 2044-2061) — share the same
+        // Schedule fields as native inverter slots.
+        let (ems_ds1_s, ems_ds1_e) = slot_pair(schedule.discharge_start, schedule.discharge_end);
+        self.write(2044, ems_ds1_s);
+        self.write(2045, ems_ds1_e);
+        self.write(2046, schedule.discharge_target_soc as u16);
+        let (ems_ds2_s, ems_ds2_e) =
+            slot_pair(schedule.discharge_start_2, schedule.discharge_end_2);
+        self.write(2047, ems_ds2_s);
+        self.write(2048, ems_ds2_e);
+        self.write(2049, schedule.discharge_target_soc_2 as u16);
+        let (ems_ds3_s, ems_ds3_e) =
+            slot_pair(schedule.discharge_start_3, schedule.discharge_end_3);
+        self.write(2050, ems_ds3_s);
+        self.write(2051, ems_ds3_e);
+        self.write(2052, schedule.discharge_target_soc_3 as u16);
+        let (ems_cs1_s, ems_cs1_e) = slot_pair(schedule.charge_start, schedule.charge_end);
+        self.write(2053, ems_cs1_s);
+        self.write(2054, ems_cs1_e);
+        self.write(2055, schedule.charge_target_soc as u16);
+        let (ems_cs2_s, ems_cs2_e) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
+        self.write(2056, ems_cs2_s);
+        self.write(2057, ems_cs2_e);
+        self.write(2058, schedule.charge_target_soc_2 as u16);
+        let (ems_cs3_s, ems_cs3_e) = slot_pair(schedule.charge_start_3, schedule.charge_end_3);
+        self.write(2059, ems_cs3_s);
+        self.write(2060, ems_cs3_e);
+        self.write(2061, schedule.charge_target_soc_3 as u16);
 
         // Internal schedule registers (HR 700-729)
         self.write(700, cs1_start);
@@ -2800,7 +2868,34 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2040,
-            name: "ems_export_limit".into(),
+            name: "ems_plant_enable".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2041,
+            name: "ems_expected_inverter_count".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2042,
+            name: "ems_expected_meter_count".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2043,
+            name: "ems_expected_car_charger_count".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -2809,8 +2904,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2044,
-            name: "ems_register_2044".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_1_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2818,8 +2913,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2045,
-            name: "ems_register_2045".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_1_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2827,8 +2922,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2046,
-            name: "ems_register_2046".into(),
-            category: C::Configuration,
+            name: "ems_discharge_target_soc_1".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2836,8 +2931,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2047,
-            name: "ems_register_2047".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_2_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2845,8 +2940,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2048,
-            name: "ems_register_2048".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_2_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2854,8 +2949,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2049,
-            name: "ems_register_2049".into(),
-            category: C::Configuration,
+            name: "ems_discharge_target_soc_2".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2863,8 +2958,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2050,
-            name: "ems_register_2050".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_3_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2872,8 +2967,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2051,
-            name: "ems_register_2051".into(),
-            category: C::Configuration,
+            name: "ems_discharge_slot_3_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2881,8 +2976,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2052,
-            name: "ems_register_2052".into(),
-            category: C::Configuration,
+            name: "ems_discharge_target_soc_3".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2890,8 +2985,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2053,
-            name: "ems_register_2053".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_1_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2899,8 +2994,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2054,
-            name: "ems_register_2054".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_1_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2908,8 +3003,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2055,
-            name: "ems_register_2055".into(),
-            category: C::Configuration,
+            name: "ems_charge_target_soc_1".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2917,8 +3012,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2056,
-            name: "ems_register_2056".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_2_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2926,8 +3021,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2057,
-            name: "ems_register_2057".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_2_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2935,8 +3030,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2058,
-            name: "ems_register_2058".into(),
-            category: C::Configuration,
+            name: "ems_charge_target_soc_2".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2944,8 +3039,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2059,
-            name: "ems_register_2059".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_3_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2953,8 +3048,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2060,
-            name: "ems_register_2060".into(),
-            category: C::Configuration,
+            name: "ems_charge_slot_3_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2962,8 +3057,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2061,
-            name: "ems_register_2061".into(),
-            category: C::Configuration,
+            name: "ems_charge_target_soc_3".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2971,8 +3066,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2062,
-            name: "ems_register_2062".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_1_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2980,8 +3075,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2063,
-            name: "ems_register_2063".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_1_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2989,8 +3084,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2064,
-            name: "ems_register_2064".into(),
-            category: C::Configuration,
+            name: "ems_export_target_soc_1".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -2998,8 +3093,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2065,
-            name: "ems_register_2065".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_2_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3007,8 +3102,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2066,
-            name: "ems_register_2066".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_2_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3016,8 +3111,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2067,
-            name: "ems_register_2067".into(),
-            category: C::Configuration,
+            name: "ems_export_target_soc_2".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3025,8 +3120,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2068,
-            name: "ems_register_2068".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_3_start".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3034,8 +3129,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2069,
-            name: "ems_register_2069".into(),
-            category: C::Configuration,
+            name: "ems_export_slot_3_end".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3043,8 +3138,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2070,
-            name: "ems_register_2070".into(),
-            category: C::Configuration,
+            name: "ems_export_target_soc_3".into(),
+            category: C::Schedules,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
@@ -3052,7 +3147,7 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2071,
-            name: "ems_register_2071".into(),
+            name: "ems_export_power_limit".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -3061,7 +3156,7 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2072,
-            name: "ems_register_2072".into(),
+            name: "ems_car_charge_mode".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -3070,12 +3165,367 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 2073,
-            name: "ems_register_2073".into(),
+            name: "ems_car_charge_boost".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
             space: Holding,
+        },
+        RegisterDef {
+            address: 2074,
+            name: "ems_plant_charge_compensation".into(),
+            category: C::Configuration,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2075,
+            name: "ems_plant_discharge_compensation".into(),
+            category: C::Configuration,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        // ================================================================
+        // EMS Input Registers (IR 2040-2095) — plant status & telemetry
+        // ================================================================
+        RegisterDef {
+            address: 2040,
+            name: "ems_ir_status".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2041,
+            name: "ems_ir_meter_count".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2042,
+            name: "ems_ir_meter_types".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2043,
+            name: "ems_ir_meter_status".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2044,
+            name: "ems_ir_inverter_count".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2045,
+            name: "ems_ir_inverter_status".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2046,
+            name: "ems_ir_meter_1_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2047,
+            name: "ems_ir_meter_2_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2048,
+            name: "ems_ir_meter_3_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2049,
+            name: "ems_ir_meter_4_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2050,
+            name: "ems_ir_meter_5_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2051,
+            name: "ems_ir_meter_6_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2052,
+            name: "ems_ir_meter_7_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2053,
+            name: "ems_ir_meter_8_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2054,
+            name: "ems_ir_inverter_1_power".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2055,
+            name: "ems_ir_inverter_2_power".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2056,
+            name: "ems_ir_inverter_3_power".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2057,
+            name: "ems_ir_inverter_4_power".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2058,
+            name: "ems_ir_inverter_1_soc".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2059,
+            name: "ems_ir_inverter_2_soc".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2060,
+            name: "ems_ir_inverter_3_soc".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2061,
+            name: "ems_ir_inverter_4_soc".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2062,
+            name: "ems_ir_inverter_1_temp".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2063,
+            name: "ems_ir_inverter_2_temp".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2064,
+            name: "ems_ir_inverter_3_temp".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2065,
+            name: "ems_ir_inverter_4_temp".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2066,
+            name: "ems_ir_inverter_1_serial".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2086,
+            name: "ems_ir_calc_load_power".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2087,
+            name: "ems_ir_measured_load_power".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2088,
+            name: "ems_ir_total_generation_load_power".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2089,
+            name: "ems_ir_grid_meter_power".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2090,
+            name: "ems_ir_total_battery_power".into(),
+            category: C::Battery,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2091,
+            name: "ems_ir_remaining_battery_wh".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2094,
+            name: "ems_ir_other_battery_power".into(),
+            category: C::Battery,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Added EMS serial registers (IR 2067-2085, step through inverter 2-4)
+        RegisterDef {
+            address: 2071,
+            name: "ems_ir_inverter_2_serial".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2076,
+            name: "ems_ir_inverter_3_serial".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 2081,
+            name: "ems_ir_inverter_4_serial".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
         },
         // ================================================================
         // Smart Load slots (HR 554-573) — 10 start/end pairs

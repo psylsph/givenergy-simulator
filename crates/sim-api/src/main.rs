@@ -206,6 +206,7 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         }
         311 => Some(Command::SetExportPriority(cmd.value)),
         317 => Some(Command::SetEnableEps(cmd.value != 0)),
+        2040 => Some(Command::SetEmsEnable(cmd.value != 0)),
         318 => Some(Command::SetBatteryPause {
             mode: cmd.value,
             start: 60,
@@ -993,6 +994,7 @@ fn is_schedule_register(addr: u16) -> bool {
             | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1123
             | 2062..=2071
+            | 2044..=2061
     )
 }
 

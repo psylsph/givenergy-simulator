@@ -43,6 +43,8 @@ pub enum Command {
     /// Override load demand to a fixed watt value.
     SetLoadOverride(Option<f64>),
     SetSimulationTime(NaiveDateTime),
+    /// Enable/disable EMS (Energy Management System) control mode.
+    SetEmsEnable(bool),
     /// Set SOC of a specific battery module (index, soc%).
     SetBatterySoc {
         module: usize,
@@ -178,6 +180,9 @@ impl SimulationEngine {
                 }
                 Command::SetSimulationTime(t) => {
                     self.state.timestamp = t;
+                }
+                Command::SetEmsEnable(enable) => {
+                    self.state.ems_enabled = enable;
                 }
                 Command::StartCalibration { module } => {
                     self.state.calibration = CalibrationState {
