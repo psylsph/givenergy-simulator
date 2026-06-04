@@ -25,7 +25,7 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.10.0** — Dual PV, 20 inverter types, CI-clean, meter simulation, export scheduling, proptest fuzzer.
+**0.11.0** — GivEVC simulator (standard Modbus TCP on port 8898), slot 3-10 write routing, all slot maps aligned to upstream.
 
 ## Common Gotchas
 
@@ -257,6 +257,22 @@ Save path: `~/.local/share/com.givenergy.simulator/plant_state.json`
 Format: `{ "plant": PlantState, "schedule": Option<Schedule> }`
 Battery sizes: `BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0]` (nearest-value matching).
 
+## Network ports
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 8899 | GivEnergy proprietary Modbus TCP (with envelope) | Inverter + battery + grid registers |
+| 8898 | Standard Modbus TCP (no envelope) | GivEVC wallbox (HR 0-119) |
+| 1420 | HTTP | Tauri dev server (UI) |
+
+## Slot maps (per `givenergy-modbus` reference)
+| Inverter class | Charge slots (start,end) | Discharge slots (start,end) |
+|----------------|--------------------------|------------------------------|
+| SINGLE_PHASE | (94,95), (31,32) | (56,57), (44,45) |
+| EXTENDED (10-slot) | (94,95), (31,32), (246,247), (249,250), (252,253), (255,256), (258,259), (261,262), (264,265), (267,268) | (56,57), (44,45), (276,277), ..., (297,298) |
+| THREE_PHASE | (1113,1114), (1115,1116), (246,247), ..., (267,268) | (1118,1119), (1120,1121), (276,277), ..., (297,298) |
+| EMS | (2053,2054), (2056,2057), (2059,2060) | (2044,2045), (2047,2048), (2050,2051) |
+Target SOC register follows each slot's end register (e.g. HR 248 for charge slot 3).
+
 ## Test count tracking
 - v0.3.0: 37
 - v0.3.1: 49
@@ -268,3 +284,4 @@ Battery sizes: `BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0]` (ne
 - v0.8.0: 216
 - v0.9.0: 217
 - v0.10.0: 217
+- v0.11.0: 219

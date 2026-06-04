@@ -583,6 +583,25 @@
         <div id="schedule-display" style="font-size:12px;color:var(--text-muted)">Initialising...</div>
       </div>
 
+      <div class="card" id="evc-card" style="display:none">
+        <div class="card-label">EV Charger (GivEVC)</div>
+        <div id="evc-display" style="font-size:12px"></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">
+          <button data-evc="toggle" class="btn-mini">Enable EVC</button>
+          <button data-evc="cable" class="btn-mini">Plug Cable</button>
+          <button data-evc="start" class="btn-mini">Start</button>
+          <button data-evc="stop" class="btn-mini">Stop</button>
+          <label style="font-size:11px">Mode:</label>
+          <select data-evc="mode" class="input-mini">
+            <option value="0">Grid</option>
+            <option value="1">Hybrid</option>
+            <option value="2">Solar</option>
+          </select>
+          <label style="font-size:11px">Amps:</label>
+          <input type="number" data-evc="amps" min="6" max="32" value="16" class="input-mini" style="width:54px"/>
+        </div>
+      </div>
+
       <!-- Faults (hidden when empty) -->
       <div class="card" id="faults-card" style="display: none">
         <div class="card-label">Active Faults</div>
@@ -1044,6 +1063,28 @@
         </details>
       `;
 
+      // EVC (Electric Vehicle Charger)
+      if (s.evc) {
+        const evcEl = el('evc-card');
+        evcEl.style.display = '';
+        const stateLabel = ['Unknown','Idle','Connected','Starting','Charging','Startup Fail','Ending','Failure','Scheduled','Updating','Unstable CP'][s.evc.charging_state] || 'Unknown';
+        const modeLabel = ['Grid','Hybrid','Solar'][s.evc.charging_mode] || 'Grid';
+        const controlLabel = ['Ready','Start','Stop'][s.evc.charge_control] || 'Ready';
+        el('evc-display').innerHTML = `
+          <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between">
+            <span><b>State:</b> ${stateLabel}${s.evc.enabled ? '' : ' (off)'}</span>
+            <span><b>Power:</b> ${s.evc.active_power_w.toFixed(0)} W</span>
+            <span><b>L1:</b> ${s.evc.current_l1.toFixed(1)} A</span>
+            <span><b>Mode:</b> ${modeLabel}</span>
+            <span><b>Control:</b> ${controlLabel}</span>
+            <span><b>Energy:</b> ${s.evc.energy_kwh.toFixed(1)} kWh</span>
+            <span><b>Setting:</b> ${s.evc.charge_current_setting} A</span>
+            <span style="color:${s.evc.error_code ? 'var(--red)' : 'var(--green)'}">${s.evc.error_code ? 'Error '+s.evc.error_code : 'OK'}</span>
+          </div>`;
+      } else {
+        el('evc-card').style.display = 'none';
+      }
+
       // Footer
       el('footer-info').textContent = `${s.inverter_mode} mode`;
       el('footer-modules').textContent = `${s.battery_module_count} module(s)`;
@@ -1228,6 +1269,36 @@
         await invoke('set_load_override', { params: { watts: null } });
         el('footer-info').textContent = 'Overrides cleared';
       } catch (e) { console.error('clear overrides failed:', e); }
+    });
+
+    // ---- EVC (Electric Vehicle Charger) ----
+    let evcEnabled = false;
+    let evcCable = false;
+    document.querySelectorAll('[data-evc]').forEach((node) => {
+      const action = node.dataset.evc;
+      const evt = (action === 'mode' || action === 'amps') ? 'change' : 'click';
+      node.addEventListener(evt, async () => {
+        try {
+          if (action === 'toggle') {
+            evcEnabled = !evcEnabled;
+            await invoke('set_evc_enabled', { enabled: evcEnabled });
+            node.textContent = evcEnabled ? 'Disable EVC' : 'Enable EVC';
+          } else if (action === 'cable') {
+            evcCable = !evcCable;
+            await invoke('set_evc_cable_status', { status: evcCable ? 1 : 0 });
+            node.textContent = evcCable ? 'Unplug Cable' : 'Plug Cable';
+          } else if (action === 'start') {
+            await invoke('set_evc_charge_control', { mode: 1 });
+          } else if (action === 'stop') {
+            await invoke('set_evc_charge_control', { mode: 2 });
+          } else if (action === 'mode') {
+            await invoke('set_evc_charging_mode', { mode: parseInt(node.value, 10) });
+          } else if (action === 'amps') {
+            const a = Math.max(6, Math.min(32, parseInt(node.value, 10) || 16));
+            await invoke('set_evc_charge_current', { amps: a });
+          }
+        } catch (e) { console.error('evc action failed:', e); }
+      });
     });
 
     // Faults

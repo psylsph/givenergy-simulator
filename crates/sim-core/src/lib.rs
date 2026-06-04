@@ -1190,6 +1190,73 @@ impl DeviceModel for EnergyTracker {
 }
 
 // ---------------------------------------------------------------------------
+// EvcEngine — GivEnergy Electric Vehicle Charger
+// ---------------------------------------------------------------------------
+
+/// Simulates a GivEVC wallbox. Draws power from the grid when charging.
+/// State is stored in `state.evc`. Writes directly to `state.evc` and
+/// adds load to `state.grid.power_w` when charging.
+#[derive(Debug, Clone)]
+pub struct EvcEngine;
+
+impl Default for EvcEngine {
+    fn default() -> Self {
+        Self
+    }
+}
+
+impl EvcEngine {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl DeviceModel for EvcEngine {
+    fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
+        let evc = &mut state.evc;
+        if !evc.enabled || evc.charge_control != 1 {
+            // Not charging — ensure idle state
+            if evc.charging_state == 4 {
+                evc.charging_state = 1; // Idle
+            }
+            evc.active_power_w = 0.0;
+            evc.current_l1 = 0.0;
+            evc.current_l2 = 0.0;
+            evc.current_l3 = 0.0;
+            return;
+        }
+
+        // Charging state machine
+        if evc.cable_status == 0 {
+            evc.charging_state = 1; // Idle — no cable
+            evc.active_power_w = 0.0;
+            evc.current_l1 = 0.0;
+            evc.current_l2 = 0.0;
+            evc.current_l3 = 0.0;
+            return;
+        }
+
+        evc.charging_state = 4; // Charging
+
+        // Calculate power draw based on charge current setting and voltage
+        let voltage_v = 230.0; // Single-phase nominal UK voltage
+        let max_power_w = evc.charge_current_setting as f64 * voltage_v;
+        let dt_hours = ctx.dt_hours;
+
+        // Apply charging mode: Grid = full draw from grid
+        // In the sim, the EVC always draws from grid (simplified)
+        evc.active_power_w = max_power_w;
+        evc.current_l1 = evc.charge_current_setting as f64;
+
+        // Add EVC load to grid import
+        state.grid.power_w += max_power_w;
+
+        // Track energy dispensed
+        evc.energy_kwh += max_power_w / 1000.0 * dt_hours;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ScheduleEngine — timed charge/discharge windows
 // ---------------------------------------------------------------------------
 
@@ -2340,6 +2407,68 @@ mod tests {
         assert!(
             soc_after >= soc_before,
             "Battery should charge: before={soc_before:.1}% after={soc_after:.1}%"
+        );
+    }
+
+    #[test]
+    fn slot_3_triggers_charge_during_window() {
+        // Verify slot 3-10 mapping works end-to-end via ScheduleEngine.
+        let mut sched = Schedule::default();
+        sched.charge_start_3 = 5.0;
+        sched.charge_end_3 = 7.0;
+        sched.charge_target_soc_3 = 90.0;
+        // Disable any other slots / always-on
+        sched.enable_charge = false;
+
+        let mut state = PlantState::new(ts(6)); // 06:00 — inside slot 3 window
+        state.inverter.mode_state.set_user(InverterMode::Eco);
+        state.batteries[0].soc_percent = 30.0;
+        state.sync_battery_from_vec();
+
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(ScheduleEngine::new(sched)),
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(EnergyTracker::new()),
+        ];
+        let mut engine = SimulationEngine::new(state, devices, 60);
+
+        engine.tick();
+        assert!(
+            engine.state.scheduled_charge,
+            "Slot 3 (05:00-07:00) at hour 6 should trigger scheduled_charge"
+        );
+    }
+
+    #[test]
+    fn slot_10_triggers_discharge_during_window() {
+        let mut sched = Schedule::default();
+        sched.discharge_start_10 = 18.0;
+        sched.discharge_end_10 = 22.0;
+        sched.discharge_target_soc_10 = 20.0;
+        sched.enable_discharge = false;
+
+        let mut state = PlantState::new(ts(20)); // 20:00 — inside slot 10 window
+        state.inverter.mode_state.set_user(InverterMode::Eco);
+        state.batteries[0].soc_percent = 80.0;
+        state.sync_battery_from_vec();
+
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(ScheduleEngine::new(sched)),
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(EnergyTracker::new()),
+        ];
+        let mut engine = SimulationEngine::new(state, devices, 60);
+
+        engine.tick();
+        assert!(
+            engine.state.scheduled_discharge,
+            "Slot 10 (18:00-22:00) at hour 20 should trigger scheduled_discharge"
         );
     }
 

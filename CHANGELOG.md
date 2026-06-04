@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-04
+
+### Added
+- **GivEVC (Electric Vehicle Charger) simulation** — full wallbox simulator
+  - `EvcState` struct (enabled, charging_state, cable_status, error_code,
+    active_power_w, L1/L2/L3 currents, charge_current_setting, charge_control,
+    charging_mode, energy_kwh)
+  - `EvcEngine` device model — simulates charging state machine, draws from grid
+  - **Standard Modbus TCP server** on port 8898 (not proprietary framing)
+    - FC 0x03 (read HR), 0x06 (write single), 0x10 (write multiple)
+    - Serves HR 0-119 for the EVC wallbox
+  - 6 new Tauri commands: `set_evc_enabled`, `set_evc_charge_control`,
+    `set_evc_charge_current`, `set_evc_charging_mode`, `set_evc_cable_status`,
+    `get_evc_state`
+  - EVC control card in frontend (Enable/Plug/Start/Stop/Mode/Amps)
+- **Slot 3-10 Modbus write routing** — HR 246-269 (charge) and HR 276-299
+  (discharge) writes are now translated into the Schedule struct fields,
+  matching the EXTENDED_SLOTS layout from `givenergy-modbus`
+
+### Fixed
+- Slot 3-10 schedule accumulator gap — writes to HR 246-299 were not being
+  applied to the schedule (only projection was correct)
+- All three slot maps align with `givenergy-modbus` upstream:
+  - SINGLE_PHASE_SLOTS: charge (94,95),(31,32); discharge (56,57),(44,45)
+  - EXTENDED_SLOTS: adds (246,247)...(267,268) and (276,277)...(297,298)
+  - THREE_PHASE_SLOTS: slots 1-2 at HR 1113-1121, slots 3-10 reuse EXTENDED
+
+### Tests
+- New `slot_3_triggers_charge_during_window` test
+- New `slot_10_triggers_discharge_during_window` test
+- Total: 219 tests (was 217)
+
 ## [0.10.0] - 2026-06-04
 
 ### Added

@@ -22,6 +22,7 @@ pub fn run() {
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let battery_snapshot = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let pending_time_regs = Arc::new(std::sync::Mutex::new([None; 6]));
+    let evc_state = Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default()));
 
     let app_state = AppState {
         engine: Arc::new(tokio::sync::Mutex::new(None)),
@@ -32,6 +33,7 @@ pub fn run() {
         modbus_cmds: modbus_cmds.clone(),
         battery_snapshot: battery_snapshot.clone(),
         pending_time_regs: pending_time_regs.clone(),
+        evc_state: evc_state.clone(),
     };
 
     tauri::Builder::default()
@@ -59,6 +61,12 @@ pub fn run() {
             commands::cancel_calibration,
             commands::set_tick_interval,
             commands::export_config,
+            commands::set_evc_enabled,
+            commands::set_evc_charge_control,
+            commands::set_evc_charge_current,
+            commands::set_evc_charging_mode,
+            commands::set_evc_cable_status,
+            commands::get_evc_state,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule
@@ -104,6 +112,7 @@ pub fn run() {
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
                                         Box::new(sim_core::EnergyTracker::new()),
+                                        Box::new(sim_core::EvcEngine::new()),
                                     ]
                                 } else {
                                     vec![
@@ -115,6 +124,7 @@ pub fn run() {
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
                                         Box::new(sim_core::EnergyTracker::new()),
+                                        Box::new(sim_core::EvcEngine::new()),
                                     ]
                                 };
 
@@ -153,6 +163,7 @@ pub fn run() {
             let modbus_store = register_store;
             let modbus_tx = mb_tx;
             let modbus_batteries = battery_snapshot.clone();
+            let evc = evc_state.clone();
             tauri::async_runtime::spawn(async move {
                 let addr: std::net::SocketAddr = format!("0.0.0.0:{MODBUS_PORT}")
                     .parse()
@@ -163,6 +174,12 @@ pub fn run() {
                         .await
                 {
                     tracing::error!("Modbus server error: {e}");
+                }
+            });
+            // Start EVC standard Modbus TCP server
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = sim_modbus::run_evc_modbus_server(evc).await {
+                    tracing::error!("EVC Modbus server error: {e}");
                 }
             });
 

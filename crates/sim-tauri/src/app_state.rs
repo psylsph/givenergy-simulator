@@ -31,6 +31,8 @@ pub struct AppState {
     pub battery_snapshot: Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
     /// Accumulated time register writes from Modbus (HR 35-40), persists across drain cycles.
     pub pending_time_regs: Arc<std::sync::Mutex<[Option<u16>; 6]>>,
+    /// EVC (Electric Vehicle Charger) state, shared with standard Modbus TCP server.
+    pub evc_state: Arc<tokio::sync::Mutex<sim_models::EvcState>>,
 }
 
 impl Default for AppState {
@@ -47,6 +49,7 @@ impl Default for AppState {
             modbus_cmds: Arc::new(std::sync::Mutex::new(Vec::new())),
             battery_snapshot: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_time_regs: Arc::new(std::sync::Mutex::new([None; 6])),
+            evc_state: Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default())),
         }
     }
 }
@@ -107,6 +110,7 @@ pub struct PlantStateDto {
     pub weather: String,
     pub energy_totals: EnergyTotalsDto,
     pub schedule: ScheduleDto,
+    pub evc: sim_models::EvcState,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -494,6 +498,7 @@ impl From<&PlantState> for PlantStateDto {
             active_faults: state.active_faults.clone(),
             weather: state.weather.clone(),
             schedule: ScheduleDto::from_state(state, None),
+            evc: state.evc.clone(),
             energy_totals: EnergyTotalsDto {
                 grid_import_kwh: state.energy_totals.grid_import_kwh,
                 grid_export_kwh: state.energy_totals.grid_export_kwh,

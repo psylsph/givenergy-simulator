@@ -5,8 +5,8 @@
 
 use crate::app_state::{AppState, PlantStateDto};
 use sim_core::{
-    BatteryEngine, Command, EnergyTracker, InverterEngine, InverterMode, LoadEngine, LoadProfile,
-    ScheduleEngine, SimulationEngine, SolarEngine, WeatherCondition,
+    BatteryEngine, Command, EnergyTracker, EvcEngine, InverterEngine, InverterMode, LoadEngine,
+    LoadProfile, ScheduleEngine, SimulationEngine, SolarEngine, WeatherCondition,
 };
 use sim_models::{BatteryState, DeviceModel};
 use sim_recording::RecordingFrame;
@@ -183,6 +183,7 @@ pub async fn create_plant(
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
+            Box::new(sim_core::EvcEngine::new()),
         ]
     } else {
         vec![
@@ -192,6 +193,7 @@ pub async fn create_plant(
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
+            Box::new(sim_core::EvcEngine::new()),
         ]
     };
 
@@ -432,6 +434,7 @@ pub async fn start_simulation(
     let modbus_cmds = state.modbus_cmds.clone();
     let battery_snapshot = state.battery_snapshot.clone();
     let pending_time_regs = state.pending_time_regs.clone();
+    let evc_arc = state.evc_state.clone();
     let schedule_arc = state.schedule.clone();
     let save_dir = app.path().app_data_dir().ok();
 
@@ -637,6 +640,152 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
+                            // Charge slot 3-10 (HR 246-268, alternating start/end)
+                            if let Some(&v) = sched_updates.get(&246) {
+                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&247) {
+                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&248) {
+                                sched.charge_target_soc_3 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&249) {
+                                sched.charge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&250) {
+                                sched.charge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&251) {
+                                sched.charge_target_soc_4 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&252) {
+                                sched.charge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&253) {
+                                sched.charge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&254) {
+                                sched.charge_target_soc_5 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&255) {
+                                sched.charge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&256) {
+                                sched.charge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&257) {
+                                sched.charge_target_soc_6 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&258) {
+                                sched.charge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&259) {
+                                sched.charge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&260) {
+                                sched.charge_target_soc_7 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&261) {
+                                sched.charge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&262) {
+                                sched.charge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&263) {
+                                sched.charge_target_soc_8 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&264) {
+                                sched.charge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&265) {
+                                sched.charge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&266) {
+                                sched.charge_target_soc_9 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&267) {
+                                sched.charge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&268) {
+                                sched.charge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&269) {
+                                sched.charge_target_soc_10 = v as f64;
+                            }
+                            // Discharge slot 3-10 (HR 276-298, alternating start/end)
+                            if let Some(&v) = sched_updates.get(&276) {
+                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&277) {
+                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&278) {
+                                sched.discharge_target_soc_3 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&279) {
+                                sched.discharge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&280) {
+                                sched.discharge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&281) {
+                                sched.discharge_target_soc_4 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&282) {
+                                sched.discharge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&283) {
+                                sched.discharge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&284) {
+                                sched.discharge_target_soc_5 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&285) {
+                                sched.discharge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&286) {
+                                sched.discharge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&287) {
+                                sched.discharge_target_soc_6 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&288) {
+                                sched.discharge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&289) {
+                                sched.discharge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&290) {
+                                sched.discharge_target_soc_7 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&291) {
+                                sched.discharge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&292) {
+                                sched.discharge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&293) {
+                                sched.discharge_target_soc_8 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&294) {
+                                sched.discharge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&295) {
+                                sched.discharge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&296) {
+                                sched.discharge_target_soc_9 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&297) {
+                                sched.discharge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&298) {
+                                sched.discharge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&299) {
+                                sched.discharge_target_soc_10 = v as f64;
+                            }
                             // EMS discharge slots 1-3 (HR 2044-2052)
                             if let Some(&v) = sched_updates.get(&2044) {
                                 sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
@@ -756,6 +905,15 @@ pub async fn start_simulation(
                             e.enqueue(Command::SetSchedule(sched));
                         }
 
+                        // Sync EVC state from Modbus writes before tick
+                        {
+                            let evc_guard = evc_arc.lock().await;
+                            e.state.evc.charge_control = evc_guard.charge_control;
+                            e.state.evc.charge_current_setting = evc_guard.charge_current_setting;
+                            e.state.evc.charging_mode = evc_guard.charging_mode;
+                            e.state.evc.enabled = evc_guard.enabled;
+                            e.state.evc.cable_status = evc_guard.cable_status;
+                        }
                         e.tick();
                         {
                             let mut rs = register_store.lock().await;
@@ -769,6 +927,11 @@ pub async fn start_simulation(
                         {
                             let mut bs = battery_snapshot.lock().await;
                             *bs = e.state.batteries.clone();
+                        }
+                        // Sync EVC state for Modbus reads/writes
+                        {
+                            let mut evc = evc_arc.lock().await;
+                            *evc = e.state.evc.clone();
                         }
                         let frame = RecordingFrame {
                             timestamp: e.state.timestamp,
@@ -944,6 +1107,152 @@ pub async fn start_simulation(
                             if let Some(&v) = sched_updates.get(&275) {
                                 sched.discharge_target_soc_2 = v as f64;
                             }
+                            // Charge slot 3-10 (HR 246-268, alternating start/end)
+                            if let Some(&v) = sched_updates.get(&246) {
+                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&247) {
+                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&248) {
+                                sched.charge_target_soc_3 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&249) {
+                                sched.charge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&250) {
+                                sched.charge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&251) {
+                                sched.charge_target_soc_4 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&252) {
+                                sched.charge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&253) {
+                                sched.charge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&254) {
+                                sched.charge_target_soc_5 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&255) {
+                                sched.charge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&256) {
+                                sched.charge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&257) {
+                                sched.charge_target_soc_6 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&258) {
+                                sched.charge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&259) {
+                                sched.charge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&260) {
+                                sched.charge_target_soc_7 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&261) {
+                                sched.charge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&262) {
+                                sched.charge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&263) {
+                                sched.charge_target_soc_8 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&264) {
+                                sched.charge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&265) {
+                                sched.charge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&266) {
+                                sched.charge_target_soc_9 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&267) {
+                                sched.charge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&268) {
+                                sched.charge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&269) {
+                                sched.charge_target_soc_10 = v as f64;
+                            }
+                            // Discharge slot 3-10 (HR 276-298, alternating start/end)
+                            if let Some(&v) = sched_updates.get(&276) {
+                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&277) {
+                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&278) {
+                                sched.discharge_target_soc_3 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&279) {
+                                sched.discharge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&280) {
+                                sched.discharge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&281) {
+                                sched.discharge_target_soc_4 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&282) {
+                                sched.discharge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&283) {
+                                sched.discharge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&284) {
+                                sched.discharge_target_soc_5 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&285) {
+                                sched.discharge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&286) {
+                                sched.discharge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&287) {
+                                sched.discharge_target_soc_6 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&288) {
+                                sched.discharge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&289) {
+                                sched.discharge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&290) {
+                                sched.discharge_target_soc_7 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&291) {
+                                sched.discharge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&292) {
+                                sched.discharge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&293) {
+                                sched.discharge_target_soc_8 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&294) {
+                                sched.discharge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&295) {
+                                sched.discharge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&296) {
+                                sched.discharge_target_soc_9 = v as f64;
+                            }
+                            if let Some(&v) = sched_updates.get(&297) {
+                                sched.discharge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&298) {
+                                sched.discharge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
+                            }
+                            if let Some(&v) = sched_updates.get(&299) {
+                                sched.discharge_target_soc_10 = v as f64;
+                            }
                             // EMS discharge slots 1-3 (HR 2044-2052)
                             if let Some(&v) = sched_updates.get(&2044) {
                                 sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
@@ -1063,6 +1372,15 @@ pub async fn start_simulation(
                             e.enqueue(Command::SetSchedule(sched));
                         }
 
+                        // Sync EVC state from Modbus writes before tick
+                        {
+                            let evc_guard = evc_arc.lock().await;
+                            e.state.evc.charge_control = evc_guard.charge_control;
+                            e.state.evc.charge_current_setting = evc_guard.charge_current_setting;
+                            e.state.evc.charging_mode = evc_guard.charging_mode;
+                            e.state.evc.enabled = evc_guard.enabled;
+                            e.state.evc.cable_status = evc_guard.cable_status;
+                        }
                         e.tick();
                         {
                             let mut rs = register_store.lock().await;
@@ -1076,6 +1394,11 @@ pub async fn start_simulation(
                         {
                             let mut bs = battery_snapshot.lock().await;
                             *bs = e.state.batteries.clone();
+                        }
+                        // Sync EVC state for Modbus reads/writes
+                        {
+                            let mut evc = evc_arc.lock().await;
+                            *evc = e.state.evc.clone();
                         }
                         let frame = RecordingFrame {
                             timestamp: e.state.timestamp,
@@ -1570,6 +1893,7 @@ pub async fn load_plant(
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
+            Box::new(EvcEngine::new()),
         ]
     } else {
         vec![
@@ -1579,6 +1903,7 @@ pub async fn load_plant(
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
+            Box::new(EvcEngine::new()),
         ]
     };
 
@@ -1593,4 +1918,101 @@ pub async fn load_plant(
 
     let _ = app.emit("state_changed", &dto);
     Ok(dto)
+}
+
+// ---------------------------------------------------------------------------
+// EVC (Electric Vehicle Charger) commands
+// ---------------------------------------------------------------------------
+
+/// Toggle the EVC on/off. When off, the charger draws no power regardless
+/// of cable state or charge_control.
+#[tauri::command]
+pub async fn set_evc_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.enabled = enabled;
+    }
+    // Also propagate to the engine's PlantState so the next tick reflects it
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.enabled = enabled;
+    }
+    Ok(())
+}
+
+/// Set charge_control register (0=Ready, 1=Start, 2=Stop).
+#[tauri::command]
+pub async fn set_evc_charge_control(state: State<'_, AppState>, mode: u16) -> Result<(), String> {
+    let mode = mode.min(2);
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.charge_control = mode;
+    }
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.charge_control = mode;
+    }
+    Ok(())
+}
+
+/// Set the max charge current (Amps). Clamped to 6-32 A (typical EV range).
+#[tauri::command]
+pub async fn set_evc_charge_current(state: State<'_, AppState>, amps: u16) -> Result<(), String> {
+    let amps = amps.clamp(6, 32);
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.charge_current_setting = amps;
+    }
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.charge_current_setting = amps;
+    }
+    Ok(())
+}
+
+/// Set charging mode (0=Grid, 1=Hybrid, 2=Solar-only).
+#[tauri::command]
+pub async fn set_evc_charging_mode(state: State<'_, AppState>, mode: u16) -> Result<(), String> {
+    let mode = mode.min(2);
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.charging_mode = mode;
+    }
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.charging_mode = mode;
+    }
+    Ok(())
+}
+
+/// Simulate plugging / unplugging the charging cable.
+#[tauri::command]
+pub async fn set_evc_cable_status(state: State<'_, AppState>, status: u16) -> Result<(), String> {
+    let status = status.min(1);
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.cable_status = status;
+        if status == 1 && evc.charging_state == 1 {
+            // Cable plugged → move from Idle (1) to Connected (2)
+            evc.charging_state = 2;
+        } else if status == 0 {
+            // Cable unplugged → back to Idle, reset power
+            evc.charging_state = 1;
+            evc.active_power_w = 0.0;
+            evc.current_l1 = 0.0;
+            evc.current_l2 = 0.0;
+            evc.current_l3 = 0.0;
+        }
+    }
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.cable_status = status;
+    }
+    Ok(())
+}
+
+/// Return current EVC state for the frontend.
+#[tauri::command]
+pub async fn get_evc_state(state: State<'_, AppState>) -> Result<sim_models::EvcState, String> {
+    Ok(state.evc_state.lock().await.clone())
 }

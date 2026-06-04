@@ -492,3 +492,186 @@ pub async fn run_modbus_server(
         });
     }
 }
+
+// ---------------------------------------------------------------------------
+// Standard Modbus TCP server for GivEVC (Electric Vehicle Charger)
+// ---------------------------------------------------------------------------
+// The EVC uses STANDARD Modbus TCP (NOT the proprietary GivEnergy framing).
+// It serves HR 0-119 on a separate port (default 8898).
+
+const EVC_PORT: u16 = 8898;
+
+fn evc_state_to_registers(evc: &sim_models::EvcState) -> Vec<u16> {
+    let mut regs = vec![0u16; 120];
+    regs[0] = evc.charging_state;
+    regs[2] = evc.cable_status;
+    regs[4] = evc.error_code;
+    regs[6] = (evc.current_l1 * 100.0) as u16;
+    regs[8] = (evc.current_l2 * 100.0) as u16;
+    regs[10] = (evc.current_l3 * 100.0) as u16;
+    regs[13] = evc.active_power_w as u16;
+    regs[17] = (evc.active_power_w as u16).min(evc.charge_current_setting.saturating_mul(230));
+    regs[20] = 0;
+    regs[24] = 0;
+    regs[91] = evc.charge_current_setting;
+    regs[93] = evc.charge_control;
+    regs[95] = evc.charging_mode;
+    regs
+}
+
+fn registers_to_evc(_regs: &[u16], addr: u16, value: u16, evc: &mut sim_models::EvcState) {
+    match addr {
+        91 => evc.charge_current_setting = value.clamp(6, 32),
+        93 => evc.charge_control = value.min(2),
+        95 => evc.charging_mode = value.min(2),
+        _ => {}
+    }
+}
+
+/// Run a standard Modbus TCP server for the EVC.
+pub async fn run_evc_modbus_server(
+    evc_state: std::sync::Arc<tokio::sync::Mutex<sim_models::EvcState>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let addr: std::net::SocketAddr = format!("0.0.0.0:{EVC_PORT}").parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("EVC Modbus TCP server (standard) listening on {addr}");
+
+    loop {
+        let (mut stream, peer) = listener.accept().await?;
+        let evc = evc_state.clone();
+        tracing::info!("EVC client connected from {peer}");
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = match stream.read(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(_) => return,
+                };
+
+                if n < 8 {
+                    continue;
+                }
+
+                let trans_id = u16::from_be_bytes([buf[0], buf[1]]);
+                let proto_id = u16::from_be_bytes([buf[2], buf[3]]);
+                let _len = u16::from_be_bytes([buf[4], buf[5]]);
+                let unit_id = buf[6];
+                let func = buf[7];
+
+                if proto_id != 0 {
+                    continue; // Not Modbus TCP
+                }
+
+                match func {
+                    0x03 => {
+                        // Read Holding Registers
+                        if n < 12 {
+                            continue;
+                        }
+                        let start = u16::from_be_bytes([buf[8], buf[9]]);
+                        let count = u16::from_be_bytes([buf[10], buf[11]]);
+                        if count == 0 || count > 120 || start + count > 120 {
+                            let resp = build_evc_error(trans_id, unit_id, func, 0x02);
+                            let _ = stream.write_all(&resp).await;
+                            continue;
+                        }
+                        let guard = evc.lock().await;
+                        let regs = evc_state_to_registers(&guard);
+                        drop(guard);
+                        let byte_count = (count * 2) as u8;
+                        let mut resp = Vec::with_capacity(9 + count as usize * 2);
+                        resp.extend_from_slice(&trans_id.to_be_bytes());
+                        resp.extend_from_slice(&0x0000u16.to_be_bytes());
+                        let payload_len = 2 + count as usize * 2;
+                        resp.extend_from_slice(&(payload_len as u16).to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(func);
+                        resp.push(byte_count);
+                        for i in start..start + count {
+                            resp.extend_from_slice(&regs[i as usize].to_be_bytes());
+                        }
+                        let _ = stream.write_all(&resp).await;
+                    }
+                    0x06 => {
+                        // Write Single Register
+                        if n < 12 {
+                            continue;
+                        }
+                        let addr_r = u16::from_be_bytes([buf[8], buf[9]]);
+                        let value = u16::from_be_bytes([buf[10], buf[11]]);
+                        if addr_r >= 120 {
+                            let resp = build_evc_error(trans_id, unit_id, func, 0x02);
+                            let _ = stream.write_all(&resp).await;
+                            continue;
+                        }
+                        {
+                            let mut guard = evc.lock().await;
+                            registers_to_evc(&[], addr_r, value, &mut guard);
+                        }
+                        // Echo response
+                        let mut resp = Vec::with_capacity(12);
+                        resp.extend_from_slice(&trans_id.to_be_bytes());
+                        resp.extend_from_slice(&0x0000u16.to_be_bytes());
+                        resp.extend_from_slice(&0x0006u16.to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(func);
+                        resp.extend_from_slice(&addr_r.to_be_bytes());
+                        resp.extend_from_slice(&value.to_be_bytes());
+                        let _ = stream.write_all(&resp).await;
+                        tracing::info!("EVC write: addr={addr_r}, value={value}");
+                    }
+                    0x10 => {
+                        // Write Multiple Registers
+                        if n < 13 {
+                            continue;
+                        }
+                        let addr_r = u16::from_be_bytes([buf[8], buf[9]]);
+                        let count = u16::from_be_bytes([buf[10], buf[11]]);
+                        if count == 0 || addr_r + count > 120 {
+                            let resp = build_evc_error(trans_id, unit_id, func, 0x02);
+                            let _ = stream.write_all(&resp).await;
+                            continue;
+                        }
+                        {
+                            let mut guard = evc.lock().await;
+                            for i in 0..count as usize {
+                                let idx = 13 + i * 2;
+                                if idx + 1 < n {
+                                    let v = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
+                                    registers_to_evc(&[], addr_r + i as u16, v, &mut guard);
+                                }
+                            }
+                        }
+                        let mut resp = Vec::with_capacity(12);
+                        resp.extend_from_slice(&trans_id.to_be_bytes());
+                        resp.extend_from_slice(&0x0000u16.to_be_bytes());
+                        resp.extend_from_slice(&0x0006u16.to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(func);
+                        resp.extend_from_slice(&addr_r.to_be_bytes());
+                        resp.extend_from_slice(&count.to_be_bytes());
+                        let _ = stream.write_all(&resp).await;
+                        tracing::info!("EVC multi-write: addr={addr_r}, count={count}");
+                    }
+                    _ => {
+                        let resp = build_evc_error(trans_id, unit_id, func, 0x01);
+                        let _ = stream.write_all(&resp).await;
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn build_evc_error(trans_id: u16, unit_id: u8, func: u8, code: u8) -> Vec<u8> {
+    let mut resp = Vec::with_capacity(9);
+    resp.extend_from_slice(&trans_id.to_be_bytes());
+    resp.extend_from_slice(&0x0000u16.to_be_bytes());
+    resp.extend_from_slice(&0x0003u16.to_be_bytes());
+    resp.push(unit_id);
+    resp.push(func | 0x80);
+    resp.push(code);
+    resp
+}

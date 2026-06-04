@@ -406,6 +406,9 @@ pub struct PlantState {
     pub weather: String,
     /// Cumulative energy totals.
     pub energy_totals: EnergyTotals,
+    /// GivEVC (Electric Vehicle Charger) simulation state.
+    #[serde(default)]
+    pub evc: EvcState,
     /// Static plant configuration.
     pub config: PlantConfig,
     /// Manual override for solar generation (watts). None = use engine.
@@ -505,6 +508,7 @@ impl PlantState {
             enable_eps: false,
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
+            evc: EvcState::default(),
         }
     }
 
@@ -542,6 +546,7 @@ impl PlantState {
             enable_eps: false,
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
+            evc: EvcState::default(),
         }
     }
 
@@ -756,6 +761,47 @@ impl From<&PlantState> for MeterState {
             frequency: 50.0,
             e_import_active: state.energy_totals.grid_import_kwh,
             e_export_active: state.energy_totals.grid_export_kwh,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EvcState — GivEnergy Electric Vehicle Charger
+// ---------------------------------------------------------------------------
+
+/// State of a GivEVC (Electric Vehicle Charger) wallbox.
+/// Communicates via STANDARD Modbus TCP (not proprietary GivEnergy framing).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvcState {
+    pub enabled: bool,
+    pub charging_state: u16,
+    pub cable_status: u16,
+    pub error_code: u16,
+    pub active_power_w: f64,
+    pub current_l1: f64,
+    pub current_l2: f64,
+    pub current_l3: f64,
+    pub charge_current_setting: u16,
+    pub charge_control: u16,
+    pub charging_mode: u16,
+    pub energy_kwh: f64,
+}
+
+impl Default for EvcState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            charging_state: 1,
+            cable_status: 0,
+            error_code: 0,
+            active_power_w: 0.0,
+            current_l1: 0.0,
+            current_l2: 0.0,
+            current_l3: 0.0,
+            charge_current_setting: 16,
+            charge_control: 0,
+            charging_mode: 0,
+            energy_kwh: 0.0,
         }
     }
 }
