@@ -1013,12 +1013,32 @@
             // Schedule display — all slots
       const sch = s.schedule || {};
       const hhmm = (v) => v === 60 || v === undefined ? '—' : String(v).padStart(4, '0').replace(/^(\d{2})(\d{2})$/, '$1:$2');
-      const slotHtml = (title, start, end, enabled, targetLabel, target) => {
+      // Per-slot state:
+      //   ● active    = window configured (start !== end)
+      //   ⚡ always   = enable_charge/discharge flag set with NO window (slot 1 only)
+      //   ◯ idle      = no window, no flag (slot 2+ or disabled slot 1)
+      const slotHtml = (title, start, end, alwaysOn, targetLabel, target, accent) => {
         const targetText = target !== undefined && target !== null ? ` ${targetLabel}${target.toFixed(0)}%` : '';
-        return `<div style="border:1px solid var(--border);border-radius:6px;padding:6px">
+        const windowConfigured = start !== end;
+        const isDisabledHHMM = start === 60 && end === 60; // HHMM sentinel for "disabled"
+        let stateLabel, stateColor;
+        if (windowConfigured) {
+          stateLabel = '● Active';
+          stateColor = accent || 'var(--green)';
+        } else if (alwaysOn) {
+          stateLabel = '⚡ Always';
+          stateColor = 'var(--yellow)';
+        } else {
+          stateLabel = '◯ Idle';
+          stateColor = 'var(--text-muted)';
+        }
+        const opacity = (isDisabledHHMM && !alwaysOn) ? '0.5' : '1';
+        const borderAccent = accent ? `border-left:3px solid ${accent};` : '';
+        const timeLabel = isDisabledHHMM ? '—' : `${hhmm(start)}–${hhmm(end)}`;
+        return `<div style="border:1px solid var(--border);${borderAccent}border-radius:6px;padding:6px;opacity:${opacity}">
           <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">${title}</div>
-          <div style="font-size:13px;font-weight:600">${hhmm(start)}–${hhmm(end)}</div>
-          <div style="font-size:10px;color:${enabled ? 'var(--green)' : 'var(--text-muted)'}">${enabled ? '✅ On' : '⛔ Off'}</div>
+          <div style="font-size:13px;font-weight:600">${timeLabel}</div>
+          <div style="font-size:10px;color:${stateColor}">${stateLabel}</div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${targetText}</div>
         </div>`;
       };
@@ -1085,11 +1105,11 @@
         </div>`;
       el('schedule-display').innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(${acCols},1fr);gap:8px;margin-top:6px">
-          ${slotHtml('Charge Slot 1', sch.charge_slot_1_start, sch.charge_slot_1_end, sch.enable_charge, '→ ', sch.charge_target_soc)}
-          ${isAcCoupled ? '' : slotHtml('Charge Slot 2', sch.charge_slot_2_start, sch.charge_slot_2_end, sch.enable_charge, '→ ', sch.charge_target_soc_2)}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc)}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc_2)}
-          ${isAcCoupled ? '' : slotHtml('Pause Slot', sch.pause_slot_start, sch.pause_slot_end, sch.battery_pause_mode !== 0, '', null)}
+          ${slotHtml('Charge Slot 1',    sch.charge_slot_1_start,    sch.charge_slot_1_end,    sch.enable_charge,    '→ ', sch.charge_target_soc,    'var(--green)')}
+          ${isAcCoupled ? '' : slotHtml('Charge Slot 2',    sch.charge_slot_2_start,    sch.charge_slot_2_end,    false,                 '→ ', sch.charge_target_soc_2,  'var(--green)')}
+          ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc, 'var(--orange)')}
+          ${isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, false,                 '↓ ', sch.discharge_target_soc_2,'var(--orange)')}
+          ${isAcCoupled ? '' : slotHtml('Pause Slot',       sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
             <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
             <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
