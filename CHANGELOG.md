@@ -6,49 +6,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.11.2] - 2026-06-04
+## [0.12.0] - 2026-06-04
+
+This release closes several gaps in the inverter identification protocol,
+adds full DSP firmware reporting, polishes the schedule UI for the
+10-slot EXTENDED_SLOTS inverters, and rounds out the GivEVC simulator
+that shipped in 0.11.0.
 
 ### Added
+
+#### Inverter identification & firmware
+- **Gen2Hybrid** inverter type — DTC 0x2001 with ARM firmware 852
+  (century 8), 5000W AC / 3600W battery limit. Matches the reference
+  refinement logic in `givenergy-modbus` / `giv_tcp`.
 - **DSP firmware reporting** (HR 19)
-  - New `InverterState.dsp_firmware_version` field (serde-defaulted for
-    backward compatibility)
-  - Per-inverter-type defaults: Gen1=110, Gen2=230, Gen3=449, Plus=510,
-    AC=305, ThreePhase=612, AIO=1010
+  - `InverterState.dsp_firmware_version` field (serde-defaulted for
+    backward compatibility with existing save files)
   - Catalogue entry for HR 19 (read-only Holding register)
   - Live projection from `state.inverter.dsp_firmware_version`
+  - Per-inverter-type defaults: Gen1=110, Gen2=230, Gen3=449, Plus=510,
+    AC=305, ThreePhase=612, AIO=1010
 - **ARM firmware runtime override** (HR 21)
-  - `set_arm_firmware(version)` Tauri command
   - `InverterState.arm_firmware_version` (0 = use type default)
-  - When non-zero, takes precedence over the per-type century default
-- **DSP firmware runtime override**
-  - `set_dsp_firmware(version)` Tauri command
+  - When non-zero, takes precedence over the per-type century default,
+    letting you flip Gen1/Gen2/Gen3 identification against the shared
+    0x2001 family DTC at runtime
+- **Runtime DSP firmware override** via `set_dsp_firmware(version)`
+- **Runtime ARM firmware override** via `set_arm_firmware(version)`
 - Firmware info shown live in the GUI 'Limits & Control' card with
   ARM century hint (e.g. "ARM FW: 352 (century 3)")
 - Firmware override inputs in the sidebar (ARM FW / DSP FW + Set buttons)
 
+#### Schedule display
+- All 10 charge + discharge slots now rendered inline for inverters that
+  support EXTENDED_SLOTS (Gen3Hybrid, Gen2Hybrid, Plus, AllInOne, AIO,
+  Polar, ThreePhase). Gen1Hybrid and AC-coupled still show 2 slots only.
+- Slots 3–10 rendered as color-coded mini-cards with green (charge) /
+  orange (discharge) left borders, grouped under labelled headers in a
+  4-column grid
+- Disabled slots (HHMM 60/60 sentinel) rendered at 35% opacity with an
+  empty dot (◯); active slots get a filled dot (●) at full opacity
+- Legend in section header: "◯ disabled  ● active"
+- Global `enable_charge` / `enable_discharge` flags surfaced as coloured
+  badges in the Limits & Control card instead of being incorrectly shown
+  as "enabled" on every slot card
+
+### Changed
+
+#### 0x2001 is now a family code (was Gen3-specific)
+Per upstream `givenergy-modbus` / `giv_tcp`, the actual generation is
+decided by `HR(21) / 100` (the "century"):
+
+| Century (HR(21)/100) | Detected as |
+|---|---|
+| 2 (200-299) | Gen1Hybrid |
+| 3 (300-399) | Gen3Hybrid |
+| 4-7 | Gen1Hybrid (default) |
+| 8-9 (800-999) | Gen2Hybrid |
+
+- Gen1Hybrid (was 0x1001) → 0x2001 with arm_fw 252 (century 2)
+- Gen2Hybrid (new) → 0x2001 with arm_fw 852 (century 8)
+- Gen3Hybrid → 0x2001 with arm_fw 352 (century 3)
+- Gen3 Plus variants → arm_fw 452 (century 4)
+
+Frontend dropdown labels updated to show the FW century, e.g.
+"Gen 2 Hybrid (0x2001, FW 8xx)".
+
+#### Schedule card per-slot state
+Slot cards used to share a single `enable_charge` / `enable_discharge`
+flag, so writing any charge slot made BOTH slot 1 and slot 2 display as
+enabled. Each card now derives state purely from its own window
+(● Active / ◯ Idle).
+
+### Fixed
+- Slot 3–10 Modbus write routing — HR 246–269 (charge) and HR 276–299
+  (discharge) writes are now translated into the Schedule struct fields,
+  matching the EXTENDED_SLOTS layout. Previously only the projection was
+  correct; client writes were silently dropped.
+- All three slot maps now align with `givenergy-modbus` upstream:
+  - SINGLE_PHASE: charge (94,95),(31,32); discharge (56,57),(44,45)
+  - EXTENDED: adds (246,247)...(267,268) and (276,277)...(297,298)
+  - THREE_PHASE: slots 1–2 at HR 1113–1121, slots 3–10 reuse EXTENDED
+
 ### Tests
+- `slot_3_triggers_charge_during_window`
+- `slot_10_triggers_discharge_during_window`
+- `gen2_hybrid_shares_family_dtc_but_reports_century_8_firmware`
 - `dsp_firmware_projects_from_inverter_state`
 - `arm_firmware_override_takes_precedence_over_type_default`
 - `arm_firmware_falls_back_to_type_default_when_zero`
-- Total: 223 (was 220)
-
-## [0.11.1] - 2026-06-04
-
-### Added
-- **Gen2Hybrid** inverter type (DTC 0x2001, arm_fw 852 → century 8)
-  - Dropdown entry: "Gen 2 Hybrid (0x2001, FW 8xx)"
-  - 5000W AC max, 3600W battery limit (same DC limit as Gen3)
-  - `gen2_hybrid_shares_family_dtc_but_reports_century_8_firmware` test
-
-### Changed
-- **0x2001 is now treated as a family code**, not a Gen3-specific DTC,
-  matching upstream `givenergy-modbus` / `giv_tcp`:
-  - Gen1Hybrid (was 0x1001) → 0x2001 with arm_fw 252 (century 2)
-  - Gen2Hybrid (new) → 0x2001 with arm_fw 852 (century 8)
-  - Gen3Hybrid → 0x2001 with arm_fw 352 (century 3)
-  - Plus variants → arm_fw 452 (century 4)
-- Frontend dropdown labels updated to show FW century: "(0x2001, FW 2xx)"
-- AGENTS.md inverter table extended with ARM FW column
+- Total: **223 tests** (was 217)
 
 ## [0.11.0] - 2026-06-04
 
