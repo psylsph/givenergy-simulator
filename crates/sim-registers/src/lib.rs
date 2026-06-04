@@ -767,179 +767,129 @@ impl RegisterStore {
     /// AC-coupled inverters (prefix "ACCoupled") skip discharge slot projection.
     pub fn project_schedule_for(&mut self, schedule: &sim_models::Schedule, inverter_type: &str) {
         let is_ac_coupled = inverter_type.starts_with("ACCoupled");
+        // Convert decimal hours to HHMM.
+        // 0.0 → 0 (valid 00:00 midnight). Negative → 60 (disabled).
         let hrs_to_hhmm = |h: f64| -> u16 {
-            if h <= 0.0 {
+            if h < 0.0 {
                 return 60; /* disabled */
             }
             let hours = h.floor() as u16;
             let mins = ((h - hours as f64) * 60.0).round() as u16;
-            if mins > 59 {
+            if mins > 59 || hours > 23 {
                 return 60; /* invalid = disabled */
             }
             hours * 100 + mins
         };
+        // Helper: if start == end the slot is disabled → write 60/60.
+        let slot_pair = |start: f64, end: f64| -> (u16, u16) {
+            if (start - end).abs() < 0.001 {
+                (60, 60)
+            } else {
+                (hrs_to_hhmm(start), hrs_to_hhmm(end))
+            }
+        };
 
         // Charge slot 1 (HR 94-95)
-        let cs1_start = hrs_to_hhmm(schedule.charge_start);
-        let cs1_end = hrs_to_hhmm(schedule.charge_end);
+        let (cs1_start, cs1_end) = slot_pair(schedule.charge_start, schedule.charge_end);
         self.write(94, cs1_start);
         self.write(95, cs1_end);
-        let cs2_start = hrs_to_hhmm(schedule.charge_start_2);
-        let cs2_end = hrs_to_hhmm(schedule.charge_end_2);
+        let (cs2_start, cs2_end) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
         self.write(31, cs2_start);
         self.write(32, cs2_end);
         self.write(243, cs2_start);
         self.write(244, cs2_end);
-        let cs3_s = hrs_to_hhmm(schedule.charge_start_3);
-        let cs3_e = hrs_to_hhmm(schedule.charge_end_3);
+        let (cs3_s, cs3_e) = slot_pair(schedule.charge_start_3, schedule.charge_end_3);
         self.write(246, cs3_s);
         self.write(247, cs3_e);
-        let cs4_s = hrs_to_hhmm(schedule.charge_start_4);
-        let cs4_e = hrs_to_hhmm(schedule.charge_end_4);
+        let (cs4_s, cs4_e) = slot_pair(schedule.charge_start_4, schedule.charge_end_4);
         self.write(249, cs4_s);
         self.write(250, cs4_e);
-        let cs5_s = hrs_to_hhmm(schedule.charge_start_5);
-        let cs5_e = hrs_to_hhmm(schedule.charge_end_5);
+        let (cs5_s, cs5_e) = slot_pair(schedule.charge_start_5, schedule.charge_end_5);
         self.write(252, cs5_s);
         self.write(253, cs5_e);
-        let cs6_s = hrs_to_hhmm(schedule.charge_start_6);
-        let cs6_e = hrs_to_hhmm(schedule.charge_end_6);
+        let (cs6_s, cs6_e) = slot_pair(schedule.charge_start_6, schedule.charge_end_6);
         self.write(255, cs6_s);
         self.write(256, cs6_e);
-        let cs7_s = hrs_to_hhmm(schedule.charge_start_7);
-        let cs7_e = hrs_to_hhmm(schedule.charge_end_7);
+        let (cs7_s, cs7_e) = slot_pair(schedule.charge_start_7, schedule.charge_end_7);
         self.write(258, cs7_s);
         self.write(259, cs7_e);
-        let cs8_s = hrs_to_hhmm(schedule.charge_start_8);
-        let cs8_e = hrs_to_hhmm(schedule.charge_end_8);
+        let (cs8_s, cs8_e) = slot_pair(schedule.charge_start_8, schedule.charge_end_8);
         self.write(261, cs8_s);
         self.write(262, cs8_e);
-        let cs9_s = hrs_to_hhmm(schedule.charge_start_9);
-        let cs9_e = hrs_to_hhmm(schedule.charge_end_9);
+        let (cs9_s, cs9_e) = slot_pair(schedule.charge_start_9, schedule.charge_end_9);
         self.write(264, cs9_s);
         self.write(265, cs9_e);
-        let cs10_s = hrs_to_hhmm(schedule.charge_start_10);
-        let cs10_e = hrs_to_hhmm(schedule.charge_end_10);
+        let (cs10_s, cs10_e) = slot_pair(schedule.charge_start_10, schedule.charge_end_10);
         self.write(267, cs10_s);
         self.write(268, cs10_e);
 
-        let ds1_start = if is_ac_coupled {
-            60
+        let (ds1_start, ds1_end) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start)
-        };
-        let ds1_end = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end)
+            slot_pair(schedule.discharge_start, schedule.discharge_end)
         };
         self.write(56, ds1_start);
         self.write(57, ds1_end);
-        let ds2_start = if is_ac_coupled {
-            60
+        let (ds2_start, ds2_end) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_2)
-        };
-        let ds2_end = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_2)
+            slot_pair(schedule.discharge_start_2, schedule.discharge_end_2)
         };
         self.write(44, ds2_start);
         self.write(45, ds2_end);
-        let ds3_s = if is_ac_coupled {
-            60
+        let (ds3_s, ds3_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_3)
-        };
-        let ds3_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_3)
+            slot_pair(schedule.discharge_start_3, schedule.discharge_end_3)
         };
         self.write(276, ds3_s);
         self.write(277, ds3_e);
-        let ds4_s = if is_ac_coupled {
-            60
+        let (ds4_s, ds4_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_4)
-        };
-        let ds4_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_4)
+            slot_pair(schedule.discharge_start_4, schedule.discharge_end_4)
         };
         self.write(279, ds4_s);
         self.write(280, ds4_e);
-        let ds5_s = if is_ac_coupled {
-            60
+        let (ds5_s, ds5_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_5)
-        };
-        let ds5_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_5)
+            slot_pair(schedule.discharge_start_5, schedule.discharge_end_5)
         };
         self.write(282, ds5_s);
         self.write(283, ds5_e);
-        let ds6_s = if is_ac_coupled {
-            60
+        let (ds6_s, ds6_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_6)
-        };
-        let ds6_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_6)
+            slot_pair(schedule.discharge_start_6, schedule.discharge_end_6)
         };
         self.write(285, ds6_s);
         self.write(286, ds6_e);
-        let ds7_s = if is_ac_coupled {
-            60
+        let (ds7_s, ds7_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_7)
-        };
-        let ds7_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_7)
+            slot_pair(schedule.discharge_start_7, schedule.discharge_end_7)
         };
         self.write(288, ds7_s);
         self.write(289, ds7_e);
-        let ds8_s = if is_ac_coupled {
-            60
+        let (ds8_s, ds8_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_8)
-        };
-        let ds8_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_8)
+            slot_pair(schedule.discharge_start_8, schedule.discharge_end_8)
         };
         self.write(291, ds8_s);
         self.write(292, ds8_e);
-        let ds9_s = if is_ac_coupled {
-            60
+        let (ds9_s, ds9_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_9)
-        };
-        let ds9_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_9)
+            slot_pair(schedule.discharge_start_9, schedule.discharge_end_9)
         };
         self.write(294, ds9_s);
         self.write(295, ds9_e);
-        let ds10_s = if is_ac_coupled {
-            60
+        let (ds10_s, ds10_e) = if is_ac_coupled {
+            (60, 60)
         } else {
-            hrs_to_hhmm(schedule.discharge_start_10)
-        };
-        let ds10_e = if is_ac_coupled {
-            60
-        } else {
-            hrs_to_hhmm(schedule.discharge_end_10)
+            slot_pair(schedule.discharge_start_10, schedule.discharge_end_10)
         };
         self.write(297, ds10_s);
         self.write(298, ds10_e);
@@ -1089,18 +1039,15 @@ impl RegisterStore {
         self.write(1109, reserve);
 
         // Export schedule slots (HR 2062-2071)
-        let es1_s = hrs_to_hhmm(schedule.export_start_1);
-        let es1_e = hrs_to_hhmm(schedule.export_end_1);
+        let (es1_s, es1_e) = slot_pair(schedule.export_start_1, schedule.export_end_1);
         self.write(2062, es1_s);
         self.write(2063, es1_e);
         self.write(2064, schedule.export_target_soc_1 as u16);
-        let es2_s = hrs_to_hhmm(schedule.export_start_2);
-        let es2_e = hrs_to_hhmm(schedule.export_end_2);
+        let (es2_s, es2_e) = slot_pair(schedule.export_start_2, schedule.export_end_2);
         self.write(2065, es2_s);
         self.write(2066, es2_e);
         self.write(2067, schedule.export_target_soc_2 as u16);
-        let es3_s = hrs_to_hhmm(schedule.export_start_3);
-        let es3_e = hrs_to_hhmm(schedule.export_end_3);
+        let (es3_s, es3_e) = slot_pair(schedule.export_start_3, schedule.export_end_3);
         self.write(2068, es3_s);
         self.write(2069, es3_e);
         self.write(2070, schedule.export_target_soc_3 as u16);

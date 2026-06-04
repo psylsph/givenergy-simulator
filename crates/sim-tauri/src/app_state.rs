@@ -134,16 +134,26 @@ impl ScheduleDto {
     fn from_state(state: &PlantState, schedule: Option<&sim_core::Schedule>) -> Self {
         // Convert decimal hours (e.g. 5.5) to HHMM (e.g. 530).
         // 0 or negative = disabled sentinel 60 (matches register projector).
+        // Convert decimal hours to HHMM. 0.0 → 0 (valid 00:00 midnight).
+        // Only used for slots that are confirmed active (start != end).
         let hhmm = |decimal_hours: f64| -> u16 {
-            if decimal_hours <= 0.0 {
+            if decimal_hours < 0.0 {
                 return 60;
             }
             let h = decimal_hours.floor() as u16;
             let m = ((decimal_hours - h as f64) * 60.0).round() as u16;
-            if m > 59 {
+            if m > 59 || h > 23 {
                 return 60;
             }
             h * 100 + m
+        };
+        // Helper: if start == end the slot is disabled → write 60/60.
+        let slot_pair = |start: f64, end: f64| -> (u16, u16) {
+            if (start - end).abs() < 0.001 {
+                (60, 60)
+            } else {
+                (hhmm(start), hhmm(end))
+            }
         };
 
         let (cs, ce, ds, de, cs2, ce2, ds2, de2, ct1, ct2, _dt1, dt2) = match schedule {

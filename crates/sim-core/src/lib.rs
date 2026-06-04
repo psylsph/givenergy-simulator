@@ -1235,20 +1235,45 @@ impl DeviceModel for ScheduleEngine {
             }
         };
 
-        // Enable_charge = always-on: charge whenever SOC < target (no window restriction)
         // The global charge_target_soc is only respected when enable_charge_target is true.
         let global_target = if state.enable_charge_target {
             self.schedule.charge_target_soc
         } else {
             100.0
         };
-        if self.schedule.enable_charge && soc < global_target {
+
+        // Only do always-on charge when NO timed slots are configured.
+        // When slots exist, the slot checks below determine when to charge.
+        let any_charge_slot = self.schedule.charge_start != self.schedule.charge_end
+            || self.schedule.charge_start_2 != self.schedule.charge_end_2
+            || self.schedule.charge_start_3 != self.schedule.charge_end_3
+            || self.schedule.charge_start_4 != self.schedule.charge_end_4
+            || self.schedule.charge_start_5 != self.schedule.charge_end_5
+            || self.schedule.charge_start_6 != self.schedule.charge_end_6
+            || self.schedule.charge_start_7 != self.schedule.charge_end_7
+            || self.schedule.charge_start_8 != self.schedule.charge_end_8
+            || self.schedule.charge_start_9 != self.schedule.charge_end_9
+            || self.schedule.charge_start_10 != self.schedule.charge_end_10;
+        if !any_charge_slot && self.schedule.enable_charge && soc < global_target {
             state.scheduled_charge = true;
             return;
         }
 
-        // Enable_discharge = always-on: discharge whenever SOC > target
-        if self.schedule.enable_discharge && soc > self.schedule.discharge_target_soc {
+        // Same for discharge: always-on only when no slots configured.
+        let any_discharge_slot = self.schedule.discharge_start != self.schedule.discharge_end
+            || self.schedule.discharge_start_2 != self.schedule.discharge_end_2
+            || self.schedule.discharge_start_3 != self.schedule.discharge_end_3
+            || self.schedule.discharge_start_4 != self.schedule.discharge_end_4
+            || self.schedule.discharge_start_5 != self.schedule.discharge_end_5
+            || self.schedule.discharge_start_6 != self.schedule.discharge_end_6
+            || self.schedule.discharge_start_7 != self.schedule.discharge_end_7
+            || self.schedule.discharge_start_8 != self.schedule.discharge_end_8
+            || self.schedule.discharge_start_9 != self.schedule.discharge_end_9
+            || self.schedule.discharge_start_10 != self.schedule.discharge_end_10;
+        if !any_discharge_slot
+            && self.schedule.enable_discharge
+            && soc > self.schedule.discharge_target_soc
+        {
             state.scheduled_discharge = true;
             return;
         }
