@@ -1171,6 +1171,9 @@ pub async fn set_battery_soc(
     // Avoid stale pre-edit power/current making the UI look like it ignored the edit.
     b.power_kw = 0.0;
     b.current_a = 0.0;
+    // Hold the manual SOC for ~200 ticks (~20s at speed=10, ~2s at speed=100)
+    // so the BatteryEngine doesn't immediately start drifting it away.
+    e.state.manual_soc_hold_ticks = 200;
     e.state.sync_battery_from_vec();
 
     let sched_ref = state.schedule.lock().await.clone();

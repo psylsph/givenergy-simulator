@@ -459,6 +459,12 @@ pub struct PlantState {
     /// HR317 enable EPS (Emergency Power Supply) mode.
     #[serde(default)]
     pub enable_eps: bool,
+    /// When `Some(tick_count)`, the BatteryEngine must not change SOC for this many
+    /// remaining ticks. Set by the GUI when the user manually drags the SOC slider.
+    /// Allows the user's value to "stick" for a short wall-clock period before the
+    /// simulation resumes normal battery physics.
+    #[serde(skip)]
+    pub manual_soc_hold_ticks: u64,
 }
 
 impl PlantState {
@@ -493,6 +499,7 @@ impl PlantState {
             enable_rtc: false,
             export_priority: 0,
             enable_eps: false,
+            manual_soc_hold_ticks: 0,
         }
     }
 
@@ -528,6 +535,7 @@ impl PlantState {
             enable_rtc: false,
             export_priority: 0,
             enable_eps: false,
+            manual_soc_hold_ticks: 0,
         }
     }
 

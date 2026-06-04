@@ -1067,12 +1067,16 @@ impl DeviceModel for BatteryEngine {
                 power_kw / b.discharge_efficiency.max(0.01)
             };
 
-            let delta_soc = (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
-
-            b.soc_percent += delta_soc;
-
-            // Clamp to min/max SOC
-            b.soc_percent = b.soc_percent.clamp(b.min_soc, b.max_soc);
+            // If the user just manually set SOC (via GUI slider), hold it for a
+            // configurable number of ticks so the setting visibly "sticks".
+            if state.manual_soc_hold_ticks > 0 {
+                state.manual_soc_hold_ticks -= 1;
+            } else {
+                let delta_soc = (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
+                b.soc_percent += delta_soc;
+                // Clamp to min/max SOC
+                b.soc_percent = b.soc_percent.clamp(b.min_soc, b.max_soc);
+            }
 
             // Thermal model
             // Heat generated = losses (difference between electrical and effective power)
