@@ -1013,28 +1013,21 @@
             // Schedule display — all slots
       const sch = s.schedule || {};
       const hhmm = (v) => v === 60 || v === undefined ? '—' : String(v).padStart(4, '0').replace(/^(\d{2})(\d{2})$/, '$1:$2');
-      // Per-slot state:
-      //   ● active    = window configured (start !== end)
-      //   ⚡ always   = enable_charge/discharge flag set with NO window (slot 1 only)
-      //   ◯ idle      = no window, no flag (slot 2+ or disabled slot 1)
-      const slotHtml = (title, start, end, alwaysOn, targetLabel, target, accent) => {
+      // Per-slot state is derived purely from the window:
+      //   ● Active  = window configured (start !== end)
+      //   ◯ Idle    = no window (HHMM disabled sentinel 60/60, or default 0/0)
+      // The global enable_charge/enable_discharge flags are surfaced as
+      // separate badges in the "Limits & Control" card — they're not
+      // properties of any one slot.
+      const slotHtml = (title, start, end, _ignored, targetLabel, target, accent) => {
         const targetText = target !== undefined && target !== null ? ` ${targetLabel}${target.toFixed(0)}%` : '';
         const windowConfigured = start !== end;
-        const isDisabledHHMM = start === 60 && end === 60; // HHMM sentinel for "disabled"
-        let stateLabel, stateColor;
-        if (windowConfigured) {
-          stateLabel = '● Active';
-          stateColor = accent || 'var(--green)';
-        } else if (alwaysOn) {
-          stateLabel = '⚡ Always';
-          stateColor = 'var(--yellow)';
-        } else {
-          stateLabel = '◯ Idle';
-          stateColor = 'var(--text-muted)';
-        }
-        const opacity = (isDisabledHHMM && !alwaysOn) ? '0.5' : '1';
+        const isDisabledHHMM = start === 60 && end === 60;
+        const stateLabel = windowConfigured ? '● Active' : '◯ Idle';
+        const stateColor = windowConfigured ? (accent || 'var(--green)') : 'var(--text-muted)';
+        const opacity = windowConfigured ? '1' : (isDisabledHHMM ? '0.5' : '0.7');
         const borderAccent = accent ? `border-left:3px solid ${accent};` : '';
-        const timeLabel = isDisabledHHMM ? '—' : `${hhmm(start)}–${hhmm(end)}`;
+        const timeLabel = windowConfigured ? `${hhmm(start)}–${hhmm(end)}` : '—';
         return `<div style="border:1px solid var(--border);${borderAccent}border-radius:6px;padding:6px;opacity:${opacity}">
           <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">${title}</div>
           <div style="font-size:13px;font-weight:600">${timeLabel}</div>
@@ -1113,7 +1106,11 @@
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
             <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
             <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Mode: ${s.battery_mode || '—'}</div>
+            <div style="font-size:10px;margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">
+              <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_charge ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_charge ? 'var(--green)' : 'var(--text-muted)'}">⚡ Chg ${sch.enable_charge ? 'ON' : 'OFF'}</span>
+              ${isAcCoupled ? '' : `<span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>`}
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Mode: ${s.battery_mode || '—'}</div>
           </div>
         </div>
         ${extendedChips}
