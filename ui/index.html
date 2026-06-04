@@ -1026,23 +1026,20 @@
         return `<span style="font-size:10px;border:1px solid var(--border);border-radius:4px;padding:2px 5px;white-space:nowrap">${title} ${hhmm(start)}–${hhmm(end)} ${target.toFixed(0)}%</span>`;
       };
       const isAcCoupled = s.inverter_type && s.inverter_type.startsWith('ACCoupled');
+      // Per givenergy-modbus slot_map.py:
+      //   SINGLE_PHASE_SLOTS (basic 2-slot): Gen1Hybrid, AC-coupled
+      //   EXTENDED_SLOTS (10-slot): Gen3Hybrid (fw>302), AllInOne, AIO Hybrid,
+      //     HYBRID_HV_GEN3, POLAR, HYBRID_GEN3_PLUS, HYBRID_GEN4
+      //   THREE_PHASE_SLOTS (10-slot, first 2 at HR 1113-1121): ThreePhase
+      const isGen1 = s.inverter_type === 'Gen1Hybrid';
+      const hasExtendedSlots = !isGen1 && !isAcCoupled;
       const acCols = isAcCoupled ? 2 : 6;
-      el('schedule-display').innerHTML = `
-        <div style="display:grid;grid-template-columns:repeat(${acCols},1fr);gap:8px;margin-top:6px">
-          ${slotHtml('Charge Slot 1', sch.charge_slot_1_start, sch.charge_slot_1_end, sch.enable_charge, '→ ', sch.charge_target_soc)}
-          ${isAcCoupled ? '' : slotHtml('Charge Slot 2', sch.charge_slot_2_start, sch.charge_slot_2_end, sch.enable_charge, '→ ', sch.charge_target_soc_2)}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc)}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc_2)}
-          ${isAcCoupled ? '' : slotHtml('Pause Slot', sch.pause_slot_start, sch.pause_slot_end, sch.battery_pause_mode !== 0, '', null)}
-          <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
-            <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
-            <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Mode: ${s.battery_mode || '—'}</div>
-          </div>
-        </div>
-        <details style="margin-top:6px;font-size:11px">
-          <summary style="cursor:pointer;color:var(--text-muted)">Extended Slots (3–10)</summary>
-          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+      // Build the extended-slots chip block (used inline when supported,
+      // or omitted entirely when not).
+      const extendedChips = !hasExtendedSlots ? '' : `
+        <div style="margin-top:6px">
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px">Extended Slots (3–10)</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
             ${slotCompact('Chg 3', sch.charge_slot_3_start, sch.charge_slot_3_end, sch.charge_target_soc_3)}
             ${slotCompact('Chg 4', sch.charge_slot_4_start, sch.charge_slot_4_end, sch.charge_target_soc_4)}
             ${slotCompact('Chg 5', sch.charge_slot_5_start, sch.charge_slot_5_end, sch.charge_target_soc_5)}
@@ -1060,7 +1057,21 @@
             ${slotCompact('Dis 9', sch.discharge_slot_9_start, sch.discharge_slot_9_end, sch.discharge_target_soc_9)}
             ${slotCompact('Dis 10', sch.discharge_slot_10_start, sch.discharge_slot_10_end, sch.discharge_target_soc_10)}
           </div>
-        </details>
+        </div>`;
+      el('schedule-display').innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(${acCols},1fr);gap:8px;margin-top:6px">
+          ${slotHtml('Charge Slot 1', sch.charge_slot_1_start, sch.charge_slot_1_end, sch.enable_charge, '→ ', sch.charge_target_soc)}
+          ${isAcCoupled ? '' : slotHtml('Charge Slot 2', sch.charge_slot_2_start, sch.charge_slot_2_end, sch.enable_charge, '→ ', sch.charge_target_soc_2)}
+          ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc)}
+          ${isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc_2)}
+          ${isAcCoupled ? '' : slotHtml('Pause Slot', sch.pause_slot_start, sch.pause_slot_end, sch.battery_pause_mode !== 0, '', null)}
+          <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
+            <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Mode: ${s.battery_mode || '—'}</div>
+          </div>
+        </div>
+        ${extendedChips}
       `;
 
       // EVC (Electric Vehicle Charger)
