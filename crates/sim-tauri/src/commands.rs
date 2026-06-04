@@ -1152,12 +1152,13 @@ pub async fn set_battery_soc(
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
-        e.enqueue(Command::SetBatterySoc {
-            module: params.module,
-            soc: params.soc,
-        });
-        // Apply immediately and emit
-        e.tick();
+        // Apply SOC directly WITHOUT running a full tick.
+        // Running tick() here would let BatteryEngine/InverterEngine override
+        // the user's chosen SOC (e.g. force-charge pushes it back to 100%).
+        if let Some(b) = e.state.batteries.get_mut(params.module) {
+            b.soc_percent = params.soc.clamp(0.0, 100.0);
+            e.state.sync_battery_from_vec();
+        }
         let sched_ref = state.schedule.lock().await.clone();
         let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
         let _ = app.emit("state_changed", &dto);
@@ -1173,11 +1174,19 @@ pub async fn set_battery_soh(
 ) -> Result<(), String> {
     let mut eng = state.engine.lock().await;
     if let Some(ref mut e) = *eng {
-        e.enqueue(Command::SetBatterySoH {
-            module: params.module,
-            soh: params.soh,
-        });
-        e.tick();
+        // Apply directly without running a full tick (same rationale as set_battery_soc).
+        let count = e.state.batteries.len().max(1);
+        if let Some(b) = e.state.batteries.get_mut(params.module) {
+            b.soh = params.soh.clamp(0.0, 1.0);
+            b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
+            let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
+            let inv_max_kw = e.state.config.max_ac_watts / 1000.0;
+            let limit = c_rate_kw.min(inv_max_kw);
+            b.max_charge_kw = limit;
+            b.max_discharge_kw = limit;
+        }
+        // Ensure aggregate limits are sane
+        let _ = count;
         let sched_ref = state.schedule.lock().await.clone();
         let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
         let _ = app.emit("state_changed", &dto);

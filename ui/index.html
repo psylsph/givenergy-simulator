@@ -694,11 +694,65 @@
     el('battery-count').addEventListener('change', updateBatteryModuleDropdowns);
 
     // ---- Update battery module display in main panel ----
+    let battSliding = false;
+    // Track slider interaction to avoid rebuilding mid-drag
+    el('battery-modules-display').addEventListener('pointerdown', (e) => {
+      if (e.target.classList.contains('batt-soc-slider')) battSliding = true;
+    });
+    el('battery-modules-display').addEventListener('pointerup', () => { battSliding = false; });
+    el('battery-modules-display').addEventListener('pointercancel', () => { battSliding = false; });
+
     function updateBatteryDisplay(batteries) {
       const container = el('battery-modules-display');
       if (!batteries || batteries.length === 0) {
         container.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No battery data</div>';
         return;
+      }
+      // If user is actively dragging a slider, do an in-place update
+      // instead of rebuilding DOM (which would reset the slider).
+      if (battSliding) {
+        batteries.forEach((b, i) => {
+          const socSpan = container.querySelector(`.batt-module-soc[data-batt-idx="${i}"]`);
+          if (socSpan) socSpan.textContent = `${b.soc_percent.toFixed(1)}%`;
+        });
+        return;
+      }
+      // If battery count changed, rebuild. Otherwise, update in place.
+      const existing = container.querySelectorAll('.batt-module');
+      if (existing.length === batteries.length) {
+        batteries.forEach((b, i) => {
+          const module = existing[i];
+          const socColor = b.soc_percent < 20 ? 'var(--red)' : b.soc_percent < 50 ? 'var(--yellow)' : 'var(--green)';
+          const powerLabel = b.power_kw > 0.01 ? 'Charging' : b.power_kw < -0.01 ? 'Discharging' : 'Idle';
+          const powerColor = b.power_kw > 0.01 ? 'var(--accent)' : b.power_kw < -0.01 ? 'var(--orange)' : 'var(--text-muted)';
+          const socSpan = module.querySelector('.batt-module-soc');
+          if (socSpan) {
+            socSpan.style.color = socColor;
+            socSpan.textContent = `${b.soc_percent.toFixed(1)}%`;
+          }
+          const gauge = module.querySelector('.soc-gauge-fill');
+          if (gauge) {
+            gauge.style.width = `${b.soc_percent}%`;
+            gauge.style.background = socColor;
+          }
+          const slider = module.querySelector('.batt-soc-slider');
+          if (slider) slider.value = Math.round(b.soc_percent);
+          const socLabel = module.querySelector('.batt-soc-label');
+          if (socLabel) socLabel.textContent = `${Math.round(b.soc_percent)}%`;
+          // Update text stats (skip slider)
+          const stats = module.querySelectorAll('.batt-stat');
+          if (stats.length >= 6) {
+            stats[0].children[1].textContent = `${powerLabel} ${Math.abs(b.power_kw).toFixed(2)} kW`;
+            stats[0].children[1].style.color = powerColor;
+            stats[1].children[1].textContent = `${b.voltage_v.toFixed(1)} V`;
+            stats[2].children[1].textContent = `${b.current_a.toFixed(1)} A`;
+            stats[3].children[1].textContent = `${b.temperature_celsius.toFixed(1)}°C`;
+            stats[4].children[1].textContent = `${b.capacity_kwh.toFixed(1)} / ${b.nominal_capacity_kwh.toFixed(1)} kWh`;
+            stats[5].children[1].textContent = `${(b.soh * 100).toFixed(0)}%`;
+          }
+        });
+        return;
+      }
       }
       container.innerHTML = batteries.map((b, i) => {
         const socColor = b.soc_percent < 20 ? 'var(--red)' : b.soc_percent < 50 ? 'var(--yellow)' : 'var(--green)';
@@ -707,7 +761,7 @@
         return `<div class="batt-module">
           <div class="batt-module-header">
             <span class="batt-module-title">Module ${i+1}</span>
-            <span class="batt-module-soc" style="color:${socColor}">${b.soc_percent.toFixed(1)}%</span>
+            <span class="batt-module-soc" data-batt-idx="${i}" style="color:${socColor}">${b.soc_percent.toFixed(1)}%</span>
           </div>
           <div class="soc-gauge"><div class="soc-gauge-fill" style="width:${b.soc_percent}%;background:${socColor}"></div></div>
           <div class="batt-stat" style="gap:4px">
