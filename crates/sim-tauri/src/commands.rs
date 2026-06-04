@@ -1153,7 +1153,7 @@ pub async fn set_battery_soc(
     app: AppHandle,
     state: State<'_, AppState>,
     params: SetBatterySocParams,
-) -> Result<(), String> {
+) -> Result<PlantStateDto, String> {
     let mut eng = state.engine.lock().await;
     let e = eng
         .as_mut()
@@ -1201,7 +1201,7 @@ pub async fn set_battery_soc(
 
     let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
     let _ = app.emit("state_changed", &dto);
-    Ok(())
+    Ok(dto)
 }
 
 #[tauri::command]

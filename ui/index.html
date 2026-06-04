@@ -712,7 +712,8 @@
       pendingSoc.set(idx, val);
       try {
         if (invoke) {
-          await invoke('set_battery_soc', { params: { module: idx, soc: val } });
+          const state = await invoke('set_battery_soc', { params: { module: idx, soc: val } });
+          if (state) updateDashboard(state, true);
           const footer = el('footer-info');
           if (footer) footer.textContent = `Battery ${idx + 1} SOC set to ${val}%`;
         }
