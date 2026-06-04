@@ -170,7 +170,11 @@ impl ScheduleDto {
         Self {
             enable_charge: cs > 0.0 && cs != ce || cs2 > 0.0 && cs2 != ce2,
             // AC-coupled inverters don't have timed discharge slots.
-            enable_discharge: if is_ac_coupled { false } else { ds > 0.0 && ds != de || ds2 > 0.0 && ds2 != de2 },
+            enable_discharge: if is_ac_coupled {
+                false
+            } else {
+                ds > 0.0 && ds != de || ds2 > 0.0 && ds2 != de2
+            },
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct1,
             charge_target_soc_2: ct2,

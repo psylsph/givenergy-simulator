@@ -328,12 +328,19 @@ pub async fn run_modbus_server(
                                     data.extend_from_slice(&val.to_be_bytes());
                                 }
                                 drop(store_guard);
-                                let mut resp_payload = Vec::with_capacity(SERIAL_LEN + 4 + data.len());
+                                let mut resp_payload =
+                                    Vec::with_capacity(SERIAL_LEN + 4 + data.len());
                                 resp_payload.extend_from_slice(&serial);
                                 resp_payload.extend_from_slice(&start_addr.to_be_bytes());
                                 resp_payload.extend_from_slice(&count.to_be_bytes());
                                 resp_payload.extend_from_slice(&data);
-                                let resp = build_response_with_padding(&serial, slave, inner_func, &resp_payload, 0x8A);
+                                let resp = build_response_with_padding(
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    &resp_payload,
+                                    0x8A,
+                                );
                                 let _ = stream.write_all(&resp).await;
                                 pending.drain(..frame_len);
                                 continue;

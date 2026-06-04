@@ -777,13 +777,8 @@ async fn serve_config(
     let batt_server = battery_shared.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
-        if let Err(e) = sim_modbus::run_modbus_server(
-            modbus_addr,
-            server_store,
-            cmd_tx,
-            batt_server,
-        )
-        .await
+        if let Err(e) =
+            sim_modbus::run_modbus_server(modbus_addr, server_store, cmd_tx, batt_server).await
         {
             tracing::error!("Modbus server error: {e}");
         }
@@ -934,7 +929,7 @@ async fn serve_config(
             register_snapshot: reg_store.snapshot(),
         });
 
-        if tick_count % 1000 == 0 {
+        if tick_count.is_multiple_of(1000) {
             let elapsed = start.elapsed();
             let soc = engine.state.aggregate_soc();
             tracing::info!(
@@ -1017,7 +1012,10 @@ fn hhmm_to_hours(val: u16) -> Option<f64> {
 
 /// Apply schedule register updates to a Schedule struct.
 /// Shared between run_scenario and serve_config.
-fn apply_schedule_updates(sched: &mut sim_models::Schedule, updates: &std::collections::HashMap<u16, u16>) {
+fn apply_schedule_updates(
+    sched: &mut sim_models::Schedule,
+    updates: &std::collections::HashMap<u16, u16>,
+) {
     // Charge slot 1 (HR 94-95)
     if let Some(&v) = updates.get(&94) {
         sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);

@@ -1012,10 +1012,15 @@ impl DeviceModel for BatteryEngine {
         let ambient = self.ambient_for_hour(hour);
 
         // Check battery pause mode/slot
-        if state.battery_pause_mode == 1 && state.battery_pause_slot_start != 60 && state.battery_pause_slot_end != 60 {
+        if state.battery_pause_mode == 1
+            && state.battery_pause_slot_start != 60
+            && state.battery_pause_slot_end != 60
+        {
             let in_pause_window = if state.battery_pause_slot_start < state.battery_pause_slot_end {
-                let start_h = (state.battery_pause_slot_start / 100) as f64 + (state.battery_pause_slot_start % 100) as f64 / 60.0;
-                let end_h = (state.battery_pause_slot_end / 100) as f64 + (state.battery_pause_slot_end % 100) as f64 / 60.0;
+                let start_h = (state.battery_pause_slot_start / 100) as f64
+                    + (state.battery_pause_slot_start % 100) as f64 / 60.0;
+                let end_h = (state.battery_pause_slot_end / 100) as f64
+                    + (state.battery_pause_slot_end % 100) as f64 / 60.0;
                 hour >= start_h && hour < end_h
             } else {
                 false
@@ -1255,16 +1260,56 @@ impl DeviceModel for ScheduleEngine {
                 }
             };
         }
-        check_charge_slot!(self.schedule.charge_start, self.schedule.charge_end, self.schedule.charge_target_soc);
-        check_charge_slot!(self.schedule.charge_start_2, self.schedule.charge_end_2, self.schedule.charge_target_soc_2);
-        check_charge_slot!(self.schedule.charge_start_3, self.schedule.charge_end_3, self.schedule.charge_target_soc_3);
-        check_charge_slot!(self.schedule.charge_start_4, self.schedule.charge_end_4, self.schedule.charge_target_soc_4);
-        check_charge_slot!(self.schedule.charge_start_5, self.schedule.charge_end_5, self.schedule.charge_target_soc_5);
-        check_charge_slot!(self.schedule.charge_start_6, self.schedule.charge_end_6, self.schedule.charge_target_soc_6);
-        check_charge_slot!(self.schedule.charge_start_7, self.schedule.charge_end_7, self.schedule.charge_target_soc_7);
-        check_charge_slot!(self.schedule.charge_start_8, self.schedule.charge_end_8, self.schedule.charge_target_soc_8);
-        check_charge_slot!(self.schedule.charge_start_9, self.schedule.charge_end_9, self.schedule.charge_target_soc_9);
-        check_charge_slot!(self.schedule.charge_start_10, self.schedule.charge_end_10, self.schedule.charge_target_soc_10);
+        check_charge_slot!(
+            self.schedule.charge_start,
+            self.schedule.charge_end,
+            self.schedule.charge_target_soc
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_2,
+            self.schedule.charge_end_2,
+            self.schedule.charge_target_soc_2
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_3,
+            self.schedule.charge_end_3,
+            self.schedule.charge_target_soc_3
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_4,
+            self.schedule.charge_end_4,
+            self.schedule.charge_target_soc_4
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_5,
+            self.schedule.charge_end_5,
+            self.schedule.charge_target_soc_5
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_6,
+            self.schedule.charge_end_6,
+            self.schedule.charge_target_soc_6
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_7,
+            self.schedule.charge_end_7,
+            self.schedule.charge_target_soc_7
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_8,
+            self.schedule.charge_end_8,
+            self.schedule.charge_target_soc_8
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_9,
+            self.schedule.charge_end_9,
+            self.schedule.charge_target_soc_9
+        );
+        check_charge_slot!(
+            self.schedule.charge_start_10,
+            self.schedule.charge_end_10,
+            self.schedule.charge_target_soc_10
+        );
 
         // Skip discharge slots for AC-coupled inverters (DTC prefix "3")
         let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
@@ -1280,27 +1325,74 @@ impl DeviceModel for ScheduleEngine {
                     }
                 };
             }
-            check_discharge_slot!(self.schedule.discharge_start, self.schedule.discharge_end, self.schedule.discharge_target_soc);
-            check_discharge_slot!(self.schedule.discharge_start_2, self.schedule.discharge_end_2, self.schedule.discharge_target_soc_2);
-            check_discharge_slot!(self.schedule.discharge_start_3, self.schedule.discharge_end_3, self.schedule.discharge_target_soc_3);
-            check_discharge_slot!(self.schedule.discharge_start_4, self.schedule.discharge_end_4, self.schedule.discharge_target_soc_4);
-            check_discharge_slot!(self.schedule.discharge_start_5, self.schedule.discharge_end_5, self.schedule.discharge_target_soc_5);
-            check_discharge_slot!(self.schedule.discharge_start_6, self.schedule.discharge_end_6, self.schedule.discharge_target_soc_6);
-            check_discharge_slot!(self.schedule.discharge_start_7, self.schedule.discharge_end_7, self.schedule.discharge_target_soc_7);
-            check_discharge_slot!(self.schedule.discharge_start_8, self.schedule.discharge_end_8, self.schedule.discharge_target_soc_8);
-            check_discharge_slot!(self.schedule.discharge_start_9, self.schedule.discharge_end_9, self.schedule.discharge_target_soc_9);
-            check_discharge_slot!(self.schedule.discharge_start_10, self.schedule.discharge_end_10, self.schedule.discharge_target_soc_10);
+            check_discharge_slot!(
+                self.schedule.discharge_start,
+                self.schedule.discharge_end,
+                self.schedule.discharge_target_soc
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_2,
+                self.schedule.discharge_end_2,
+                self.schedule.discharge_target_soc_2
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_3,
+                self.schedule.discharge_end_3,
+                self.schedule.discharge_target_soc_3
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_4,
+                self.schedule.discharge_end_4,
+                self.schedule.discharge_target_soc_4
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_5,
+                self.schedule.discharge_end_5,
+                self.schedule.discharge_target_soc_5
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_6,
+                self.schedule.discharge_end_6,
+                self.schedule.discharge_target_soc_6
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_7,
+                self.schedule.discharge_end_7,
+                self.schedule.discharge_target_soc_7
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_8,
+                self.schedule.discharge_end_8,
+                self.schedule.discharge_target_soc_8
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_9,
+                self.schedule.discharge_end_9,
+                self.schedule.discharge_target_soc_9
+            );
+            check_discharge_slot!(
+                self.schedule.discharge_start_10,
+                self.schedule.discharge_end_10,
+                self.schedule.discharge_target_soc_10
+            );
         }
 
         // Export limit scheduling — 3 time windows
         if self.schedule.enable_export_schedule && self.schedule.export_power_limit_w > 0.0 {
             let in_export_window = |s: f64, e: f64| -> bool {
-                if s == 0.0 && e == 0.0 { return false; }
-                if s < e { hour >= s && hour < e } else { hour >= s || hour < e }
+                if s == 0.0 && e == 0.0 {
+                    return false;
+                }
+                if s < e {
+                    hour >= s && hour < e
+                } else {
+                    hour >= s || hour < e
+                }
             };
-            let in_window = in_export_window(self.schedule.export_start_1, self.schedule.export_end_1)
-                || in_export_window(self.schedule.export_start_2, self.schedule.export_end_2)
-                || in_export_window(self.schedule.export_start_3, self.schedule.export_end_3);
+            let in_window =
+                in_export_window(self.schedule.export_start_1, self.schedule.export_end_1)
+                    || in_export_window(self.schedule.export_start_2, self.schedule.export_end_2)
+                    || in_export_window(self.schedule.export_start_3, self.schedule.export_end_3);
 
             if in_window && soc > state.min_aggregate_soc() {
                 // During export window: cap export limit
@@ -2816,12 +2908,22 @@ mod tests {
     fn check_invariants(state: &PlantState) {
         // SOC must be in valid range
         for b in &state.batteries {
-            assert!(b.soc_percent.is_finite(), "SOC must be finite: {}", b.soc_percent);
-            assert!(b.soc_percent >= -1.0 && b.soc_percent <= 101.0,
-                "SOC {:.2} out of range [-1, 101]", b.soc_percent);
+            assert!(
+                b.soc_percent.is_finite(),
+                "SOC must be finite: {}",
+                b.soc_percent
+            );
+            assert!(
+                b.soc_percent >= -1.0 && b.soc_percent <= 101.0,
+                "SOC {:.2} out of range [-1, 101]",
+                b.soc_percent
+            );
             assert!(b.temperature_celsius.is_finite());
-            assert!(b.temperature_celsius >= -15.0 && b.temperature_celsius <= 80.0,
-                "Battery temp {:.1} out of range [-15, 80]", b.temperature_celsius);
+            assert!(
+                b.temperature_celsius >= -15.0 && b.temperature_celsius <= 80.0,
+                "Battery temp {:.1} out of range [-15, 80]",
+                b.temperature_celsius
+            );
             assert!(b.voltage_v.is_finite() && b.voltage_v >= 0.0);
             assert!(b.power_kw.is_finite());
             assert!(b.capacity_kwh.is_finite() && b.capacity_kwh >= 0.0);
@@ -2835,7 +2937,10 @@ mod tests {
         assert!(state.grid.power_w.is_finite());
         assert!(state.inverter.ac_power_w.is_finite() && state.inverter.ac_power_w >= 0.0);
         assert!(state.inverter.temperature_celsius.is_finite());
-        assert!(state.inverter.temperature_celsius >= -10.0 && state.inverter.temperature_celsius <= 100.0);
+        assert!(
+            state.inverter.temperature_celsius >= -10.0
+                && state.inverter.temperature_celsius <= 100.0
+        );
 
         // Energy totals must be non-negative
         let e = &state.energy_totals;

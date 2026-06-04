@@ -521,7 +521,7 @@ pub async fn start_simulation(
                                             sched_dirty = true;
                                         }
                                         // Also collect pause slot registers
-                                        if matches!(cmd.address, 318 | 319 | 320) {
+                                        if matches!(cmd.address, 318..=320) {
                                             sched_updates.insert(cmd.address, cmd.value);
                                         }
                                         if let Some(sim_cmd) =
@@ -552,14 +552,28 @@ pub async fn start_simulation(
                         if let Some(&mode) = sched_updates.get(&318) {
                             e.enqueue(Command::SetBatteryPause {
                                 mode,
-                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                                start: sched_updates
+                                    .get(&319)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates
+                                    .get(&320)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_end),
                             });
-                        } else if sched_updates.contains_key(&319) || sched_updates.contains_key(&320) {
+                        } else if sched_updates.contains_key(&319)
+                            || sched_updates.contains_key(&320)
+                        {
                             e.enqueue(Command::SetBatteryPause {
                                 mode: e.state.battery_pause_mode,
-                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                                start: sched_updates
+                                    .get(&319)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates
+                                    .get(&320)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_end),
                             });
                         }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
@@ -757,7 +771,7 @@ pub async fn start_simulation(
                                             sched_dirty = true;
                                         }
                                         // Also collect pause slot registers
-                                        if matches!(cmd.address, 318 | 319 | 320) {
+                                        if matches!(cmd.address, 318..=320) {
                                             sched_updates.insert(cmd.address, cmd.value);
                                         }
                                         if let Some(sim_cmd) =
@@ -788,14 +802,28 @@ pub async fn start_simulation(
                         if let Some(&mode) = sched_updates.get(&318) {
                             e.enqueue(Command::SetBatteryPause {
                                 mode,
-                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                                start: sched_updates
+                                    .get(&319)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates
+                                    .get(&320)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_end),
                             });
-                        } else if sched_updates.contains_key(&319) || sched_updates.contains_key(&320) {
+                        } else if sched_updates.contains_key(&319)
+                            || sched_updates.contains_key(&320)
+                        {
                             e.enqueue(Command::SetBatteryPause {
                                 mode: e.state.battery_pause_mode,
-                                start: sched_updates.get(&319).copied().unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates.get(&320).copied().unwrap_or(e.state.battery_pause_slot_end),
+                                start: sched_updates
+                                    .get(&319)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_start),
+                                end: sched_updates
+                                    .get(&320)
+                                    .copied()
+                                    .unwrap_or(e.state.battery_pause_slot_end),
                             });
                         }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
