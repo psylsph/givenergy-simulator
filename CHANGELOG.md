@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-04
+
+### Added
+- **DSP firmware reporting** (HR 19)
+  - New `InverterState.dsp_firmware_version` field (serde-defaulted for
+    backward compatibility)
+  - Per-inverter-type defaults: Gen1=110, Gen2=230, Gen3=449, Plus=510,
+    AC=305, ThreePhase=612, AIO=1010
+  - Catalogue entry for HR 19 (read-only Holding register)
+  - Live projection from `state.inverter.dsp_firmware_version`
+- **ARM firmware runtime override** (HR 21)
+  - `set_arm_firmware(version)` Tauri command
+  - `InverterState.arm_firmware_version` (0 = use type default)
+  - When non-zero, takes precedence over the per-type century default
+- **DSP firmware runtime override**
+  - `set_dsp_firmware(version)` Tauri command
+- Firmware info shown live in the GUI 'Limits & Control' card with
+  ARM century hint (e.g. "ARM FW: 352 (century 3)")
+- Firmware override inputs in the sidebar (ARM FW / DSP FW + Set buttons)
+
+### Tests
+- `dsp_firmware_projects_from_inverter_state`
+- `arm_firmware_override_takes_precedence_over_type_default`
+- `arm_firmware_falls_back_to_type_default_when_zero`
+- Total: 223 (was 220)
+
 ## [0.11.1] - 2026-06-04
 
 ### Added

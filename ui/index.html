@@ -460,6 +460,18 @@
           <button id="btn-apply-overrides">Apply</button>
           <button id="btn-clear-overrides">Clear</button>
         </div>
+
+        <label style="margin-top:8px">Firmware Override</label>
+        <div class="row" style="gap:4px;align-items:center">
+          <label style="font-size:11px;min-width:54px">ARM FW</label>
+          <input type="number" id="override-arm-fw" placeholder="auto" min="0" max="9999" style="flex:1">
+          <button id="btn-apply-arm-fw" class="btn-mini">Set</button>
+        </div>
+        <div class="row" style="gap:4px;align-items:center;margin-top:3px">
+          <label style="font-size:11px;min-width:54px">DSP FW</label>
+          <input type="number" id="override-dsp-fw" placeholder="449" min="0" max="9999" style="flex:1">
+          <button id="btn-apply-dsp-fw" class="btn-mini">Set</button>
+        </div>
       </div>
 
       <div class="sidebar-section">
@@ -1113,6 +1125,10 @@
               ${isAcCoupled ? '' : `<span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>`}
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Mode: ${s.battery_mode || '—'}</div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;border-top:1px dashed var(--border);padding-top:3px">
+              <div>ARM FW: <span style="color:var(--text)">${s.arm_firmware_version}</span> <span style="font-size:9px;opacity:0.7">(century ${Math.floor(s.arm_firmware_version/100)})</span></div>
+              <div>DSP FW: <span style="color:var(--text)">${s.dsp_firmware_version}</span></div>
+            </div>
           </div>
         </div>
         ${extendedChips}
@@ -1324,6 +1340,30 @@
         await invoke('set_load_override', { params: { watts: null } });
         el('footer-info').textContent = 'Overrides cleared';
       } catch (e) { console.error('clear overrides failed:', e); }
+    });
+
+    // ---- Firmware overrides ----
+    el('btn-apply-arm-fw').addEventListener('click', async () => {
+      const v = parseInt(el('override-arm-fw').value, 10);
+      if (Number.isNaN(v) || v < 0 || v > 9999) {
+        el('footer-info').textContent = 'ARM FW must be 0–9999';
+        return;
+      }
+      try {
+        await invoke('set_arm_firmware', { version: v });
+        el('footer-info').textContent = `ARM firmware set to ${v} (century ${Math.floor(v/100)})`;
+      } catch (e) { console.error('set arm fw failed:', e); }
+    });
+    el('btn-apply-dsp-fw').addEventListener('click', async () => {
+      const v = parseInt(el('override-dsp-fw').value, 10);
+      if (Number.isNaN(v) || v < 0 || v > 9999) {
+        el('footer-info').textContent = 'DSP FW must be 0–9999';
+        return;
+      }
+      try {
+        await invoke('set_dsp_firmware', { version: v });
+        el('footer-info').textContent = `DSP firmware set to ${v}`;
+      } catch (e) { console.error('set dsp fw failed:', e); }
     });
 
     // ---- EVC (Electric Vehicle Charger) ----

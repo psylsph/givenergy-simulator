@@ -162,6 +162,20 @@ pub struct InverterState {
     pub export_limit_w: f64,
     /// Inverter temperature in °C.
     pub temperature_celsius: f64,
+    /// DSP firmware version (HR 19). Defaults to a value appropriate to the
+    /// inverter type (449 for most hybrids) but can be overridden at runtime.
+    #[serde(default = "default_dsp_firmware")]
+    pub dsp_firmware_version: u16,
+    /// ARM firmware version (HR 21). When set to 0 the projection falls back
+    /// to a default per inverter type (which encodes the 'century' used by
+    /// upstream clients to disambiguate the 0x2001 hybrid family).
+    /// Set non-zero to override.
+    #[serde(default)]
+    pub arm_firmware_version: u16,
+}
+
+fn default_dsp_firmware() -> u16 {
+    449
 }
 
 impl Default for InverterState {
@@ -171,6 +185,8 @@ impl Default for InverterState {
             ac_power_w: 0.0,
             export_limit_w: 3600.0,
             temperature_celsius: 35.0,
+            dsp_firmware_version: default_dsp_firmware(),
+            arm_firmware_version: 0,
         }
     }
 }

@@ -138,6 +138,20 @@ pub async fn create_plant(
     plant_state.config.tick_interval_secs = tick_interval;
     plant_state.config.pv2_peak_watts = params.pv2_peak_watts.unwrap_or(0.0);
     plant_state.config.inverter_type = inv_type.to_string();
+    // Default DSP firmware per inverter type. Matches typical real-world values.
+    plant_state.inverter.dsp_firmware_version = match inv_type {
+        "Gen1Hybrid" => 110,
+        "Gen2Hybrid" => 230,
+        "Gen3Hybrid" => 449,
+        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
+        "ACCoupled" | "ACCoupled2" => 305,
+        "ThreePhase" => 612,
+        "ThreePhase8kW" | "ThreePhase10kW" => 612,
+        "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
+        "AIO8kW" | "AIO10kW" => 1010,
+        "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
+        _ => 449,
+    };
     plant_state.config.max_ac_watts = match plant_state.config.inverter_type.as_str() {
         "Gen3Hybrid8kW" => 8000.0,
         "Gen3Hybrid10kW" => 10000.0,
@@ -2018,4 +2032,31 @@ pub async fn set_evc_cable_status(state: State<'_, AppState>, status: u16) -> Re
 #[tauri::command]
 pub async fn get_evc_state(state: State<'_, AppState>) -> Result<sim_models::EvcState, String> {
     Ok(state.evc_state.lock().await.clone())
+}
+
+// ---------------------------------------------------------------------------
+// Firmware commands
+// ---------------------------------------------------------------------------
+
+/// Override the DSP firmware version (HR 19). Useful for testing how a client
+/// behaves with different firmware versions.
+#[tauri::command]
+pub async fn set_dsp_firmware(state: State<'_, AppState>, version: u16) -> Result<(), String> {
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.inverter.dsp_firmware_version = version;
+    }
+    Ok(())
+}
+
+/// Override the ARM firmware version (HR 21). Changing the century
+/// (fw / 100) lets you simulate Gen1/Gen2/Gen3 identification against
+/// the shared 0x2001 family DTC.
+#[tauri::command]
+pub async fn set_arm_firmware(state: State<'_, AppState>, version: u16) -> Result<(), String> {
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.inverter.arm_firmware_version = version;
+    }
+    Ok(())
 }

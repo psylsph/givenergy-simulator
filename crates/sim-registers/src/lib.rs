@@ -470,16 +470,28 @@ impl RegisterStore {
                     self.values.insert(key, (b'4' as u16) << 8 | b'5' as u16);
                     continue;
                 }
+                // HR 19: DSP firmware version (user-overridable, defaults
+                // to a value typical for the inverter type).
+                "ge_hr_dsp_firmware" => {
+                    self.values.insert(key, state.inverter.dsp_firmware_version);
+                    continue;
+                }
                 // HR 21: ARM firmware version. The century (fw/100) disambiguates
                 // the 0x2001 hybrid family:
                 //   2xx → Gen1, 3xx → Gen3, 8xx/9xx → Gen2.
+                // If the user has set a non-zero arm_firmware_version override
+                // (e.g. via the set_arm_firmware command), honour that instead.
                 "ge_hr_arm_firmware" => {
-                    let fw = match state.config.inverter_type.as_str() {
-                        "Gen1Hybrid" => 252, // century 2 → Gen1
-                        "Gen2Hybrid" => 852, // century 8 → Gen2
-                        "Gen3Hybrid" => 352, // century 3 → Gen3
-                        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
-                        _ => 352,
+                    let fw = if state.inverter.arm_firmware_version != 0 {
+                        state.inverter.arm_firmware_version
+                    } else {
+                        match state.config.inverter_type.as_str() {
+                            "Gen1Hybrid" => 252, // century 2 → Gen1
+                            "Gen2Hybrid" => 852, // century 8 → Gen2
+                            "Gen3Hybrid" => 352, // century 3 → Gen3
+                            "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                            _ => 352,
+                        }
                     };
                     self.values.insert(key, fw);
                     continue;
@@ -1910,6 +1922,15 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         RegisterDef {
             address: 17,
             name: "ge_hr_serial_4".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 19,
+            name: "ge_hr_dsp_firmware".into(),
             category: C::Inverter,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -4399,6 +4420,40 @@ mod tests {
         // Same DTC as Gen1/Gen3, but HR(21) century 8 → Gen2.
         assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x2001));
         assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(852));
+    }
+
+    #[test]
+    fn dsp_firmware_projects_from_inverter_state() {
+        let now = test_ts();
+        let mut s = PlantState::new(now);
+        s.inverter.dsp_firmware_version = 1234;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(19, RegisterSpace::Holding), Some(1234));
+    }
+
+    #[test]
+    fn arm_firmware_override_takes_precedence_over_type_default() {
+        let now = test_ts();
+        let mut s = PlantState::new(now);
+        // Default Gen3Hybrid arm_fw is 352 (century 3)
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        // Override to simulate Gen2 identification
+        s.inverter.arm_firmware_version = 852;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(852));
+    }
+
+    #[test]
+    fn arm_firmware_falls_back_to_type_default_when_zero() {
+        let now = test_ts();
+        let mut s = PlantState::new(now);
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        s.inverter.arm_firmware_version = 0; // sentinel: use type default
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(352));
     }
 
     #[test]

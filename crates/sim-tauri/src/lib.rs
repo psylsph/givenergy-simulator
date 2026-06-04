@@ -67,6 +67,8 @@ pub fn run() {
             commands::set_evc_charging_mode,
             commands::set_evc_cable_status,
             commands::get_evc_state,
+            commands::set_dsp_firmware,
+            commands::set_arm_firmware,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule

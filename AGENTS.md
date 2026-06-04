@@ -294,3 +294,5 @@ Target SOC register follows each slot's end register (e.g. HR 248 for charge slo
 - v0.9.0: 217
 - v0.10.0: 217
 - v0.11.0: 219
+- v0.11.1: 220
+- v0.11.2: 223

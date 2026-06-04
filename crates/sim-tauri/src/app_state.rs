@@ -92,6 +92,10 @@ pub struct PlantStateDto {
     pub battery_mode: String,
     pub inverter_type: String,
     pub inverter_ac_power_w: f64,
+    /// ARM firmware (HR 21) — reported as projected to the Modbus server.
+    pub arm_firmware_version: u16,
+    /// DSP firmware (HR 19) — user-overridable.
+    pub dsp_firmware_version: u16,
     pub aggregate_soc: f64,
     pub battery_power_kw: f64,
     pub battery_temperature_celsius: f64,
@@ -481,6 +485,18 @@ impl From<&PlantState> for PlantStateDto {
             },
             inverter_type: state.config.inverter_type.clone(),
             inverter_ac_power_w: state.inverter.ac_power_w,
+            arm_firmware_version: if state.inverter.arm_firmware_version != 0 {
+                state.inverter.arm_firmware_version
+            } else {
+                match state.config.inverter_type.as_str() {
+                    "Gen1Hybrid" => 252,
+                    "Gen2Hybrid" => 852,
+                    "Gen3Hybrid" => 352,
+                    "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                    _ => 352,
+                }
+            },
+            dsp_firmware_version: state.inverter.dsp_firmware_version,
             aggregate_soc: state.aggregate_soc(),
             battery_power_kw: state.total_battery_power_kw(),
             battery_temperature_celsius: state.battery_temperature_celsius(),
