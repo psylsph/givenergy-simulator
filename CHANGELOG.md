@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-05
+
+This release adds the three-phase **Input Register** block (IR 1001-1413) so
+clients can read PV, grid, battery, EPS, firmware and energy-total data from
+the correct three-phase addresses. Also fixes the three-phase battery-capacity
+nominal voltage and adds CT/meter import/export registers.
+
+### Added
+
+#### Three-phase Input Register block (IR 1001-1413)
+3-phase clients read all live data from these high input-register addresses
+rather than the single-phase IR 0-59 block:
+- **PV**: IR 1001/1002 (voltage), 1009/1010 (current), 1017-1020
+  (power, uint32 ×0.1W) — mirrors single-phase IR 1/2/8/9/18/20
+- **Grid**: IR 1061-1063 (per-phase voltage 240V), 1064-1066
+  (per-phase current), 1067 (frequency), 1068 (power factor),
+  1069-1070 (inverter output, int32 ×0.1W), 1073-1074 (apparent power),
+  1075 (system mode), 1076 (status)
+- **CT / Meter power** (IR 1079-1080 import, 1081-1082 export,
+  1240-1241 export alt, 1244-1245 second meter) — positive-only uint32
+  split by direction, mirroring single-phase's signed IR 30
+- **Load**: IR 1083-1085 (per-phase, each ⅓ of demand), 1089-1090 (total,
+  uint32 ×0.1W)
+- **Battery**: IR 1124 (DC status), 1128 (inverter temperature),
+  1131 (BMS voltage), 1132 (SoC), 1136-1137 (discharge power),
+  1138-1139 (charge power), 1140 (battery current)
+- **EPS**: IR 1180 (nominal frequency), 1181-1183 (per-phase output
+  voltage) — all 0 when EPS inactive
+- **Firmware**: IR 1325-1326 (DSP version), 1327 (ARM version) — mirrors
+  HR 19/21
+- **Energy totals**: IR 1366-1367 (PV1 today), 1370-1371 (PV2 today),
+  1380-1381 (import today), 1384-1385 (export today),
+  1388-1389 (battery discharge today), 1392-1393 (battery charge today),
+  1396-1397 (load today) — all uint32 ×0.1kWh
+
+#### Three-phase register catalogue
+- 56 new `RegisterDef` entries covering the IR 1001-1413 three-phase block
+
+### Fixed
+
+- **HR 55 battery capacity Ah**: the `ThreePhase8kW`/`10kW`/`11kW` variants
+  now use 76.8V nominal voltage (was falling through to 51.2V single-phase
+  default, giving a 50% over-count that could trigger BMS alarms).
+  Uses `starts_with("ThreePhase")` guard.
+
+### Tests
+- 8 new tests (235 → 243 total): three-phase DTC, phase-count byte, 76.8V
+  battery capacity, HR 1108/1110 limit mirrors, HR 1113-1121 schedule
+  mirrors, HR 1111 charge-target mirror, comprehensive live-data register
+  projection, CT import/export sign convention.
+
 ## [0.13.0] - 2026-06-05
 
 This release broadens upstream register coverage (mapped against

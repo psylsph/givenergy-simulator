@@ -142,6 +142,14 @@ impl RegisterStore {
             };
             ((raw >> 16) as u16, (raw & 0xFFFF) as u16)
         };
+        let i32_words = |engineering: f64, scaling: f64| -> (u16, u16) {
+            let raw = if scaling > 0.0 {
+                (engineering / scaling).round() as i32
+            } else {
+                engineering.round() as i32
+            } as u32;
+            ((raw >> 16) as u16, (raw & 0xFFFF) as u16)
+        };
         let clamp_i16_word = |watts: f64| -> u16 { watts.clamp(-32768.0, 32767.0) as i16 as u16 };
         let fault_code = || -> u32 {
             let mut code = 0u32;
@@ -822,10 +830,13 @@ impl RegisterStore {
                 // HR 55: Battery capacity in Ah (total system)
                 // kWh = Ah * nominal_voltage / 1000 → Ah = kWh * 1000 / V
                 "ge_hr_battery_capacity_ah" => {
-                    let nom_v = match state.config.inverter_type.as_str() {
-                        "AllInOne6" | "AllInOne" | "AllInOne5" | "AIO8kW" | "AIO10kW" => 307.0,
-                        "ThreePhase" => 76.8,
-                        _ => 51.2,
+                    let nom_v = if state.config.inverter_type.starts_with("ThreePhase") {
+                        76.8
+                    } else {
+                        match state.config.inverter_type.as_str() {
+                            "AllInOne6" | "AllInOne" | "AllInOne5" | "AIO8kW" | "AIO10kW" => 307.0,
+                            _ => 51.2,
+                        }
                     };
                     let total_kwh = state.total_battery_capacity();
                     let ah = (total_kwh * 1000.0 / nom_v).round() as u16;
@@ -1153,6 +1164,179 @@ impl RegisterStore {
                 }
                 "schedule_discharge_target_soc" => {
                     self.values.insert(key, 10);
+                    continue;
+                }
+
+                // ================================================================
+                // Three-phase Input Registers (IR 1001-1413)
+                // ================================================================
+                // Real three-phase clients use these high input-register addresses
+                // instead of the single-phase IR 0-59 block.
+                "tph_ir_pv1_voltage" => Some(if state.solar.pv1_w > 0.0 { 350.0 } else { 0.0 }),
+                "tph_ir_pv2_voltage" => Some(if state.config.pv2_peak_watts > 0.0 {
+                    350.0
+                } else {
+                    0.0
+                }),
+                "tph_ir_pv1_current" => Some(state.solar.pv1_w / 350.0),
+                "tph_ir_pv2_current" => Some(state.solar.pv2_w / 350.0),
+                "tph_ir_pv1_power_high" | "tph_ir_pv1_power_low" => {
+                    let (hi, lo) = u32_words(state.solar.pv1_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_pv2_power_high" | "tph_ir_pv2_power_low" => {
+                    let (hi, lo) = u32_words(state.solar.pv2_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_v_ac1" | "tph_ir_v_ac2" | "tph_ir_v_ac3" => Some(240.0),
+                "tph_ir_i_ac1" | "tph_ir_i_ac2" | "tph_ir_i_ac3" => {
+                    Some(state.inverter.ac_power_w.abs() / 240.0 / 3.0)
+                }
+                "tph_ir_f_ac1" => Some(50.0),
+                "tph_ir_power_factor" => Some(10000.0),
+                "tph_ir_p_inverter_out_high" | "tph_ir_p_inverter_out_low" => {
+                    let (hi, lo) = i32_words(state.inverter.ac_power_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_grid_apparent_high" | "tph_ir_p_grid_apparent_low" => {
+                    let (hi, lo) = u32_words(state.inverter.ac_power_w.abs(), 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_meter_import_high" | "tph_ir_p_meter_import_low" => {
+                    let import_w = state.grid.power_w.max(0.0);
+                    let (hi, lo) = u32_words(import_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_meter_export_high" | "tph_ir_p_meter_export_low" => {
+                    let export_w = (-state.grid.power_w).max(0.0);
+                    let (hi, lo) = u32_words(export_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_export_high" | "tph_ir_p_export_low" => {
+                    let export_w = (-state.grid.power_w).max(0.0);
+                    let (hi, lo) = u32_words(export_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_meter2_high" | "tph_ir_p_meter2_low" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "tph_ir_system_mode" => Some(if !state.active_faults.is_empty() {
+                    3.0
+                } else if state.grid.connected {
+                    2.0
+                } else {
+                    1.0
+                }),
+                "tph_ir_status" | "tph_ir_dc_status" => Some(1.0),
+                "tph_ir_p_load_ac1" | "tph_ir_p_load_ac2" | "tph_ir_p_load_ac3" => {
+                    Some(state.load.demand_w / 3.0)
+                }
+                "tph_ir_p_load_all_high" | "tph_ir_p_load_all_low" => {
+                    let (hi, lo) = u32_words(state.load.demand_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_t_inverter" => Some(state.inverter.temperature_celsius),
+                "tph_ir_v_battery_bms" => Some(76.8),
+                "tph_ir_battery_soc" => Some(state.aggregate_soc()),
+                "tph_ir_p_battery_discharge_high" | "tph_ir_p_battery_discharge_low" => {
+                    let discharge_w = (-state.total_battery_power_kw()).max(0.0) * 1000.0;
+                    let (hi, lo) = u32_words(discharge_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_p_battery_charge_high" | "tph_ir_p_battery_charge_low" => {
+                    let charge_w = state.total_battery_power_kw().max(0.0) * 1000.0;
+                    let (hi, lo) = u32_words(charge_w, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_i_battery" => {
+                    let amps = -(state.total_battery_power_kw() * 1000.0 / 76.8);
+                    self.values.insert(key, (amps * 10.0) as i16 as u16);
+                    continue;
+                }
+                "tph_ir_f_nominal_eps" => Some(if state.enable_eps { 50.0 } else { 0.0 }),
+                "tph_ir_v_eps_ac1" | "tph_ir_v_eps_ac2" | "tph_ir_v_eps_ac3" => {
+                    Some(if state.enable_eps { 240.0 } else { 0.0 })
+                }
+                "tph_ir_ac_dsp_firmware_version" | "tph_ir_dc_dsp_firmware_version" => {
+                    self.values.insert(key, state.inverter.dsp_firmware_version);
+                    continue;
+                }
+                "tph_ir_arm_firmware_version" => {
+                    let fw = if state.inverter.arm_firmware_version != 0 {
+                        state.inverter.arm_firmware_version
+                    } else {
+                        match state.config.inverter_type.as_str() {
+                            "Gen1Hybrid" => 252,
+                            "Gen2Hybrid" => 852,
+                            "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                            _ => 318,
+                        }
+                    };
+                    self.values.insert(key, fw);
+                    continue;
+                }
+                "tph_ir_e_pv1_today_high" | "tph_ir_e_pv1_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh / 2.0, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_pv2_today_high" | "tph_ir_e_pv2_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh / 2.0, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_import_today_high" | "tph_ir_e_import_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.grid_import_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_export_today_high" | "tph_ir_e_export_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.grid_export_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_battery_discharge_today_high"
+                | "tph_ir_e_battery_discharge_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.battery_discharge_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_battery_charge_today_high" | "tph_ir_e_battery_charge_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.battery_charge_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "tph_ir_e_load_today_high" | "tph_ir_e_load_today_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.load_consumption_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
 
@@ -4127,6 +4311,603 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadWrite,
             space: Holding,
         },
+        // ============================================================
+        // 3-Phase Input Registers (IR 1001-1413)
+        // 3-phase clients read PV/Grid/Battery/EPS data from these
+        // addresses, NOT the single-phase IR 0-59 block.
+        // ============================================================
+        // PV (IR 1001-1020)
+        RegisterDef {
+            address: 1001,
+            name: "tph_ir_pv1_voltage".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1002,
+            name: "tph_ir_pv2_voltage".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1009,
+            name: "tph_ir_pv1_current".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1010,
+            name: "tph_ir_pv2_current".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1017,
+            name: "tph_ir_pv1_power_high".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1018,
+            name: "tph_ir_pv1_power_low".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1019,
+            name: "tph_ir_pv2_power_high".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1020,
+            name: "tph_ir_pv2_power_low".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Grid (IR 1061-1096)
+        RegisterDef {
+            address: 1061,
+            name: "tph_ir_v_ac1".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1062,
+            name: "tph_ir_v_ac2".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1063,
+            name: "tph_ir_v_ac3".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1064,
+            name: "tph_ir_i_ac1".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1065,
+            name: "tph_ir_i_ac2".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1066,
+            name: "tph_ir_i_ac3".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1067,
+            name: "tph_ir_f_ac1".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1068,
+            name: "tph_ir_power_factor".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1069,
+            name: "tph_ir_p_inverter_out_high".into(),
+            category: C::Grid,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1070,
+            name: "tph_ir_p_inverter_out_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1073,
+            name: "tph_ir_p_grid_apparent_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1074,
+            name: "tph_ir_p_grid_apparent_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1075,
+            name: "tph_ir_system_mode".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1076,
+            name: "tph_ir_status".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1079,
+            name: "tph_ir_p_meter_import_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1080,
+            name: "tph_ir_p_meter_import_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1081,
+            name: "tph_ir_p_meter_export_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1082,
+            name: "tph_ir_p_meter_export_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1083,
+            name: "tph_ir_p_load_ac1".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1084,
+            name: "tph_ir_p_load_ac2".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1085,
+            name: "tph_ir_p_load_ac3".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1089,
+            name: "tph_ir_p_load_all_high".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1090,
+            name: "tph_ir_p_load_all_low".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Battery (IR 1120-1140)
+        RegisterDef {
+            address: 1124,
+            name: "tph_ir_dc_status".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1128,
+            name: "tph_ir_t_inverter".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1131,
+            name: "tph_ir_v_battery_bms".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1132,
+            name: "tph_ir_battery_soc".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1136,
+            name: "tph_ir_p_battery_discharge_high".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1137,
+            name: "tph_ir_p_battery_discharge_low".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1138,
+            name: "tph_ir_p_battery_charge_high".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1139,
+            name: "tph_ir_p_battery_charge_low".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1140,
+            name: "tph_ir_i_battery".into(),
+            category: C::Battery,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // EPS (IR 1180-1192)
+        RegisterDef {
+            address: 1180,
+            name: "tph_ir_f_nominal_eps".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1181,
+            name: "tph_ir_v_eps_ac1".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1182,
+            name: "tph_ir_v_eps_ac2".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1183,
+            name: "tph_ir_v_eps_ac3".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Additional power meters / CT exports (IR 1240-1245)
+        RegisterDef {
+            address: 1240,
+            name: "tph_ir_p_export_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1241,
+            name: "tph_ir_p_export_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1244,
+            name: "tph_ir_p_meter2_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1245,
+            name: "tph_ir_p_meter2_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Firmware (IR 1325-1327)
+        RegisterDef {
+            address: 1325,
+            name: "tph_ir_ac_dsp_firmware_version".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1326,
+            name: "tph_ir_dc_dsp_firmware_version".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1327,
+            name: "tph_ir_arm_firmware_version".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Energy totals (IR 1360-1413)
+        RegisterDef {
+            address: 1366,
+            name: "tph_ir_e_pv1_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1367,
+            name: "tph_ir_e_pv1_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1370,
+            name: "tph_ir_e_pv2_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1371,
+            name: "tph_ir_e_pv2_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1380,
+            name: "tph_ir_e_import_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1381,
+            name: "tph_ir_e_import_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1384,
+            name: "tph_ir_e_export_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1385,
+            name: "tph_ir_e_export_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1388,
+            name: "tph_ir_e_battery_discharge_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1389,
+            name: "tph_ir_e_battery_discharge_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1392,
+            name: "tph_ir_e_battery_charge_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1393,
+            name: "tph_ir_e_battery_charge_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1396,
+            name: "tph_ir_e_load_today_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1397,
+            name: "tph_ir_e_load_today_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
         RegisterDef {
             address: 2040,
             name: "ems_plant_enable".into(),
@@ -6102,5 +6883,222 @@ mod tests {
         store.project_from_state(&PlantState::new(test_ts()));
         let fw = store.read_by_space(21, RegisterSpace::Holding).unwrap_or(0);
         assert!(fw > 0, "HR 21 should have firmware version");
+    }
+
+    // ===================================================================
+    // Three-Phase 11kW (0x4004) Regression Tests
+    // ===================================================================
+    //
+    // GivEnergy three-phase clients (giv_tcp / givenergy-modbus /
+    // givenergy-local) read HR 1108/1110 (battery limits), HR 1113-1121
+    // (charge/discharge slots 1-2), HR 246-268 / 276-298 (slots 3-10),
+    // HR 55 (battery capacity Ah @ 76.8V nominal), HR 1109 (SOC reserve),
+    // and the mppt_phase_count byte to detect a 3-phase unit. A real
+    // 3-phase 11kW inverter reports DTC 0x4004. These checks pin down
+    // every register a 3-phase client depends on so the 8/10/11kW
+    // variants don't silently fall through to single-phase defaults.
+
+    fn three_phase_11kw_state() -> PlantState {
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "ThreePhase11kW".to_string();
+        s.config.max_ac_watts = 11000.0;
+        s.batteries[0].capacity_kwh = 9.5;
+        s.batteries[0].soc_percent = 50.0;
+        s.sync_battery_from_vec();
+        s
+    }
+
+    #[test]
+    fn threephase_11kw_projects_correct_dtc() {
+        let s = three_phase_11kw_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(0, RegisterSpace::Holding), Some(0x4004));
+    }
+
+    #[test]
+    fn threephase_11kw_reports_three_phases_byte() {
+        // HR 3 packs MPPT count (high byte) and phase count (low byte).
+        // 3-phase clients detect '3' in the low byte.
+        let s = three_phase_11kw_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        let v = store.read_by_space(3, RegisterSpace::Holding).unwrap_or(0);
+        assert_eq!(
+            v & 0xFF,
+            3,
+            "low byte should be 3 (three phase), got {v:#x}"
+        );
+    }
+
+    #[test]
+    fn threephase_11kw_battery_capacity_uses_76v_nominal() {
+        // HR 55 = (kWh * 1000) / nominal_voltage. At 9.5kWh / 76.8V → ~124 Ah.
+        // A buggy projection using the 51.2V single-phase default would
+        // return ~186 Ah and trigger alarms in 3-phase clients.
+        let s = three_phase_11kw_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        let ah = store.read_by_space(55, RegisterSpace::Holding).unwrap_or(0);
+        assert!(
+            (120..=130).contains(&ah),
+            "Expected ~124 Ah @ 76.8V, got {ah}"
+        );
+    }
+
+    #[test]
+    fn threephase_11kw_battery_limit_mirrors_default_to_100_percent() {
+        // HR 1108 (discharge limit) and HR 1110 (charge limit) are the
+        // 3-phase mirrors of HR 314/313. Default must be 100% so a
+        // freshly-booted client doesn't refuse to charge/discharge.
+        let s = three_phase_11kw_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(store.read_by_space(1108, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(1110, RegisterSpace::Holding), Some(100));
+    }
+
+    #[test]
+    fn threephase_11kw_schedule_mirrors_slots_1_and_2() {
+        // HR 1113/1114 (charge slot 1) and 1115/1116 (charge slot 2)
+        // must mirror HR 94/95 and HR 31/32. Same for discharge slots
+        // at HR 1118-1121 mirroring HR 56/57 and HR 44/45.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let mut sched = sim_models::Schedule::default();
+        sched.charge_start = 1.5;
+        sched.charge_end = 5.0;
+        sched.charge_start_2 = 10.0;
+        sched.charge_end_2 = 12.0;
+        sched.discharge_start = 16.0;
+        sched.discharge_end = 19.0;
+        sched.discharge_start_2 = 21.0;
+        sched.discharge_end_2 = 23.0;
+        store.project_schedule_for(&sched, "ThreePhase11kW");
+
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(130));
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+        assert_eq!(store.read_by_space(1113, RegisterSpace::Holding), Some(130));
+        assert_eq!(store.read_by_space(1114, RegisterSpace::Holding), Some(500));
+
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(1000));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(1200));
+        assert_eq!(
+            store.read_by_space(1115, RegisterSpace::Holding),
+            Some(1000)
+        );
+        assert_eq!(
+            store.read_by_space(1116, RegisterSpace::Holding),
+            Some(1200)
+        );
+
+        assert_eq!(store.read_by_space(56, RegisterSpace::Holding), Some(1600));
+        assert_eq!(store.read_by_space(57, RegisterSpace::Holding), Some(1900));
+        assert_eq!(
+            store.read_by_space(1118, RegisterSpace::Holding),
+            Some(1600)
+        );
+        assert_eq!(
+            store.read_by_space(1119, RegisterSpace::Holding),
+            Some(1900)
+        );
+
+        assert_eq!(store.read_by_space(44, RegisterSpace::Holding), Some(2100));
+        assert_eq!(store.read_by_space(45, RegisterSpace::Holding), Some(2300));
+        assert_eq!(
+            store.read_by_space(1120, RegisterSpace::Holding),
+            Some(2100)
+        );
+        assert_eq!(
+            store.read_by_space(1121, RegisterSpace::Holding),
+            Some(2300)
+        );
+    }
+
+    #[test]
+    fn threephase_11kw_charge_target_soc_mirrored_at_hr_1111() {
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let mut sched = sim_models::Schedule::default();
+        sched.charge_target_soc = 87.0;
+        store.project_schedule_for(&sched, "ThreePhase11kW");
+        assert_eq!(store.read_by_space(116, RegisterSpace::Holding), Some(87));
+        assert_eq!(store.read_by_space(1111, RegisterSpace::Holding), Some(87));
+    }
+
+    fn read_u32_ir(store: &RegisterStore, hi: u16, lo: u16) -> u32 {
+        ((store.read_by_space(hi, RegisterSpace::Input).unwrap_or(0) as u32) << 16)
+            | store.read_by_space(lo, RegisterSpace::Input).unwrap_or(0) as u32
+    }
+
+    #[test]
+    fn threephase_11kw_publishes_live_data_on_tph_input_registers() {
+        let mut s = three_phase_11kw_state();
+        s.config.pv2_peak_watts = 3000.0;
+        s.solar.pv1_w = 2100.0;
+        s.solar.pv2_w = 1900.0;
+        s.solar.generation_w = 4000.0;
+        s.inverter.ac_power_w = 3300.0;
+        s.grid.power_w = 1800.0; // internal positive = importing
+        s.load.demand_w = 2700.0;
+        s.batteries[0].power_kw = 1.5;
+        s.batteries[0].soc_percent = 62.0;
+        s.sync_battery_from_vec();
+        s.inverter.dsp_firmware_version = 612;
+        s.inverter.arm_firmware_version = 318;
+        s.energy_totals.solar_generation_kwh = 12.0;
+        s.energy_totals.grid_import_kwh = 3.0;
+        s.energy_totals.grid_export_kwh = 4.0;
+        s.energy_totals.battery_charge_kwh = 5.0;
+        s.energy_totals.battery_discharge_kwh = 6.0;
+        s.energy_totals.load_consumption_kwh = 7.0;
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        // PV block: real 3-phase clients read IR 1001/1002 and 1017-1020.
+        assert_eq!(store.read_by_space(1001, RegisterSpace::Input), Some(3500));
+        assert_eq!(store.read_by_space(1002, RegisterSpace::Input), Some(3500));
+        assert_eq!(read_u32_ir(&store, 1017, 1018), 21000); // 2100W at ×0.1W
+        assert_eq!(read_u32_ir(&store, 1019, 1020), 19000);
+
+        // Grid/load block: voltage, per-phase current/load, total load.
+        assert_eq!(store.read_by_space(1061, RegisterSpace::Input), Some(2400));
+        assert_eq!(store.read_by_space(1062, RegisterSpace::Input), Some(2400));
+        assert_eq!(store.read_by_space(1063, RegisterSpace::Input), Some(2400));
+        assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(45));
+        assert_eq!(store.read_by_space(1083, RegisterSpace::Input), Some(9000));
+        assert_eq!(read_u32_ir(&store, 1089, 1090), 27000);
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 18000); // CT/meter import, ×0.1W
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 0); // CT/meter export
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 0); // export mirror
+        assert_eq!(read_u32_ir(&store, 1244, 1245), 0); // second meter absent
+
+        // Battery block: SoC, charge/discharge split, current and firmware IDs.
+        assert_eq!(store.read_by_space(1132, RegisterSpace::Input), Some(62));
+        assert_eq!(read_u32_ir(&store, 1138, 1139), 15000); // charging 1.5kW at ×0.1W
+        assert_eq!(read_u32_ir(&store, 1136, 1137), 0);
+        assert!((store.read_by_space(1140, RegisterSpace::Input).unwrap() as i16) < 0);
+        assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
+        assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(318));
+
+        // Energy block: 3-phase energy totals live at IR 1366+.
+        assert_eq!(read_u32_ir(&store, 1366, 1367), 60); // PV1 half of 12.0kWh, ×0.1kWh
+        assert_eq!(read_u32_ir(&store, 1370, 1371), 60); // PV2 half
+        assert_eq!(read_u32_ir(&store, 1380, 1381), 30);
+        assert_eq!(read_u32_ir(&store, 1384, 1385), 40);
+        assert_eq!(read_u32_ir(&store, 1388, 1389), 60);
+        assert_eq!(read_u32_ir(&store, 1392, 1393), 50);
+        assert_eq!(read_u32_ir(&store, 1396, 1397), 70);
+    }
+
+    #[test]
+    fn threephase_11kw_ct_meter_export_registers_follow_grid_sign() {
+        let mut s = three_phase_11kw_state();
+        s.grid.power_w = -1250.0; // internal negative = exporting
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 0);
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 12500);
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 12500);
     }
 }
