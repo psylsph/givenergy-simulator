@@ -686,6 +686,10 @@ impl RegisterStore {
                 "ge_hr_arm_firmware" => {
                     let fw = if state.inverter.arm_firmware_version != 0 {
                         state.inverter.arm_firmware_version
+                    } else if state.config.inverter_type.starts_with("ThreePhase")
+                        || state.config.inverter_type == "ACThreePhase"
+                    {
+                        612
                     } else {
                         match state.config.inverter_type.as_str() {
                             "Gen1Hybrid" => 252, // century 2 → Gen1
@@ -1285,6 +1289,10 @@ impl RegisterStore {
                 "tph_ir_arm_firmware_version" => {
                     let fw = if state.inverter.arm_firmware_version != 0 {
                         state.inverter.arm_firmware_version
+                    } else if state.config.inverter_type.starts_with("ThreePhase")
+                        || state.config.inverter_type == "ACThreePhase"
+                    {
+                        612
                     } else {
                         match state.config.inverter_type.as_str() {
                             "Gen1Hybrid" => 252,
@@ -6902,6 +6910,7 @@ mod tests {
         let mut s = PlantState::new(test_ts());
         s.config.inverter_type = "ThreePhase11kW".to_string();
         s.config.max_ac_watts = 11000.0;
+        s.inverter.dsp_firmware_version = 612;
         s.batteries[0].capacity_kwh = 9.5;
         s.batteries[0].soc_percent = 50.0;
         s.sync_battery_from_vec();
@@ -7078,7 +7087,10 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1136, 1137), 0);
         assert!((store.read_by_space(1140, RegisterSpace::Input).unwrap() as i16) < 0);
         assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
-        assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(318));
+        assert_eq!(store.read_by_space(1326, RegisterSpace::Input), Some(612));
+        assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(318)); // overridden in test
+        assert_eq!(store.read_by_space(19, RegisterSpace::Holding), Some(612));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(318)); // override propagates
 
         // Energy block: 3-phase energy totals live at IR 1366+.
         assert_eq!(read_u32_ir(&store, 1366, 1367), 60); // PV1 half of 12.0kWh, ×0.1kWh
@@ -7088,6 +7100,20 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1388, 1389), 60);
         assert_eq!(read_u32_ir(&store, 1392, 1393), 50);
         assert_eq!(read_u32_ir(&store, 1396, 1397), 70);
+    }
+
+    #[test]
+    fn threephase_11kw_firmware_registers_have_correct_defaults() {
+        let s = three_phase_11kw_state();
+        // No override — should use type defaults
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(store.read_by_space(19, RegisterSpace::Holding), Some(612));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(612));
+        assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
+        assert_eq!(store.read_by_space(1326, RegisterSpace::Input), Some(612));
+        assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(612));
     }
 
     #[test]
