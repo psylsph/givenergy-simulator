@@ -134,6 +134,15 @@ impl RegisterStore {
 
     /// Update all register values from plant state.
     pub fn project_from_state(&mut self, state: &sim_models::PlantState) {
+        let seeded_state = if state.energy_totals.is_all_zero() {
+            let mut seeded = state.clone();
+            seeded.energy_totals = sim_models::EnergyTotals::non_zero_test_fixture();
+            Some(seeded)
+        } else {
+            None
+        };
+        let state = seeded_state.as_ref().unwrap_or(state);
+
         let u32_words = |engineering: f64, scaling: f64| -> (u16, u16) {
             let raw = if scaling > 0.0 {
                 (engineering / scaling).max(0.0).round() as u32
@@ -6439,6 +6448,95 @@ mod tests {
         assert_eq!(store.read_by_space(44, RegisterSpace::Input), Some(125));
         assert_eq!(store.read_by_space(45, RegisterSpace::Input), Some(0));
         assert_eq!(store.read_by_space(46, RegisterSpace::Input), Some(125));
+    }
+
+    #[test]
+    fn zero_energy_state_projects_fixture_energy_registers_for_all_inverter_types() {
+        let inverter_types = [
+            "Gen1Hybrid",
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "Gen3Hybrid8kW",
+            "Gen3Hybrid10kW",
+            "Gen3Plus6kW",
+            "Gen3Plus4600",
+            "Gen3Plus3600",
+            "Gen3Plus6kW2",
+            "ACCoupled",
+            "ACCoupled2",
+            "ThreePhase",
+            "ThreePhase8kW",
+            "ThreePhase10kW",
+            "ThreePhase11kW",
+            "ACThreePhase",
+            "AllInOne6",
+            "AllInOne",
+            "AllInOne5",
+            "AIO8kW",
+            "AIO10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+        ];
+
+        for inv_type in inverter_types {
+            let mut state = PlantState::new(test_ts());
+            state.config.inverter_type = inv_type.to_string();
+            let mut store = RegisterStore::new(default_register_catalogue());
+            store.project_from_state(&state);
+
+            assert!(
+                store.read_by_space(17, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: PV today should be non-zero"
+            );
+            assert!(
+                store.read_by_space(25, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: grid export today should be non-zero"
+            );
+            assert!(
+                store.read_by_space(26, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: grid import today should be non-zero"
+            );
+            assert!(
+                store.read_by_space(36, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: battery charge today should be non-zero"
+            );
+            assert!(
+                store.read_by_space(37, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: battery discharge today should be non-zero"
+            );
+            assert!(
+                store.read_by_space(44, RegisterSpace::Input).unwrap_or(0) > 0,
+                "{inv_type}: PV generation today should be non-zero"
+            );
+
+            if inv_type.starts_with("ThreePhase") || inv_type == "ACThreePhase" {
+                assert!(
+                    read_u32_ir(&store, 1366, 1367) > 0,
+                    "{inv_type}: 3-phase PV1 today should be non-zero"
+                );
+                assert!(
+                    read_u32_ir(&store, 1380, 1381) > 0,
+                    "{inv_type}: 3-phase grid import today should be non-zero"
+                );
+                assert!(
+                    read_u32_ir(&store, 1384, 1385) > 0,
+                    "{inv_type}: 3-phase grid export today should be non-zero"
+                );
+                assert!(
+                    read_u32_ir(&store, 1388, 1389) > 0,
+                    "{inv_type}: 3-phase battery discharge today should be non-zero"
+                );
+                assert!(
+                    read_u32_ir(&store, 1392, 1393) > 0,
+                    "{inv_type}: 3-phase battery charge today should be non-zero"
+                );
+                assert!(
+                    read_u32_ir(&store, 1396, 1397) > 0,
+                    "{inv_type}: 3-phase load today should be non-zero"
+                );
+            }
+        }
     }
 
     #[test]

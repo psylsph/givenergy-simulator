@@ -179,6 +179,7 @@ pub async fn create_plant(
         _ => 5000.0,
     };
     plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
+    plant_state.energy_totals.seed_for_testing_if_zero();
 
     // Reset schedule to default — a new plant shouldn't inherit old schedule settings
     {
@@ -1885,7 +1886,7 @@ pub async fn load_plant(
     let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
 
     // Try new PersistedState format first, fall back to plain PlantState
-    let (plant_state, schedule_opt): (sim_models::PlantState, Option<sim_core::Schedule>) =
+    let (mut plant_state, schedule_opt): (sim_models::PlantState, Option<sim_core::Schedule>) =
         if let Ok(ps) = serde_json::from_str::<crate::app_state::PersistedState>(&json) {
             (ps.plant, ps.schedule)
         } else {
@@ -1893,6 +1894,7 @@ pub async fn load_plant(
                 serde_json::from_str::<sim_models::PlantState>(&json).map_err(|e| e.to_string())?;
             (ps, None)
         };
+    plant_state.energy_totals.seed_for_testing_if_zero();
 
     // Restore schedule into AppState
     {

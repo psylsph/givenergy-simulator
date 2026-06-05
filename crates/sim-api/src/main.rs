@@ -331,6 +331,9 @@ async fn run_scenario(
     state.config.latitude = latitude;
     state.config.tick_interval_secs = tick_interval;
     state.weather = format!("{:?}", parse_weather(weather));
+    if modbus.is_some() {
+        state.energy_totals.seed_for_testing_if_zero();
+    }
 
     let solar = SolarEngine::new(peak_watts, latitude);
 
@@ -742,6 +745,7 @@ async fn serve_config(
     let mut state = cfg.plant;
     let mut schedule_opt = cfg.schedule;
     state.config.tick_interval_secs = tick_interval;
+    state.energy_totals.seed_for_testing_if_zero();
 
     let peak_watts = state.config.solar_peak_watts;
     let latitude = state.config.latitude;

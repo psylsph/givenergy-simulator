@@ -333,6 +333,43 @@ pub struct EnergyTotals {
     pub ac_charge_kwh: f64,
 }
 
+impl EnergyTotals {
+    /// Small non-zero starter totals used by simulator frontends/register projection.
+    ///
+    /// Keeping core defaults at zero preserves deterministic physics tests, while
+    /// seeding UI/API simulations with this fixture makes all common energy
+    /// registers immediately testable before a full day of simulation has run.
+    pub fn non_zero_test_fixture() -> Self {
+        Self {
+            grid_import_kwh: 1.5,
+            grid_export_kwh: 2.5,
+            battery_charge_kwh: 3.5,
+            battery_discharge_kwh: 4.5,
+            solar_generation_kwh: 8.5,
+            load_consumption_kwh: 6.5,
+            ac_charge_kwh: 0.7,
+        }
+    }
+
+    /// True when every energy bucket is exactly zero.
+    pub fn is_all_zero(&self) -> bool {
+        self.grid_import_kwh == 0.0
+            && self.grid_export_kwh == 0.0
+            && self.battery_charge_kwh == 0.0
+            && self.battery_discharge_kwh == 0.0
+            && self.solar_generation_kwh == 0.0
+            && self.load_consumption_kwh == 0.0
+            && self.ac_charge_kwh == 0.0
+    }
+
+    /// Replace an all-zero total set with the non-zero testing fixture.
+    pub fn seed_for_testing_if_zero(&mut self) {
+        if self.is_all_zero() {
+            *self = Self::non_zero_test_fixture();
+        }
+    }
+}
+
 impl Default for EnergyTotals {
     fn default() -> Self {
         Self {

@@ -79,7 +79,7 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         if let Ok(json) = tokio::fs::read_to_string(&save_path).await {
                             // Try PersistedState first, fall back to plain PlantState
-                            let (plant_state, schedule_opt) = if let Ok(ps) =
+                            let (mut plant_state, schedule_opt) = if let Ok(ps) =
                                 serde_json::from_str::<crate::app_state::PersistedState>(&json)
                             {
                                 (ps.plant, ps.schedule)
@@ -90,6 +90,7 @@ pub fn run() {
                             } else {
                                 return;
                             };
+                            plant_state.energy_totals.seed_for_testing_if_zero();
 
                             let app_state = app_handle.state::<AppState>();
                             let peak_watts = plant_state.config.solar_peak_watts;

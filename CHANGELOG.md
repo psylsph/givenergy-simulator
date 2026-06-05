@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-06-05
+
+### Added
+
+- **Non-zero starter energy totals for testing**: New plants, saved-plant
+  loads, and `giv-sim serve` now boot with small non-zero daily energy
+  counters (PV today 8.5 kWh, grid import 1.5 kWh, grid export 2.5 kWh,
+  battery charge 3.5 kWh, battery discharge 4.5 kWh, load consumption 6.5 kWh,
+  AC charge 0.7 kWh). Lets external clients and tests read realistic values
+  from all energy registers (single-phase IR 17/25/26/36/37/44 and the
+  three-phase high IR 1366-1397 block) before a full day of simulation has
+  run. Real simulated values still take precedence — the fixture only kicks
+  in when every energy bucket is exactly zero.
+- `EnergyTotals::non_zero_test_fixture()`, `is_all_zero()`, and
+  `seed_for_testing_if_zero()` helpers in `sim-models`.
+
+### Tests
+- 245 total (244 → 245). New test
+  `zero_energy_state_projects_fixture_energy_registers_for_all_inverter_types`
+  exercises PV/grid/battery/load energy registers across 24 inverter types,
+  including the three-phase high IR energy block.
+
 ## [0.14.1] - 2026-06-05
 
 ### Fixed
