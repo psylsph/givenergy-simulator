@@ -99,6 +99,7 @@ pub async fn create_plant(
         "ThreePhase" => 6000.0,
         "ThreePhase8kW" => 8000.0,
         "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
         _ => 3600.0,
     };
     let max_batt_kw = max_batt_w / 1000.0;
@@ -146,7 +147,7 @@ pub async fn create_plant(
         "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
         "ACCoupled" | "ACCoupled2" => 305,
         "ThreePhase" => 612,
-        "ThreePhase8kW" | "ThreePhase10kW" => 612,
+        "ThreePhase8kW" | "ThreePhase10kW" | "ThreePhase11kW" => 612,
         "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
         "AIO8kW" | "AIO10kW" => 1010,
         "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
@@ -168,6 +169,7 @@ pub async fn create_plant(
         "ThreePhase" => 6000.0,
         "ThreePhase8kW" => 8000.0,
         "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
         "ACCoupled" | "ACCoupled2" => 3000.0,
         "AllInOne" => 6000.0,
         "AllInOne5" => 5000.0,

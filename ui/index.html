@@ -367,8 +367,8 @@
         <h3>Plant Setup</h3>
         <label>Inverter Type</label>
         <select id="inverter-type">
-          <option value="Gen1Hybrid">Gen 1 Hybrid (0x2001, FW 2xx)</option>
-          <option value="Gen2Hybrid">Gen 2 Hybrid (0x2001, FW 8xx)</option>
+          <option value="Gen1Hybrid">Gen1 Hybrid (0x2001, FW 2xx)</option>
+          <option value="Gen2Hybrid">Gen2 Hybrid (0x2001, FW 8xx)</option>
           <option value="Gen3Hybrid">Gen3 Hybrid (0x2001, FW 3xx)</option>
           <option value="Gen3Hybrid8kW">Polar 8kW (0x2101)</option>
           <option value="Gen3Hybrid10kW">Polar 10kW (0x2102)</option>
@@ -381,6 +381,7 @@
           <option value="ThreePhase">Three Phase 6kW (0x4001)</option>
           <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
           <option value="ThreePhase10kW">Three Phase 10kW (0x4003)</option>
+          <option value="ThreePhase11kW">Three Phase 11kW (0x4004)</option>
           <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
           <option value="AllInOne">All-in-One (0x8002)</option>
           <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
@@ -666,6 +667,7 @@
       ThreePhase:      { dtc: 0x4001, label: 'Three Phase',     maxBattW: 6000, nomV: 76.8 },
       ThreePhase8kW:    { dtc: 0x4002, label: 'Three Phase 8kW', maxBattW: 8000, nomV: 76.8 },
       ThreePhase10kW:   { dtc: 0x4003, label: 'Three Phase 10kW',maxBattW: 10000,nomV: 76.8 },
+      ThreePhase11kW:   { dtc: 0x4004, label: 'Three Phase 11kW',maxBattW: 11000,nomV: 76.8 },
       AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',  maxBattW: 6000, nomV: 307.0 },
       AllInOne:        { dtc: 0x8002, label: 'All-in-One',       maxBattW: 6000, nomV: 307.0 },
       AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',  maxBattW: 5000, nomV: 307.0 },

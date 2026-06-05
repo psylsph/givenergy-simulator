@@ -121,6 +121,9 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 | ACCoupled | 0x3001 | 3000W | 3000W | — |
 | ACCoupled2 | 0x3002 | 3000W | 3000W | — |
 | ThreePhase | 0x4001 | 6000W | 6000W | — |
+| ThreePhase8kW | 0x4002 | 8000W | 8000W | — |
+| ThreePhase10kW | 0x4003 | 10000W | 10000W | — |
+| ThreePhase11kW | 0x4004 | 11000W | 11000W | — |
 | AllInOne6 | 0x8001 | 6000W | 6000W | — |
 | AllInOne | 0x8002 | 6000W | 6000W | — |
 | AllInOne5 | 0x8003 | 5000W | 5000W | — |
