@@ -25,7 +25,7 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.14.0** — Three-phase Input Register block (IR 1001-1413) with CT/meter data, battery capacity Ah nominal-voltage fix.
+**0.14.1** — ACThreePhase voltage/ARM firmware guard fixes.
 
 ## Common Gotchas
 
@@ -302,3 +302,4 @@ Target SOC register follows each slot's end register (e.g. HR 248 for charge slo
 - v0.12.0: 223
 - v0.13.0: 235
 - v0.14.0: 243
+- v0.14.1: 244

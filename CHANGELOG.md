@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-06-05
+## [0.14.1] - 2026-06-05
+
+### Fixed
+
+- **ACThreePhase nominal voltage** (HR 55): ACThreePhase (0x6001) now uses
+  76.8V battery capacity voltage like other three-phase variants.
+- **ACThreePhase ARM firmware** (HR 21, IR 1327): Now defaults to 612
+  instead of falling through to the Gen3 hybrid default of 318.
+- Three-phase `starts_with("ThreePhase")` guards also check
+  `== "ACThreePhase"` for consistency.
+
+### Tests
+- 244 total (243 → 244).
 
 This release adds the three-phase **Input Register** block (IR 1001-1413) so
 clients can read PV, grid, battery, EPS, firmware and energy-total data from

@@ -834,7 +834,9 @@ impl RegisterStore {
                 // HR 55: Battery capacity in Ah (total system)
                 // kWh = Ah * nominal_voltage / 1000 → Ah = kWh * 1000 / V
                 "ge_hr_battery_capacity_ah" => {
-                    let nom_v = if state.config.inverter_type.starts_with("ThreePhase") {
+                    let nom_v = if state.config.inverter_type.starts_with("ThreePhase")
+                        || state.config.inverter_type == "ACThreePhase"
+                    {
                         76.8
                     } else {
                         match state.config.inverter_type.as_str() {
