@@ -107,7 +107,7 @@ Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery 
 0x2001 is a **family code** shared by Gen1/Gen2/Gen3 hybrids. The actual
 generation is decided by HR(21) ARM firmware century (fw/100):
   - century 2 → Gen1Hybrid (arm_fw 252)
-  - century 3 → Gen3Hybrid (arm_fw 352)
+  - century 3 → Gen3Hybrid (arm_fw 318)
   - century 8/9 → Gen2Hybrid (arm_fw 852)
   - other centuries → Gen1Hybrid (default)
 
@@ -115,7 +115,7 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 |---|---|---|---|---|
 | Gen1Hybrid | 0x2001 | 5000W | 2500W | 252 |
 | Gen2Hybrid | 0x2001 | 5000W | 3600W | 852 |
-| Gen3Hybrid | 0x2001 | 5000W | 3600W | 352 |
+| Gen3Hybrid | 0x2001 | 5000W | 3600W | 318 |
 | Gen3Hybrid8kW | 0x2101 | 8000W | 8000W | — |
 | Gen3Hybrid10kW | 0x2102 | 10000W | 10000W | — |
 | ACCoupled | 0x3001 | 3000W | 3000W | — |

@@ -682,9 +682,9 @@ impl RegisterStore {
                         match state.config.inverter_type.as_str() {
                             "Gen1Hybrid" => 252, // century 2 → Gen1
                             "Gen2Hybrid" => 852, // century 8 → Gen2
-                            "Gen3Hybrid" => 352, // century 3 → Gen3
+                            "Gen3Hybrid" => 318, // century 3 → Gen3 (D318-A318 26-Aug-2025)
                             "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
-                            _ => 352,
+                            _ => 318,
                         }
                     };
                     self.values.insert(key, fw);
@@ -5689,7 +5689,7 @@ mod tests {
     fn arm_firmware_override_takes_precedence_over_type_default() {
         let now = test_ts();
         let mut s = PlantState::new(now);
-        // Default Gen3Hybrid arm_fw is 352 (century 3)
+        // Default Gen3Hybrid arm_fw is 318 (century 3)
         s.config.inverter_type = "Gen3Hybrid".to_string();
         // Override to simulate Gen2 identification
         s.inverter.arm_firmware_version = 852;
@@ -5706,7 +5706,7 @@ mod tests {
         s.inverter.arm_firmware_version = 0; // sentinel: use type default
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
-        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(352));
+        assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(318));
     }
 
     #[test]
