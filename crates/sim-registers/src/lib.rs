@@ -142,6 +142,22 @@ impl RegisterStore {
             };
             ((raw >> 16) as u16, (raw & 0xFFFF) as u16)
         };
+        let clamp_i16_word = |watts: f64| -> u16 { watts.clamp(-32768.0, 32767.0) as i16 as u16 };
+        let fault_code = || -> u32 {
+            let mut code = 0u32;
+            for fault in &state.active_faults {
+                match fault.as_str() {
+                    // Align to common GivEnergy-style fault meanings where possible.
+                    "grid_loss" => code |= 1 << 8,     // No Utility
+                    "inverter_trip" => code |= 1 << 9, // relay/consistent inverter fault bucket
+                    "battery_over_temp" => code |= 1 << 1, // generic battery/charger warning bucket
+                    "comm_timeout" => code |= 1 << 25, // ARM/DSP comms bucket
+                    "sensor_drift" => code |= 1 << 0,
+                    _ => code |= 1,
+                }
+            }
+            code
+        };
 
         for def in &self.defs {
             let key = def.store_key();
@@ -167,6 +183,13 @@ impl RegisterStore {
                         0.0
                     },
                 ),
+                // IR 3-4: DC bus voltages (×0.1 V)
+                "ge_ir_p_bus_voltage" => Some(if state.solar.generation_w > 0.0 {
+                    380.0
+                } else {
+                    0.0
+                }),
+                "ge_ir_n_bus_voltage" => Some(0.0),
                 // IR 5: Grid voltage (×0.1 V)
                 "ge_ir_grid_voltage" => Some(240.0),
                 // IR 6-7: Battery throughput total (uint32, ×0.1 kWh)
@@ -181,6 +204,8 @@ impl RegisterStore {
                 "ge_ir_pv1_current" => Some(state.solar.pv1_w / 350.0),
                 // IR 9: PV2 current (×0.1 A)
                 "ge_ir_pv2_current" => Some(state.solar.pv2_w / 350.0),
+                // IR 10: AC current phase 1 (×0.1 A)
+                "ge_ir_ac_current" => Some(state.inverter.ac_power_w.abs() / 240.0),
                 // IR 11-12: PV total lifetime (uint32, ×0.1 kWh)
                 "ge_ir_pv_total_high" | "ge_ir_pv_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
@@ -190,6 +215,20 @@ impl RegisterStore {
                 }
                 // IR 13: Grid frequency (×0.01 Hz)
                 "ge_ir_grid_frequency" => Some(50.0),
+                // IR 14-16: status/bus/power-factor telemetry
+                "ge_ir_charge_status" => Some(if state.total_battery_power_kw() > 0.01 {
+                    1.0
+                } else if state.total_battery_power_kw() < -0.01 {
+                    2.0
+                } else {
+                    0.0
+                }),
+                "ge_ir_high_bus_voltage" => Some(if state.solar.generation_w > 0.0 {
+                    380.0
+                } else {
+                    0.0
+                }),
+                "ge_ir_inverter_output_pf" => Some(10000.0),
                 // IR 17: PV1 energy today (×0.1 kWh) — proportional to power split
                 "ge_ir_pv1_energy_today" => {
                     let total = state.energy_totals.solar_generation_kwh;
@@ -219,19 +258,38 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
+                // IR 23-24: solar diverter energy and inverter AC-terminal real power
+                "ge_ir_solar_diverter_energy" => Some(0.0),
+                "ge_ir_inverter_terminal_power" => {
+                    self.values
+                        .insert(key, clamp_i16_word(state.inverter.ac_power_w));
+                    continue;
+                }
                 // IR 25: Export energy today (×0.1 kWh)
                 "ge_ir_today_export_energy" => Some(state.energy_totals.grid_export_kwh),
                 // IR 26: Import energy today (×0.1 kWh)
                 "ge_ir_today_import_energy" => Some(state.energy_totals.grid_import_kwh),
+                // IR 27-28: inverter input/AC-charge total (uint32, ×0.1 kWh)
+                "ge_ir_inverter_input_total_high" | "ge_ir_inverter_input_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.ac_charge_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                // IR 29: discharge energy this year (×0.1 kWh). Simulator has no yearly reset, so use cumulative bucket.
+                "ge_ir_discharge_year" => Some(state.energy_totals.battery_discharge_kwh),
                 // IR 30: Grid power (signed, +exporting/-importing per GE convention)
                 "ge_ir_grid_power" => {
                     // Negate: our internal has positive=import, GE wire has positive=export
-                    // Clamp to i16 range to avoid panic on saturating cast
-                    let negated = -state.grid.power_w;
-                    let clamped = negated.clamp(-32768.0, 32767.0);
-                    self.values.insert(key, clamped as i16 as u16);
+                    self.values.insert(key, clamp_i16_word(-state.grid.power_w));
                     continue;
                 }
+                // IR 31: EPS backup power
+                "ge_ir_eps_backup_power" => Some(if state.enable_eps {
+                    state.load.demand_w
+                } else {
+                    0.0
+                }),
                 // IR 32-33: Grid import total (uint32, ×0.1 kWh)
                 "ge_ir_grid_import_total_high" | "ge_ir_grid_import_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.grid_import_kwh, 0.1);
@@ -249,8 +307,26 @@ impl RegisterStore {
                 "ge_ir_today_charge_energy" => Some(state.energy_totals.battery_charge_kwh),
                 // IR 37: Battery discharge today (×0.1 kWh)
                 "ge_ir_today_discharge_energy" => Some(state.energy_totals.battery_discharge_kwh),
+                // IR 38: countdown
+                "ge_ir_countdown" => Some(0.0),
+                // IR 39-40: inverter fault bitmask (uint32)
+                "ge_ir_fault_code_high" | "ge_ir_fault_code_low" => {
+                    let code = fault_code();
+                    self.values.insert(
+                        key,
+                        if def.name.ends_with("_high") {
+                            (code >> 16) as u16
+                        } else {
+                            (code & 0xFFFF) as u16
+                        },
+                    );
+                    continue;
+                }
                 // IR 41: Inverter temperature (×0.1 °C)
                 "ge_ir_inverter_temperature" => Some(state.inverter.temperature_celsius),
+                // IR 42-43: house load and inverter terminal apparent power
+                "ge_ir_load_demand" => Some(state.load.demand_w),
+                "ge_ir_grid_apparent" => Some(state.inverter.ac_power_w.abs()),
                 // IR 44: PV generation today (×0.1 kWh)
                 "ge_ir_pv_generation_today" => Some(state.energy_totals.solar_generation_kwh),
                 // IR 45-46: PV generation total (uint32, ×0.1 kWh)
@@ -260,6 +336,21 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
+                // IR 47-48: powered runtime hours (uint32)
+                "ge_ir_work_time_total_high" | "ge_ir_work_time_total_low" => {
+                    let (hi, lo) = u32_words(state.inverter.work_time_hours, 1.0);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                // IR 49: system/work mode (2=on-grid, 1=off-grid, 3=fault)
+                "ge_ir_system_mode" => Some(if !state.active_faults.is_empty() {
+                    3.0
+                } else if state.grid.connected {
+                    2.0
+                } else {
+                    1.0
+                }),
                 // IR 50: Battery voltage (×0.01 V)
                 "ge_ir_battery_voltage" => {
                     let soc = state.aggregate_soc();
@@ -281,10 +372,39 @@ impl RegisterStore {
                     self.values.insert(key, w as i16 as u16);
                     continue;
                 }
+                // IR 53-55: EPS/grid output voltage/frequency and charger temperature
+                "ge_ir_eps_voltage" => Some(if state.enable_eps { 240.0 } else { 0.0 }),
+                "ge_ir_eps_frequency" => Some(if state.enable_eps { 50.0 } else { 0.0 }),
+                "ge_ir_charger_temperature" => Some(state.inverter.temperature_celsius),
                 // IR 56: Battery temperature (×0.1 °C)
                 "ge_ir_battery_temperature" => Some(state.battery_temperature_celsius()),
+                // IR 57-58: warning and inverter AC-terminal current
+                "ge_ir_charger_warning_code" => Some(
+                    if state.active_faults.iter().any(|f| f == "battery_over_temp") {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                ),
+                "ge_ir_grid_port_current" => Some(state.inverter.ac_power_w.abs() / 240.0),
                 // IR 59: Battery SOC (%)
                 "ge_ir_battery_soc" => Some(state.aggregate_soc()),
+                // IR 180-183: model-dependent battery energy alt sources
+                "ge_ir_battery_discharge_total_alt1" => {
+                    Some(state.energy_totals.battery_discharge_kwh)
+                }
+                "ge_ir_battery_charge_total_alt1" => Some(state.energy_totals.battery_charge_kwh),
+                "ge_ir_battery_discharge_today_alt2" => {
+                    Some(state.energy_totals.battery_discharge_kwh)
+                }
+                "ge_ir_battery_charge_today_alt2" => Some(state.energy_totals.battery_charge_kwh),
+                // IR 247-248: Gen3 combined generation (uint32 W)
+                "ge_ir_combined_generation_high" | "ge_ir_combined_generation_low" => {
+                    let (hi, lo) = u32_words(state.solar.generation_w, 1.0);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
 
                 // ================================================================
                 // CT Clamp Meter Input Registers (IR 60-89)
@@ -425,28 +545,97 @@ impl RegisterStore {
                     //   century 2 → Gen1, century 3 → Gen3, century 8/9 → Gen2.
                     let dtc: u16 = match state.config.inverter_type.as_str() {
                         "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" => 0x2001,
+                        "Hybrid4600" => 0x2002,
+                        "Hybrid3600" => 0x2003,
+                        "Polar5kW" => 0x2101,
+                        "Polar4600" => 0x2102,
+                        "Polar3600" => 0x2103,
+                        "Polar6kW" => 0x2104,
+                        "Polar7kW" => 0x2105,
                         "Gen3Hybrid8kW" => 0x2101,
                         "Gen3Hybrid10kW" => 0x2102,
+                        "Polar8kW" => 0x2106,
                         "Gen3Plus6kW" => 0x2201,
                         "Gen3Plus4600" => 0x2202,
                         "Gen3Plus3600" => 0x2203,
                         "Gen3Plus6kW2" => 0x2204,
+                        "Gen3Plus7kW" => 0x2205,
+                        "Gen3Plus8kW" => 0x2206,
+                        "PVInverter5kW" => 0x2301,
+                        "PVInverter4600" => 0x2302,
+                        "PVInverter3600" => 0x2303,
+                        "PVInverter6kW" => 0x2304,
                         "ACCoupled" => 0x3001,
                         "ACCoupled2" => 0x3002,
+                        "ThreePhase" => 0x4001,
                         "ThreePhase8kW" => 0x4002,
                         "ThreePhase10kW" => 0x4003,
+                        "ThreePhase11kW" => 0x4004,
+                        "AIOCommercial" => 0x4101,
+                        "EMS" => 0x5001,
+                        "EMSCommercial" => 0x5101,
+                        "ACThreePhase" => 0x6001,
+                        "Gateway12kW" => 0x7001,
                         "AllInOne6" => 0x8001,
                         "AllInOne" => 0x8002,
                         "AllInOne5" => 0x8003,
+                        "AIO6kW" => 0x8101,
                         "AIO8kW" => 0x8102,
                         "AIO10kW" => 0x8103,
-                        "ThreePhase" => 0x4001,
                         "AIOHybrid6kW" => 0x8201,
                         "AIOHybrid8kW" => 0x8202,
                         "AIOHybrid10kW" => 0x8203,
+                        "AIOHybrid12kW" => 0x8204,
+                        "Gen4Hybrid6kW" => 0x8304,
                         _ => 0x2001,
                     };
                     self.values.insert(key, dtc);
+                    continue;
+                }
+                // HR 1-3: module and phase/MPPT metadata
+                "ge_hr_module_high" | "ge_hr_module_low" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_mppt_phase_count" => {
+                    let mppt = if state.config.pv2_peak_watts > 0.0 {
+                        2u16
+                    } else {
+                        1u16
+                    };
+                    let phases = if state.config.inverter_type.starts_with("ThreePhase")
+                        || state.config.inverter_type == "ACThreePhase"
+                    {
+                        3u16
+                    } else {
+                        1u16
+                    };
+                    self.values.insert(key, (mppt << 8) | phases);
+                    continue;
+                }
+                "ge_hr_enable_ammeter" => {
+                    self.values.insert(key, 1);
+                    continue;
+                }
+                // HR 8-12: First battery serial number (simulated)
+                "ge_hr_first_battery_serial_0" => {
+                    self.values.insert(key, (b'B' as u16) << 8 | b'A' as u16);
+                    continue;
+                }
+                "ge_hr_first_battery_serial_1" => {
+                    self.values.insert(key, (b'T' as u16) << 8 | b'0' as u16);
+                    continue;
+                }
+                "ge_hr_first_battery_serial_2" => {
+                    self.values.insert(key, (b'0' as u16) << 8 | b'0' as u16);
+                    continue;
+                }
+                "ge_hr_first_battery_serial_3" => {
+                    self.values.insert(key, (b'0' as u16) << 8 | b'1' as u16);
+                    continue;
+                }
+                "ge_hr_first_battery_serial_4" => {
+                    self.values.insert(key, (b' ' as u16) << 8 | b' ' as u16);
                     continue;
                 }
                 // HR 13-17: Serial number (simulated)
@@ -468,6 +657,11 @@ impl RegisterStore {
                 }
                 "ge_hr_serial_4" => {
                     self.values.insert(key, (b'4' as u16) << 8 | b'5' as u16);
+                    continue;
+                }
+                // HR 18: First battery BMS firmware version
+                "ge_hr_first_battery_bms_firmware" => {
+                    self.values.insert(key, 100);
                     continue;
                 }
                 // HR 19: DSP firmware version (user-overridable, defaults
@@ -496,6 +690,16 @@ impl RegisterStore {
                     self.values.insert(key, fw);
                     continue;
                 }
+                // HR 22-26: USB/variable/power metadata
+                "ge_hr_usb_device_inserted" => {
+                    self.values.insert(key, 1);
+                    continue;
+                }
+                "ge_hr_select_arm_chip" | "ge_hr_variable_address" | "ge_hr_variable_value" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_grid_port_max_power_output" => Some(state.config.max_ac_watts),
                 // HR 29: Battery calibration stage (0=off)
                 "ge_hr_battery_calibration_stage" => {
                     self.values
@@ -514,6 +718,14 @@ impl RegisterStore {
                         _ => 0,
                     };
                     self.values.insert(key, v);
+                    continue;
+                }
+                "ge_hr_enable_60hz_freq_mode" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_modbus_address" => {
+                    self.values.insert(key, 0x32);
                     continue;
                 }
                 // HR 31: Charge slot 2 start (HHMM)
@@ -551,6 +763,24 @@ impl RegisterStore {
                     self.values.insert(key, state.timestamp.second() as u16);
                     continue;
                 }
+                // HR 33-43 metadata / feature config
+                "ge_hr_user_code" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_modbus_version" => Some(1.0),
+                "ge_hr_enable_drm_rj45_port" | "ge_hr_enable_reversed_ct_clamp" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_charge_discharge_soc" => {
+                    self.values.insert(
+                        key,
+                        ((state.aggregate_soc().round() as u16) << 8)
+                            | (state.min_aggregate_soc().round() as u16),
+                    );
+                    continue;
+                }
                 // HR 44: Discharge slot 2 start (HHMM)
                 "ge_hr_discharge_slot_2_start" => {
                     self.values.insert(key, 60); // disabled sentinel
@@ -561,8 +791,34 @@ impl RegisterStore {
                     self.values.insert(key, 60); // disabled sentinel
                     continue;
                 }
+                // HR 46-54 meter and inverter config
+                "ge_hr_bms_firmware_version" => {
+                    self.values.insert(key, 100);
+                    continue;
+                }
+                "ge_hr_meter_type" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_enable_reversed_115_meter" | "ge_hr_enable_reversed_418_meter" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
                 // HR 50: Active power rate (%)
                 "ge_hr_active_power_rate" => Some(state.active_power_rate_percent),
+                "ge_hr_reactive_power_rate" => Some(100.0),
+                "ge_hr_power_factor" => {
+                    self.values.insert(key, 10000);
+                    continue;
+                }
+                "ge_hr_enable_inverter_flags" => {
+                    self.values.insert(key, 0x0101);
+                    continue;
+                }
+                "ge_hr_battery_type" => {
+                    self.values.insert(key, 1);
+                    continue;
+                }
                 // HR 55: Battery capacity in Ah (total system)
                 // kWh = Ah * nominal_voltage / 1000 → Ah = kWh * 1000 / V
                 "ge_hr_battery_capacity_ah" => {
@@ -586,6 +842,11 @@ impl RegisterStore {
                     self.values.insert(key, 60); // disabled sentinel
                     continue;
                 }
+                // HR 58-60 low-level config
+                "ge_hr_enable_auto_judge_battery_type" => {
+                    self.values.insert(key, 1);
+                    continue;
+                }
                 // HR 59: Enable discharge
                 "ge_hr_enable_discharge" => {
                     let v = match state.inverter.mode_state.effective {
@@ -593,6 +854,11 @@ impl RegisterStore {
                         _ => 0,
                     };
                     self.values.insert(key, v);
+                    continue;
+                }
+                "ge_hr_pv_start_voltage" => Some(120.0),
+                "ge_hr_start_countdown_timer" | "ge_hr_restart_delay_time" => {
+                    self.values.insert(key, 0);
                     continue;
                 }
                 // HR 94: Charge slot 1 start (HHMM)
@@ -614,18 +880,60 @@ impl RegisterStore {
                     self.values.insert(key, v);
                     continue;
                 }
+                "ge_hr_battery_low_voltage_protection_limit" => Some(40.0),
+                "ge_hr_battery_high_voltage_protection_limit" => Some(60.0),
+                "ge_hr_battery_voltage_adjust" => Some(0.0),
+                "ge_hr_battery_low_force_charge_time" => Some(0.0),
+                "ge_hr_enable_bms_read" => {
+                    self.values.insert(key, 1);
+                    continue;
+                }
                 // HR 110: Battery SOC reserve (%)
                 "ge_hr_battery_soc_reserve" => Some(state.min_aggregate_soc()),
                 // HR 111: Battery charge limit (%)
                 "ge_hr_battery_charge_limit" => Some(state.battery_charge_limit_percent),
                 // HR 112: Battery discharge limit (%)
                 "ge_hr_battery_discharge_limit" => Some(state.battery_discharge_limit_percent),
+                // HR 313/314: AC-coupled battery charge/discharge limit (%)
+                "ge_hr_battery_charge_limit_ac" => Some(state.battery_charge_limit_percent),
+                "ge_hr_battery_discharge_limit_ac" => Some(state.battery_discharge_limit_percent),
+                // HR 1108/1110: 3-phase battery discharge/charge limit (%)
+                "tph_battery_discharge_limit_ac" => Some(state.battery_discharge_limit_percent),
+                "tph_battery_charge_limit_ac" => Some(state.battery_charge_limit_percent),
+                "ge_hr_enable_buzzer" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
                 // HR 114: Battery discharge min power reserve (%)
                 "ge_hr_battery_discharge_min_power_reserve" => {
                     Some(state.battery_discharge_min_power_reserve)
                 }
+                "ge_hr_island_check_continue" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
                 // HR 116: Charge target SOC (%)
                 "ge_hr_charge_target_soc" => Some(100.0),
+                "ge_hr_charge_soc_stop_2"
+                | "ge_hr_discharge_soc_stop_2"
+                | "ge_hr_charge_soc_stop_1"
+                | "ge_hr_discharge_soc_stop_1" => {
+                    self.values.insert(key, 100);
+                    continue;
+                }
+                "ge_hr_enable_local_command_test"
+                | "ge_hr_enable_low_voltage_fault_ride_through"
+                | "ge_hr_enable_frequency_derating"
+                | "ge_hr_enable_above_6kw_system"
+                | "ge_hr_start_system_auto_test"
+                | "ge_hr_enable_spi" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_power_factor_function_model" | "ge_hr_frequency_load_limit_rate" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
                 // HR 163: Inverter reboot (write-only, always reads 0)
                 "ge_hr_inverter_reboot" => {
                     self.values.insert(key, 0);
@@ -634,6 +942,27 @@ impl RegisterStore {
                 // HR 166: Enable RTC
                 "ge_hr_rtc_enable" => {
                     self.values.insert(key, state.enable_rtc as u16);
+                    continue;
+                }
+                "ge_hr_threephase_balance_mode"
+                | "ge_hr_threephase_abc"
+                | "ge_hr_threephase_balance_1"
+                | "ge_hr_threephase_balance_2"
+                | "ge_hr_threephase_balance_3" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_enable_battery_on_pv_or_grid"
+                | "ge_hr_debug_inverter"
+                | "ge_hr_enable_ups_mode"
+                | "ge_hr_enable_g100_limit_switch"
+                | "ge_hr_enable_battery_cable_impedance_alarm" => {
+                    self.values.insert(key, 0);
+                    continue;
+                }
+                "ge_hr_enable_inverter_parallel_mode" => {
+                    self.values
+                        .insert(key, state.enable_inverter_parallel_mode as u16);
                     continue;
                 }
                 // HR 318: Battery pause mode
@@ -659,6 +988,36 @@ impl RegisterStore {
                 // HR 317: Enable EPS
                 "ge_hr_enable_eps" => {
                     self.values.insert(key, state.enable_eps as u16);
+                    continue;
+                }
+                // HR 4107-4114 / 4141-4142 high-energy/reference blocks
+                "ge_hr_pv_power_setting_high" | "ge_hr_pv_power_setting_low" => {
+                    let (hi, lo) = u32_words(state.config.solar_peak_watts, 1.0);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "ge_hr_battery_discharge_total_alt2_high"
+                | "ge_hr_battery_discharge_total_alt2_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.battery_discharge_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "ge_hr_battery_charge_total_alt2_high" | "ge_hr_battery_charge_total_alt2_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.battery_charge_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
+                    continue;
+                }
+                "ge_hr_battery_discharge_today_alt3" => {
+                    Some(state.energy_totals.battery_discharge_kwh)
+                }
+                "ge_hr_battery_charge_today_alt3" => Some(state.energy_totals.battery_charge_kwh),
+                "ge_hr_inverter_export_total_high" | "ge_hr_inverter_export_total_low" => {
+                    let (hi, lo) = u32_words(state.energy_totals.grid_export_kwh, 0.1);
+                    self.values
+                        .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 // HR 2040: EMS plant enable
@@ -1223,6 +1582,20 @@ impl RegisterStore {
         regs[28] = (cap_remaining_ah >> 16) as u16;
         regs[29] = (cap_remaining_ah & 0xFFFF) as u16;
 
+        // Status/warning words: IR 90-94. Keep healthy defaults but mark charge/discharge state.
+        let state_code = if battery.power_kw > 0.01 {
+            1u16
+        } else if battery.power_kw < -0.01 {
+            2u16
+        } else {
+            0u16
+        };
+        regs[30] = state_code << 8; // IR 90: status_1/status_2
+        regs[31] = 0; // IR 91: status_3/status_4
+        regs[32] = 0; // IR 92: status_5/status_6
+        regs[33] = 0; // IR 93: status_7
+        regs[34] = 0; // IR 94: warning_1/warning_2
+
         // num_cycles: IR 96
         regs[36] = battery.cycle_count.round() as u16;
         // num_cells: IR 97
@@ -1232,6 +1605,10 @@ impl RegisterStore {
 
         // SOC: IR 100
         regs[40] = battery.soc_percent.round() as u16;
+
+        // cap_design2: IR 101-102 (mirror design capacity for clients that read the alt pair)
+        regs[41] = (cap_design_ah >> 16) as u16;
+        regs[42] = (cap_design_ah & 0xFFFF) as u16;
 
         // t_max: IR 103 (0.1 °C)
         regs[43] = temp_deci;
@@ -1254,6 +1631,9 @@ impl RegisterStore {
                 .unwrap_or(b' ');
             regs[50 + i] = (c1 as u16) << 8 | c2 as u16;
         }
+
+        // usb_device_inserted: IR 115 (raw; reference keeps as uint16)
+        regs[55] = 1;
 
         regs
     }
@@ -1313,6 +1693,285 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             category: C::PV,
             typ: T::U16,
             scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 3,
+            name: "ge_ir_p_bus_voltage".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 4,
+            name: "ge_ir_n_bus_voltage".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 10,
+            name: "ge_ir_ac_current".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 14,
+            name: "ge_ir_charge_status".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 15,
+            name: "ge_ir_high_bus_voltage".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 16,
+            name: "ge_ir_inverter_output_pf".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 23,
+            name: "ge_ir_solar_diverter_energy".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 24,
+            name: "ge_ir_inverter_terminal_power".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 27,
+            name: "ge_ir_inverter_input_total_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 28,
+            name: "ge_ir_inverter_input_total_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 29,
+            name: "ge_ir_discharge_year".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 31,
+            name: "ge_ir_eps_backup_power".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 38,
+            name: "ge_ir_countdown".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 39,
+            name: "ge_ir_fault_code_high".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 40,
+            name: "ge_ir_fault_code_low".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 42,
+            name: "ge_ir_load_demand".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 43,
+            name: "ge_ir_grid_apparent".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 47,
+            name: "ge_ir_work_time_total_high".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 48,
+            name: "ge_ir_work_time_total_low".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 49,
+            name: "ge_ir_system_mode".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 53,
+            name: "ge_ir_eps_voltage".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 54,
+            name: "ge_ir_eps_frequency".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 55,
+            name: "ge_ir_charger_temperature".into(),
+            category: C::Inverter,
+            typ: T::S16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 57,
+            name: "ge_ir_charger_warning_code".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 58,
+            name: "ge_ir_grid_port_current".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 180,
+            name: "ge_ir_battery_discharge_total_alt1".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 181,
+            name: "ge_ir_battery_charge_total_alt1".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 182,
+            name: "ge_ir_battery_discharge_today_alt2".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 183,
+            name: "ge_ir_battery_charge_today_alt2".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 247,
+            name: "ge_ir_combined_generation_high".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 248,
+            name: "ge_ir_combined_generation_low".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 1.0,
             access: ReadOnly,
             space: Input,
         },
@@ -1882,6 +2541,87 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadOnly,
             space: Holding,
         },
+        RegisterDef {
+            address: 1,
+            name: "ge_hr_module_high".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 2,
+            name: "ge_hr_module_low".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 3,
+            name: "ge_hr_mppt_phase_count".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 7,
+            name: "ge_hr_enable_ammeter".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 8,
+            name: "ge_hr_first_battery_serial_0".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 9,
+            name: "ge_hr_first_battery_serial_1".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 10,
+            name: "ge_hr_first_battery_serial_2".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 11,
+            name: "ge_hr_first_battery_serial_3".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 12,
+            name: "ge_hr_first_battery_serial_4".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
         // HR 13-17: Serial number (5 regs, Latin-1, read-only)
         RegisterDef {
             address: 13,
@@ -1929,6 +2669,15 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 18,
+            name: "ge_hr_first_battery_bms_firmware".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 19,
             name: "ge_hr_dsp_firmware".into(),
             category: C::Inverter,
@@ -1956,6 +2705,51 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 22,
+            name: "ge_hr_usb_device_inserted".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 23,
+            name: "ge_hr_select_arm_chip".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 24,
+            name: "ge_hr_variable_address".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 25,
+            name: "ge_hr_variable_value".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 26,
+            name: "ge_hr_grid_port_max_power_output".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 27,
             name: "ge_hr_battery_power_mode".into(),
             category: C::Configuration,
@@ -1965,12 +2759,30 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 28,
+            name: "ge_hr_enable_60hz_freq_mode".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 29,
             name: "ge_hr_battery_calibration_stage".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 30,
+            name: "ge_hr_modbus_address".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
             space: Holding,
         },
         RegisterDef {
@@ -2046,6 +2858,51 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 33,
+            name: "ge_hr_user_code".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 34,
+            name: "ge_hr_modbus_version".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 41,
+            name: "ge_hr_enable_drm_rj45_port".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 42,
+            name: "ge_hr_enable_reversed_ct_clamp".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 43,
+            name: "ge_hr_charge_discharge_soc".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 44,
             name: "ge_hr_discharge_slot_2_start".into(),
             category: C::Schedules,
@@ -2064,12 +2921,84 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 46,
+            name: "ge_hr_bms_firmware_version".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 47,
+            name: "ge_hr_meter_type".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 48,
+            name: "ge_hr_enable_reversed_115_meter".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 49,
+            name: "ge_hr_enable_reversed_418_meter".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 50,
             name: "ge_hr_active_power_rate".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 51,
+            name: "ge_hr_reactive_power_rate".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 52,
+            name: "ge_hr_power_factor".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 53,
+            name: "ge_hr_enable_inverter_flags".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 54,
+            name: "ge_hr_battery_type".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
             space: Holding,
         },
         RegisterDef {
@@ -2100,12 +3029,48 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 58,
+            name: "ge_hr_enable_auto_judge_battery_type".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 59,
             name: "ge_hr_enable_discharge".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 60,
+            name: "ge_hr_pv_start_voltage".into(),
+            category: C::PV,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 61,
+            name: "ge_hr_start_countdown_timer".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 62,
+            name: "ge_hr_restart_delay_time".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
             space: Holding,
         },
         RegisterDef {
@@ -2133,6 +3098,51 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 97,
+            name: "ge_hr_battery_low_voltage_protection_limit".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 98,
+            name: "ge_hr_battery_high_voltage_protection_limit".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 105,
+            name: "ge_hr_battery_voltage_adjust".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.01,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 108,
+            name: "ge_hr_battery_low_force_charge_time".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 109,
+            name: "ge_hr_enable_bms_read".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
             space: Holding,
         },
         RegisterDef {
@@ -2172,6 +3182,15 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 113,
+            name: "ge_hr_enable_buzzer".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 114,
             name: "ge_hr_battery_discharge_min_power_reserve".into(),
             category: C::Battery,
@@ -2181,8 +3200,224 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         RegisterDef {
+            address: 115,
+            name: "ge_hr_island_check_continue".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 117,
+            name: "ge_hr_charge_soc_stop_2".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 118,
+            name: "ge_hr_discharge_soc_stop_2".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 119,
+            name: "ge_hr_charge_soc_stop_1".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 120,
+            name: "ge_hr_discharge_soc_stop_1".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 121,
+            name: "ge_hr_enable_local_command_test".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 122,
+            name: "ge_hr_power_factor_function_model".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 123,
+            name: "ge_hr_frequency_load_limit_rate".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 124,
+            name: "ge_hr_enable_low_voltage_fault_ride_through".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 125,
+            name: "ge_hr_enable_frequency_derating".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 126,
+            name: "ge_hr_enable_above_6kw_system".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 127,
+            name: "ge_hr_start_system_auto_test".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 128,
+            name: "ge_hr_enable_spi".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
             address: 166,
             name: "ge_hr_rtc_enable".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadWrite,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 167,
+            name: "ge_hr_threephase_balance_mode".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 168,
+            name: "ge_hr_threephase_abc".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 169,
+            name: "ge_hr_threephase_balance_1".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 170,
+            name: "ge_hr_threephase_balance_2".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 171,
+            name: "ge_hr_threephase_balance_3".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 175,
+            name: "ge_hr_enable_battery_on_pv_or_grid".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 176,
+            name: "ge_hr_debug_inverter".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 177,
+            name: "ge_hr_enable_ups_mode".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 178,
+            name: "ge_hr_enable_g100_limit_switch".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 179,
+            name: "ge_hr_enable_battery_cable_impedance_alarm".into(),
+            category: C::Configuration,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 199,
+            name: "ge_hr_enable_inverter_parallel_mode".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -3811,6 +5046,24 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadOnly,
             space: Holding,
         },
+        RegisterDef {
+            address: 4141,
+            name: "ge_hr_inverter_export_total_high".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 4142,
+            name: "ge_hr_inverter_export_total_low".into(),
+            category: C::Grid,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
         // ================================================================
         // Simulator-internal registers (100+, 200+, etc.)
         // All in holding register space.
@@ -4561,6 +5814,86 @@ mod tests {
     }
 
     #[test]
+    fn power_limit_registers_default_to_100_percent() {
+        let state = PlantState::new(test_ts());
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        assert_eq!(store.read_by_space(111, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(112, RegisterSpace::Holding), Some(100));
+        // AC-coupled and 3-phase mirrors of the same fields
+        assert_eq!(store.read_by_space(313, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(314, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(1108, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(1110, RegisterSpace::Holding), Some(100));
+    }
+
+    #[test]
+    fn new_reference_input_registers_project_from_state() {
+        let mut state = make_state();
+        state.inverter.ac_power_w = 3200.0;
+        state.load.demand_w = 1250.0;
+        state.inverter.work_time_hours = 1234.0;
+        state.solar.generation_w = 4321.0;
+        state.energy_totals.battery_charge_kwh = 5.5;
+        state.energy_totals.battery_discharge_kwh = 4.4;
+        state.active_faults.push("grid_loss".to_string());
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert_eq!(store.read_by_space(24, RegisterSpace::Input), Some(3200));
+        assert_eq!(store.read_by_space(42, RegisterSpace::Input), Some(1250));
+        assert_eq!(store.read_by_space(43, RegisterSpace::Input), Some(3200));
+        assert_eq!(store.read_by_space(47, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(48, RegisterSpace::Input), Some(1234));
+        assert_eq!(store.read_by_space(180, RegisterSpace::Input), Some(44));
+        assert_eq!(store.read_by_space(181, RegisterSpace::Input), Some(55));
+        assert_eq!(store.read_by_space(182, RegisterSpace::Input), Some(44));
+        assert_eq!(store.read_by_space(183, RegisterSpace::Input), Some(55));
+        assert_eq!(store.read_by_space(247, RegisterSpace::Input), Some(0));
+        assert_eq!(store.read_by_space(248, RegisterSpace::Input), Some(4321));
+
+        let fault_code = ((store.read_by_space(39, RegisterSpace::Input).unwrap() as u32) << 16)
+            | store.read_by_space(40, RegisterSpace::Input).unwrap() as u32;
+        assert_ne!(fault_code, 0, "active faults should project into IR 39-40");
+    }
+
+    #[test]
+    fn inverter_parallel_mode_register_is_projected_and_writable() {
+        let mut state = make_state();
+        state.enable_inverter_parallel_mode = true;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        assert_eq!(store.read_by_space(199, RegisterSpace::Holding), Some(1));
+        assert!(store.write(199, 0));
+    }
+
+    #[test]
+    fn high_energy_alt_holding_registers_project() {
+        let mut state = make_state();
+        state.config.solar_peak_watts = 6000.0;
+        state.energy_totals.battery_charge_kwh = 2.5;
+        state.energy_totals.battery_discharge_kwh = 3.5;
+        state.energy_totals.grid_export_kwh = 4.5;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert_eq!(store.read_by_space(4107, RegisterSpace::Holding), Some(0));
+        assert_eq!(
+            store.read_by_space(4108, RegisterSpace::Holding),
+            Some(6000)
+        );
+        assert_eq!(store.read_by_space(4109, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(4110, RegisterSpace::Holding), Some(35));
+        assert_eq!(store.read_by_space(4111, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(4112, RegisterSpace::Holding), Some(25));
+        assert_eq!(store.read_by_space(4113, RegisterSpace::Holding), Some(35));
+        assert_eq!(store.read_by_space(4114, RegisterSpace::Holding), Some(25));
+        assert_eq!(store.read_by_space(4141, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(4142, RegisterSpace::Holding), Some(45));
+    }
+
+    #[test]
     fn ge_holding_all_safe_write_regs_accept_writes() {
         let mut store = RegisterStore::new(default_register_catalogue());
         let addrs: &[u16] = &[
@@ -4649,6 +5982,33 @@ mod tests {
         assert!(
             result[50] > 0 || result[51] > 0,
             "Serial should be non-empty"
+        );
+    }
+
+    #[test]
+    fn battery_bms_projects_status_cap_design2_and_usb() {
+        let mut state = make_state();
+        state.batteries[0].power_kw = 1.2;
+        state.batteries[0].nominal_capacity_kwh = 9.5;
+        state.sync_battery_from_vec();
+        let bms = RegisterStore::new(default_register_catalogue());
+        let result = bms.project_battery_bms(&state.batteries[0], 0);
+
+        assert_eq!(
+            result[30] >> 8,
+            1,
+            "IR 90 status_1 should indicate charging"
+        );
+        assert_eq!(result[34], 0, "IR 94 warnings default healthy");
+        let cap_design = ((result[26] as u32) << 16) | result[27] as u32;
+        let cap_design2 = ((result[41] as u32) << 16) | result[42] as u32;
+        assert_eq!(
+            cap_design2, cap_design,
+            "IR 101-102 mirrors design capacity"
+        );
+        assert_eq!(
+            result[55], 1,
+            "IR 115 usb_device_inserted defaults to WiFi/raw 1"
         );
     }
 

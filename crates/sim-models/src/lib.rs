@@ -172,6 +172,9 @@ pub struct InverterState {
     /// Set non-zero to override.
     #[serde(default)]
     pub arm_firmware_version: u16,
+    /// Total powered-on runtime in hours (IR 47-48).
+    #[serde(default)]
+    pub work_time_hours: f64,
 }
 
 fn default_dsp_firmware() -> u16 {
@@ -187,6 +190,7 @@ impl Default for InverterState {
             temperature_celsius: 35.0,
             dsp_firmware_version: default_dsp_firmware(),
             arm_firmware_version: 0,
+            work_time_hours: 0.0,
         }
     }
 }
@@ -376,9 +380,6 @@ fn default_max_ac_watts() -> f64 {
 fn default_percent_100() -> f64 {
     100.0
 }
-fn default_percent_50() -> f64 {
-    50.0
-}
 fn default_percent_4() -> f64 {
     4.0
 }
@@ -452,10 +453,10 @@ pub struct PlantState {
     #[serde(default = "default_percent_100")]
     pub active_power_rate_percent: f64,
     /// HR111 battery charge limit percentage.
-    #[serde(default = "default_percent_50")]
+    #[serde(default = "default_percent_100")]
     pub battery_charge_limit_percent: f64,
     /// HR112 battery discharge limit percentage.
-    #[serde(default = "default_percent_50")]
+    #[serde(default = "default_percent_100")]
     pub battery_discharge_limit_percent: f64,
     /// HR318 battery pause mode.
     #[serde(default)]
@@ -478,6 +479,9 @@ pub struct PlantState {
     /// HR317 enable EPS (Emergency Power Supply) mode.
     #[serde(default)]
     pub enable_eps: bool,
+    /// HR199 enable inverter parallel mode.
+    #[serde(default)]
+    pub enable_inverter_parallel_mode: bool,
     /// When true, EMS (Energy Management System) slot registers (HR 2044-2061)
     /// control the charge/discharge schedule instead of inverter-native slots.
     #[serde(default)]
@@ -513,8 +517,8 @@ impl PlantState {
             scheduled_discharge: false,
             enable_charge_target: false,
             active_power_rate_percent: 100.0,
-            battery_charge_limit_percent: 50.0,
-            battery_discharge_limit_percent: 50.0,
+            battery_charge_limit_percent: 100.0,
+            battery_discharge_limit_percent: 100.0,
             battery_pause_mode: 0,
             battery_pause_slot_start: 60,
             battery_pause_slot_end: 60,
@@ -522,6 +526,7 @@ impl PlantState {
             enable_rtc: false,
             export_priority: 0,
             enable_eps: false,
+            enable_inverter_parallel_mode: false,
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
             evc: EvcState::default(),
@@ -551,8 +556,8 @@ impl PlantState {
             scheduled_discharge: false,
             enable_charge_target: false,
             active_power_rate_percent: 100.0,
-            battery_charge_limit_percent: 50.0,
-            battery_discharge_limit_percent: 50.0,
+            battery_charge_limit_percent: 100.0,
+            battery_discharge_limit_percent: 100.0,
             battery_pause_mode: 0,
             battery_pause_slot_start: 60,
             battery_pause_slot_end: 60,
@@ -560,6 +565,7 @@ impl PlantState {
             enable_rtc: false,
             export_priority: 0,
             enable_eps: false,
+            enable_inverter_parallel_mode: false,
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
             evc: EvcState::default(),

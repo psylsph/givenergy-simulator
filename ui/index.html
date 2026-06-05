@@ -1065,6 +1065,10 @@
         </div>`;
       };
       const isAcCoupled = s.inverter_type && s.inverter_type.startsWith('ACCoupled');
+      const pctOrDefault = (v) => (v === undefined || v === null || Number(v) <= 0) ? 100 : Number(v);
+      const chargeLimit = pctOrDefault(s.charge_power_limit_percent);
+      const dischargeLimit = pctOrDefault(s.discharge_power_limit_percent);
+      const inverterMaxOutput = s.inverter_max_output_w ?? 0;
       // Per givenergy-modbus slot_map.py:
       //   SINGLE_PHASE_SLOTS (basic 2-slot): Gen1Hybrid, AC-coupled
       //   EXTENDED_SLOTS (10-slot): Gen3Hybrid (fw>302), AllInOne, AIO Hybrid,
@@ -1119,7 +1123,12 @@
           ${isAcCoupled ? '' : slotHtml('Pause Slot',       sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
             <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
-            <div style="font-size:12px;font-weight:600">Reserve ${(sch.soc_reserve || 0).toFixed(0)}%</div>
+            <div style="font-size:12px;font-weight:600">Minimum SOC ${(sch.soc_reserve || 0).toFixed(0)}%</div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px;line-height:1.4">
+              <div>Charge Power Limit: <span style="color:var(--text)">${chargeLimit.toFixed(0)}%</span></div>
+              <div>Discharge Power Limit: <span style="color:var(--text)">${dischargeLimit.toFixed(0)}%</span></div>
+              <div>Inverter Max Output: <span style="color:var(--text)">${fmt(inverterMaxOutput)}</span></div>
+            </div>
             <div style="font-size:10px;margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">
               <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_charge ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_charge ? 'var(--green)' : 'var(--text-muted)'}">⚡ Chg ${sch.enable_charge ? 'ON' : 'OFF'}</span>
               ${isAcCoupled ? '' : `<span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>`}

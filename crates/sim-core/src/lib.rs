@@ -89,6 +89,8 @@ pub enum Command {
     SetExportPriority(u16),
     /// Set HR317 enable EPS mode.
     SetEnableEps(bool),
+    /// Set HR199 enable inverter parallel mode.
+    SetEnableInverterParallelMode(bool),
     /// Change simulation time step (seconds per tick) — used for speed-up.
     SetTickInterval(u64),
 }
@@ -218,11 +220,11 @@ impl SimulationEngine {
                         self.state.config.max_ac_watts * pct / 100.0;
                 }
                 Command::SetBatteryChargeLimit(v) => {
-                    let pct = v.clamp(0.0, 50.0);
+                    let pct = v.clamp(0.0, 100.0);
                     self.state.battery_charge_limit_percent = pct;
                 }
                 Command::SetBatteryDischargeLimit(v) => {
-                    let pct = v.clamp(0.0, 50.0);
+                    let pct = v.clamp(0.0, 100.0);
                     self.state.battery_discharge_limit_percent = pct;
                 }
                 Command::InverterReboot => {
@@ -247,6 +249,9 @@ impl SimulationEngine {
                 }
                 Command::SetEnableEps(v) => {
                     self.state.enable_eps = v;
+                }
+                Command::SetEnableInverterParallelMode(v) => {
+                    self.state.enable_inverter_parallel_mode = v;
                 }
                 Command::SetSchedule(sched) => {
                     for device in &mut self.devices {
@@ -282,6 +287,7 @@ impl SimulationEngine {
         // Run calibration if active (after devices so it sees latest SOC/power)
         CalibrationEngine::new().update(&ctx, &mut self.state);
 
+        self.state.inverter.work_time_hours += dt_hours;
         self.state.timestamp += chrono::TimeDelta::seconds(self.tick_interval_secs as i64);
     }
 
@@ -1039,11 +1045,10 @@ impl DeviceModel for BatteryEngine {
             }
         }
 
-        // Apply battery charge/discharge limit percentages
-        // HR 111/112 use 0-50 range where 50 = full power (no cap)
-        // Linearly scale: at 25 = half power, at 50+ = no limit
-        let charge_scale = (state.battery_charge_limit_percent / 50.0).clamp(0.0, 1.0);
-        let discharge_scale = (state.battery_discharge_limit_percent / 50.0).clamp(0.0, 1.0);
+        // Apply battery charge/discharge limit percentages.
+        // HR 111/112 use 0-100% where 100 = full power (no cap).
+        let charge_scale = (state.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
+        let discharge_scale = (state.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
 
         for b in &mut state.batteries {
             // Calculate max power from c-rate first
@@ -1539,6 +1544,61 @@ mod tests {
             Box::new(BatteryEngine::new()),
         ];
         SimulationEngine::new(state, devices, 30)
+    }
+
+    #[test]
+    fn power_limit_defaults_are_100_percent() {
+        let state = PlantState::new(ts(0));
+        assert_eq!(state.battery_charge_limit_percent, 100.0);
+        assert_eq!(state.battery_discharge_limit_percent, 100.0);
+    }
+
+    #[test]
+    fn power_limit_commands_clamp_to_100_percent() {
+        let mut engine = test_engine();
+        engine.enqueue(Command::SetBatteryChargeLimit(150.0));
+        engine.enqueue(Command::SetBatteryDischargeLimit(125.0));
+        engine.apply_commands();
+        assert_eq!(engine.state.battery_charge_limit_percent, 100.0);
+        assert_eq!(engine.state.battery_discharge_limit_percent, 100.0);
+    }
+
+    #[test]
+    fn battery_engine_treats_100_percent_as_full_power_and_50_as_half_power() {
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 60.0,
+        };
+
+        let mut full = PlantState::new(ts(12));
+        full.batteries[0].capacity_kwh = 10.0; // c-rate cap = 3kW
+        full.batteries[0].power_kw = 3.0;
+        full.battery_charge_limit_percent = 100.0;
+        BatteryEngine::new().update(&ctx, &mut full);
+        assert!((full.batteries[0].power_kw - 3.0).abs() < 0.001);
+
+        let mut half = PlantState::new(ts(12));
+        half.batteries[0].capacity_kwh = 10.0; // c-rate cap = 3kW
+        half.batteries[0].power_kw = 3.0;
+        half.battery_charge_limit_percent = 50.0;
+        BatteryEngine::new().update(&ctx, &mut half);
+        assert!((half.batteries[0].power_kw - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn tick_increments_inverter_work_time_hours() {
+        let mut engine = test_engine();
+        engine.tick_interval_secs = 1800;
+        engine.tick();
+        assert!((engine.state.inverter.work_time_hours - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn inverter_parallel_mode_command_updates_state() {
+        let mut engine = test_engine();
+        engine.enqueue(Command::SetEnableInverterParallelMode(true));
+        engine.apply_commands();
+        assert!(engine.state.enable_inverter_parallel_mode);
     }
 
     // --- SolarEngine ---

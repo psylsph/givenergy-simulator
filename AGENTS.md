@@ -25,7 +25,7 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.12.0** — Gen2Hybrid + 0x2001 family code, DSP firmware (HR 19), ARM firmware override, schedule UI polish, slot 3–10 inline display.
+**0.13.0** — Broadened register coverage, HR199 parallel mode, HR111/HR112 0-100% semantics, 3-phase battery limit mirror projection, Minimum SOC + power-limit UI.
 
 ## Common Gotchas
 
@@ -297,3 +297,4 @@ Target SOC register follows each slot's end register (e.g. HR 248 for charge slo
 - v0.11.1: 220
 - v0.11.2: 223
 - v0.12.0: 223
+- v0.13.0: 235

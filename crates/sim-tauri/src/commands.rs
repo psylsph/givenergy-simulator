@@ -348,6 +348,7 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
                 None
             }
         }
+        199 => Some(Command::SetEnableInverterParallelMode(value != 0)),
         311 => Some(Command::SetExportPriority(value)),
         317 => Some(Command::SetEnableEps(value != 0)),
         2040 => Some(Command::SetEmsEnable(value != 0)),

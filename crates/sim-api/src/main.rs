@@ -204,6 +204,7 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
                 None
             }
         }
+        199 => Some(Command::SetEnableInverterParallelMode(cmd.value != 0)),
         311 => Some(Command::SetExportPriority(cmd.value)),
         317 => Some(Command::SetEnableEps(cmd.value != 0)),
         2040 => Some(Command::SetEmsEnable(cmd.value != 0)),

@@ -92,6 +92,9 @@ pub struct PlantStateDto {
     pub battery_mode: String,
     pub inverter_type: String,
     pub inverter_ac_power_w: f64,
+    pub inverter_max_output_w: f64,
+    pub charge_power_limit_percent: f64,
+    pub discharge_power_limit_percent: f64,
     /// ARM firmware (HR 21) — reported as projected to the Modbus server.
     pub arm_firmware_version: u16,
     /// DSP firmware (HR 19) — user-overridable.
@@ -485,6 +488,17 @@ impl From<&PlantState> for PlantStateDto {
             },
             inverter_type: state.config.inverter_type.clone(),
             inverter_ac_power_w: state.inverter.ac_power_w,
+            inverter_max_output_w: state.config.max_ac_watts,
+            charge_power_limit_percent: if state.battery_charge_limit_percent <= 0.0 {
+                100.0
+            } else {
+                state.battery_charge_limit_percent
+            },
+            discharge_power_limit_percent: if state.battery_discharge_limit_percent <= 0.0 {
+                100.0
+            } else {
+                state.battery_discharge_limit_percent
+            },
             arm_firmware_version: if state.inverter.arm_firmware_version != 0 {
                 state.inverter.arm_firmware_version
             } else {
@@ -524,5 +538,45 @@ impl From<&PlantState> for PlantStateDto {
                 load_consumption_kwh: state.energy_totals.load_consumption_kwh,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn ts() -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn dto_exposes_limits_and_inverter_max_output() {
+        let mut state = PlantState::new(ts());
+        state.config.max_ac_watts = 8000.0;
+        state.battery_charge_limit_percent = 80.0;
+        state.battery_discharge_limit_percent = 70.0;
+
+        let dto = PlantStateDto::from(&state);
+
+        assert_eq!(dto.inverter_max_output_w, 8000.0);
+        assert_eq!(dto.charge_power_limit_percent, 80.0);
+        assert_eq!(dto.discharge_power_limit_percent, 70.0);
+    }
+
+    #[test]
+    fn dto_treats_zero_power_limits_as_100_percent_default() {
+        let mut state = PlantState::new(ts());
+        // Guards old persisted state or transient zero values from displaying as 0% limits.
+        state.battery_charge_limit_percent = 0.0;
+        state.battery_discharge_limit_percent = 0.0;
+
+        let dto = PlantStateDto::from(&state);
+
+        assert_eq!(dto.charge_power_limit_percent, 100.0);
+        assert_eq!(dto.discharge_power_limit_percent, 100.0);
     }
 }

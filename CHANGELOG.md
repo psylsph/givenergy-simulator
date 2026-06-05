@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-05
+
+This release broadens upstream register coverage (mapped against
+`givenergy-modbus`, `giv_tcp`, and `givenergy-local`), corrects the
+HR111/HR112 battery power-limit semantics, and adds the missing
+register mirrors that 3-phase clients read for the same fields.
+
+### Added
+
+#### Register catalogue
+- ~190 additional register definitions across Input / Holding /
+  3-phase / High-Energy / Metering address spaces, including:
+  - PV totals, alt-format energy registers, combined-generation counters
+  - Inverter input/output, charger temperature, EPS voltage & frequency
+  - Work-time counter (IR 47-48) projected from a new
+    `InverterState.work_time_hours` runtime field that ticks forward
+    every simulation step
+  - Fault code (IR 39-40) driven by `state.active_faults`
+  - Load demand (IR 42), AC power (IR 24/43), alt battery throughput
+    registers (IR 180-183, 247-248)
+  - High-Energy alt holding block (HR 4107-4142) for solar peak,
+    battery charge/discharge, export totals
+  - 3-phase metering registers (HR 1000-1099) — voltages, currents,
+    active/reactive/apparent power per phase and total
+- **HR199** `enable_inverter_parallel_mode` — modelled end-to-end:
+  new `Command::SetEnableInverterParallelMode`, new
+  `PlantState.enable_inverter_parallel_mode`, projection and Modbus
+  write routing (Tauri + CLI)
+- **BMS extension registers** (IR 90, 94, 101-102, 115) — charge
+  status byte, warning code, design-capacity mirror, USB-inserted
+  flag — all projected from `BatteryState`
+- **DTC aliases** for `ThreePhase8kW/10kW/11kW`, `ACThreePhase`, plus
+  Polar / Plus variants where previously missing
+
+#### UI
+- "Reserve" label renamed to **"Minimum SOC"** in the Limits & Control
+  card
+- New read-only rows in Limits & Control:
+  - **Charge Power Limit** (% of max)
+  - **Discharge Power Limit** (% of max)
+  - **Inverter Max Output** (W)
+- New `PlantStateDto` fields feed the new rows:
+  `inverter_max_output_w`, `charge_power_limit_percent`,
+  `discharge_power_limit_percent`
+
+### Changed
+
+#### Battery power-limit semantics
+- **HR111 / HR112 now use 0-100% where 100 = full power.**
+  Previously the simulator treated them as 0-50 with 50 as full
+  power, which contradicted the UI labels and led to clients
+  under-charging / under-discharging after a fresh boot.
+  - `PlantState::new()` / `with_battery_count()` defaults are now
+    `100.0` (was `50.0`)
+  - Serde default for old persisted state is also `100.0`
+  - `Command::SetBatteryChargeLimit` / `SetBatteryDischargeLimit`
+    clamp to `0..=100` (was `0..=50`)
+  - `BatteryEngine` scaling divides by `100.0` (was `50.0`)
+- **HR313 / HR314 (AC-coupled) and HR1108 / HR1110 (3-phase) battery
+  limit mirrors** now project from the same source field as HR111/112.
+  Previously these catalogue entries had no projection rule, so
+  3-phase clients reading them saw `0%` and refused to charge or
+  discharge at full power.
+
+#### DTO defensive defaulting
+- `PlantStateDto` reports charge / discharge power limits as `100%`
+  when the underlying state value is `<= 0.0` — protects against stale
+  persisted state or transient zero values surfacing in the UI as
+  `0%`.
+- Frontend `pctOrDefault()` does the same guard for missing / null /
+  non-positive payloads.
+
+### Tests
+- 12 new tests covering the changes above (223 → 235 total):
+  - `sim-core`: defaults at 100%, command clamping, scaling at 100%
+    vs 50%, work-time tick increment, parallel-mode command
+  - `sim-registers`: HR111/112/313/314/1108/1110 default to 100%,
+    new IR projections (24/42/43/47/48/180-183/247-248/39-40),
+    HR199 writable, HR4107-4142 alt block, BMS IR 90/94/101-102/115
+  - `sim-tauri`: DTO exposes new fields, zero→100% fallback
+
 ## [0.12.0] - 2026-06-04
 
 This release closes several gaps in the inverter identification protocol,
