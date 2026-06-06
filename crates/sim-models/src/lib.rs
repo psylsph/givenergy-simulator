@@ -341,13 +341,13 @@ impl EnergyTotals {
     /// registers immediately testable before a full day of simulation has run.
     pub fn non_zero_test_fixture() -> Self {
         Self {
-            grid_import_kwh: 1.5,
-            grid_export_kwh: 2.5,
-            battery_charge_kwh: 3.5,
-            battery_discharge_kwh: 4.5,
-            solar_generation_kwh: 8.5,
-            load_consumption_kwh: 6.5,
-            ac_charge_kwh: 0.7,
+            grid_import_kwh: 123.4,
+            grid_export_kwh: 432.1,
+            battery_charge_kwh: 55.5,
+            battery_discharge_kwh: 44.4,
+            solar_generation_kwh: 88.8,
+            load_consumption_kwh: 66.6,
+            ac_charge_kwh: 12.3,
         }
     }
 
