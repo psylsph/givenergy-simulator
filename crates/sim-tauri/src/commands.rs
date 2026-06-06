@@ -115,7 +115,7 @@ pub async fn create_plant(
                 let soh = m.soh.clamp(0.0, 1.0);
                 let capacity = m.capacity_kwh.max(1.0);
                 let effective_capacity = capacity * soh;
-                let c_rate_kw = (effective_capacity * 0.3).min(10.0);
+                let c_rate_kw = (effective_capacity * 0.7).min(10.0);
                 BatteryState {
                     capacity_kwh: effective_capacity,
                     nominal_capacity_kwh: capacity,
@@ -1680,7 +1680,7 @@ pub async fn set_battery_soh(
         if let Some(b) = e.state.batteries.get_mut(params.module) {
             b.soh = params.soh.clamp(0.0, 1.0);
             b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
-            let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
+            let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
             let inv_max_kw = e.state.config.max_ac_watts / 1000.0;
             let limit = c_rate_kw.min(inv_max_kw);
             b.max_charge_kw = limit;

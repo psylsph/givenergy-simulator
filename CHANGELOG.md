@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-06-06
+
+### Changed
+
+- **Battery C-rate raised from 0.3C to 0.7C**: The 0.3C continuous-current
+  cap was strangling normal configurations — e.g. a 9.5 kWh battery on a
+  Gen3 hybrid (0x2001, 3600 W inverter cap) was clamped to ~2850 W
+  instead of the inverter's full 3600 W. 0.7C is realistic for LFP
+  modules and lets every battery ≥ 5.2 kWh hit the inverter cap on a
+  Gen3 hybrid. Updated in all five sites: `create_plant`, `set_battery_soh`,
+  `SetBatterySoH` command handler, `BatteryEngine::update` scaling, and
+  the `combo_*` test helper.
+
+### Tests
+- Updated `battery_engine_treats_100_percent_as_full_power_and_50_as_half_power`
+  to use the new c-rate cap (7 kW at 10 kWh × 0.7C).
+- 245 total (unchanged).
+
 ## [0.14.2] - 2026-06-05
 
 ### Added

@@ -172,7 +172,7 @@ impl SimulationEngine {
                     if let Some(b) = self.state.batteries.get_mut(module) {
                         b.soh = soh.clamp(0.0, 1.0);
                         b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
-                        let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
+                        let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
                         let inv_max_kw = self.state.config.max_ac_watts / 1000.0;
                         let per_module_kw = inv_max_kw / count as f64;
                         b.max_charge_kw = c_rate_kw.min(per_module_kw);
@@ -1052,7 +1052,7 @@ impl DeviceModel for BatteryEngine {
 
         for b in &mut state.batteries {
             // Calculate max power from c-rate first
-            let c_rate_kw = (b.capacity_kwh * 0.3).min(10.0);
+            let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
             if b.power_kw > 0.0 {
                 // Charging: apply charge limit
                 let max_charge_kw = c_rate_kw * charge_scale.max(0.02);
@@ -1571,18 +1571,18 @@ mod tests {
         };
 
         let mut full = PlantState::new(ts(12));
-        full.batteries[0].capacity_kwh = 10.0; // c-rate cap = 3kW
-        full.batteries[0].power_kw = 3.0;
+        full.batteries[0].capacity_kwh = 10.0; // c-rate cap = 7kW at 0.7C
+        full.batteries[0].power_kw = 8.0;
         full.battery_charge_limit_percent = 100.0;
         BatteryEngine::new().update(&ctx, &mut full);
-        assert!((full.batteries[0].power_kw - 3.0).abs() < 0.001);
+        assert!((full.batteries[0].power_kw - 7.0).abs() < 0.001);
 
         let mut half = PlantState::new(ts(12));
-        half.batteries[0].capacity_kwh = 10.0; // c-rate cap = 3kW
-        half.batteries[0].power_kw = 3.0;
+        half.batteries[0].capacity_kwh = 10.0; // c-rate cap = 7kW at 0.7C
+        half.batteries[0].power_kw = 8.0;
         half.battery_charge_limit_percent = 50.0;
         BatteryEngine::new().update(&ctx, &mut half);
-        assert!((half.batteries[0].power_kw - 1.5).abs() < 0.001);
+        assert!((half.batteries[0].power_kw - 3.5).abs() < 0.001);
     }
 
     #[test]
@@ -3206,8 +3206,8 @@ mod tests {
                 b.soc_percent = battery_soc;
                 b.capacity_kwh = battery_capacity;
                 b.nominal_capacity_kwh = battery_capacity;
-                b.max_charge_kw = (battery_capacity * 0.3).min(10.0);
-                b.max_discharge_kw = (battery_capacity * 0.3).min(10.0);
+                b.max_charge_kw = (battery_capacity * 0.7).min(10.0);
+                b.max_discharge_kw = (battery_capacity * 0.7).min(10.0);
             }
             state.sync_battery_from_vec();
 

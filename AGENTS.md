@@ -25,6 +25,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.14.3** — Battery C-rate raised from 0.3C to 0.7C.
+
 **0.14.2** — Non-zero starter energy totals for testing.
 
 **0.14.1** — ACThreePhase voltage/ARM firmware guard fixes.
@@ -101,7 +103,7 @@ PV2 voltage (IR 2) returns 350 V whenever `pv2_peak_watts > 0` so clients detect
 ### Inverter throughput caps
 All inverter types have `max_ac_watts` and `max_batt_w` limits defined in
 `crates/sim-tauri/src/commands.rs` (`max_batt_w` / `max_ac_watts` functions).
-Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery C-rate.
+Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery C-rate (0.7C continuous, realistic for LFP modules).
 `SetBatterySoH` recalculates limits from new capacity.
 
 ### Inverter types (DTC hex order)
