@@ -25,6 +25,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.14.4** — Three-phase force charge/discharge register fix + missing energy total registers.
+
 **0.14.3** — Battery C-rate raised from 0.3C to 0.7C.
 
 **0.14.2** — Non-zero starter energy totals for testing.

@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.4] - 2026-06-06
+
+### Added
+
+- **Three-phase force charge/discharge registers now correct**: HR 1122
+  (`FORCE_DISCHARGE_ENABLE`) and HR 1123 (`FORCE_CHARGE_ENABLE`) now set
+  inverter mode to `ForceDischarge`/`ForceCharge` instead of being conflated
+  with the scheduled charge/discharge flags. HR 1112 (`AC_CHARGE_ENABLE`)
+  continues to control scheduled AC charging. Updated register projection
+  to reflect inverter mode state.
+- **Missing three-phase energy total (lifetime) registers**: Added 30 new
+  RegisterDef entries for the three-phase IR 1360-1413 energy block:
+  `e_inverter_out_today`/`total` (IR 1360-1363),
+  `e_pv1_total` (IR 1368-1369), `e_pv2_total` (IR 1372-1373),
+  `e_pv_total` (IR 1374-1375), `e_ac_charge_today`/`total` (IR 1376-1379),
+  `e_import_total` (IR 1382-1383), `e_export_total` (IR 1386-1387),
+  `e_battery_discharge_total` (IR 1390-1391),
+  `e_battery_charge_total` (IR 1394-1395),
+  `e_load_total` (IR 1398-1399),
+  `e_export2_today`/`total` (IR 1400-1403),
+  `e_pv_today` (IR 1412-1413).
+  All project from the same cumulative EnergyTotals bucket (the simulator
+  has no separate daily-reset counter).
+
+### Fixed
+- **Three-phase force charge/discharge register routing**: HR 1122 and
+  HR 1123 are no longer treated as schedule registers in the Modbus write
+  drain loop. They are now handled by `modbus_address_to_command` in both
+  the Tauri and CLI code paths, enqueuing `SetInverterMode(ForceDischarge)`
+  / `SetInverterMode(ForceCharge)`. Register projection reads inverter mode
+  to set `tph_force_discharge_enable` / `tph_force_charge_enable`.
+
+### Tests
+- Updated `threephase_11kw_publishes_live_data_on_tph_input_registers` to
+  verify all new energy total registers.
+- 245 total (unchanged).
+
 ## [0.14.3] - 2026-06-06
 
 ### Changed

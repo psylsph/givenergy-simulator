@@ -213,6 +213,18 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
             start: 60,
             end: 60,
         }),
+        // HR 1122: Three-phase force discharge enable
+        1122 => Some(Command::SetInverterMode(if cmd.value != 0 {
+            sim_models::InverterMode::ForceDischarge
+        } else {
+            sim_models::InverterMode::Eco
+        })),
+        // HR 1123: Three-phase force charge enable
+        1123 => Some(Command::SetInverterMode(if cmd.value != 0 {
+            sim_models::InverterMode::ForceCharge
+        } else {
+            sim_models::InverterMode::Eco
+        })),
         // HR 35-40: system time (year, month, day, hour, minute, second)
         // Handled separately via time register accumulation in the tick loop
         35..=40 => None,
@@ -882,12 +894,6 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&1112) {
                 sched.enable_charge = v != 0;
             }
-            if let Some(&v) = sched_updates.get(&1122) {
-                sched.enable_discharge = v != 0;
-            }
-            if let Some(&v) = sched_updates.get(&1123) {
-                sched.enable_charge = v != 0;
-            }
             if let Some(&v) = sched_updates.get(&1113) {
                 sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
             }
@@ -999,7 +1005,7 @@ fn is_schedule_register(addr: u16) -> bool {
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
             | 242..=245 | 272 | 275
             | 246..=269 | 276..=299
-            | 1109 | 1111..=1116 | 1118..=1123
+            | 1109 | 1111..=1116 | 1118..=1121
             | 2062..=2071
             | 2044..=2061
     )
@@ -1237,12 +1243,6 @@ fn apply_schedule_updates(
         sched.charge_target_soc = v as f64;
     }
     if let Some(&v) = updates.get(&1112) {
-        sched.enable_charge = v != 0;
-    }
-    if let Some(&v) = updates.get(&1122) {
-        sched.enable_discharge = v != 0;
-    }
-    if let Some(&v) = updates.get(&1123) {
         sched.enable_charge = v != 0;
     }
     if let Some(&v) = updates.get(&1113) {
