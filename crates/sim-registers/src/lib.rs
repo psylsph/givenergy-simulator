@@ -1069,14 +1069,18 @@ impl RegisterStore {
                 "tph_force_charge_enable" => {
                     self.values.insert(
                         key,
-                        (state.inverter.mode_state.effective == sim_models::InverterMode::ForceCharge) as u16,
+                        (state.inverter.mode_state.effective
+                            == sim_models::InverterMode::ForceCharge)
+                            as u16,
                     );
                     continue;
                 }
                 "tph_force_discharge_enable" => {
                     self.values.insert(
                         key,
-                        (state.inverter.mode_state.effective == sim_models::InverterMode::ForceDischarge) as u16,
+                        (state.inverter.mode_state.effective
+                            == sim_models::InverterMode::ForceDischarge)
+                            as u16,
                     );
                     continue;
                 }
@@ -1372,8 +1376,10 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_e_inverter_out_today_high" | "tph_ir_e_inverter_out_today_low"
-                | "tph_ir_e_inverter_out_total_high" | "tph_ir_e_inverter_out_total_low" => {
+                "tph_ir_e_inverter_out_today_high"
+                | "tph_ir_e_inverter_out_today_low"
+                | "tph_ir_e_inverter_out_total_high"
+                | "tph_ir_e_inverter_out_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
@@ -1403,8 +1409,10 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_e_ac_charge_today_high" | "tph_ir_e_ac_charge_today_low"
-                | "tph_ir_e_ac_charge_total_high" | "tph_ir_e_ac_charge_total_low" => {
+                "tph_ir_e_ac_charge_today_high"
+                | "tph_ir_e_ac_charge_today_low"
+                | "tph_ir_e_ac_charge_total_high"
+                | "tph_ir_e_ac_charge_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.ac_charge_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
@@ -1431,8 +1439,7 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_e_battery_charge_total_high"
-                | "tph_ir_e_battery_charge_total_low" => {
+                "tph_ir_e_battery_charge_total_high" | "tph_ir_e_battery_charge_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.battery_charge_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
@@ -1444,8 +1451,10 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_e_export2_today_high" | "tph_ir_e_export2_today_low"
-                | "tph_ir_e_export2_total_high" | "tph_ir_e_export2_total_low" => {
+                "tph_ir_e_export2_today_high"
+                | "tph_ir_e_export2_today_low"
+                | "tph_ir_e_export2_total_high"
+                | "tph_ir_e_export2_total_low" => {
                     let (hi, lo) = u32_words(state.energy_totals.grid_export_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
@@ -7588,16 +7597,16 @@ mod tests {
         // Total/lifetime counterparts
         assert_eq!(read_u32_ir(&store, 1360, 1361), 120); // e_inverter_out_today = solar(12.0)
         assert_eq!(read_u32_ir(&store, 1362, 1363), 120); // e_inverter_out_total
-        assert_eq!(read_u32_ir(&store, 1368, 1369), 60);  // e_pv1_total = half
-        assert_eq!(read_u32_ir(&store, 1372, 1373), 60);  // e_pv2_total = half
+        assert_eq!(read_u32_ir(&store, 1368, 1369), 60); // e_pv1_total = half
+        assert_eq!(read_u32_ir(&store, 1372, 1373), 60); // e_pv2_total = half
         assert_eq!(read_u32_ir(&store, 1374, 1375), 120); // e_pv_total
         assert_eq!(read_u32_ir(&store, 1382, 1383), 1234); // e_import_total — hardcoded CT lifetime
         assert_eq!(read_u32_ir(&store, 1386, 1387), 4321); // e_export_total — hardcoded CT lifetime
-        assert_eq!(read_u32_ir(&store, 1390, 1391), 60);  // e_battery_discharge_total
-        assert_eq!(read_u32_ir(&store, 1394, 1395), 50);  // e_battery_charge_total
-        assert_eq!(read_u32_ir(&store, 1398, 1399), 70);  // e_load_total
-        assert_eq!(read_u32_ir(&store, 1400, 1401), 40);  // e_export2_today
-        assert_eq!(read_u32_ir(&store, 1402, 1403), 40);  // e_export2_total
+        assert_eq!(read_u32_ir(&store, 1390, 1391), 60); // e_battery_discharge_total
+        assert_eq!(read_u32_ir(&store, 1394, 1395), 50); // e_battery_charge_total
+        assert_eq!(read_u32_ir(&store, 1398, 1399), 70); // e_load_total
+        assert_eq!(read_u32_ir(&store, 1400, 1401), 40); // e_export2_today
+        assert_eq!(read_u32_ir(&store, 1402, 1403), 40); // e_export2_total
         assert_eq!(read_u32_ir(&store, 1412, 1413), 120); // e_pv_today (combined)
     }
 
