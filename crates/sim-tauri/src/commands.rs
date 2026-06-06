@@ -936,7 +936,7 @@ pub async fn start_simulation(
                             }
                             // Charge target SOC (HR 116)
                             *schedule_arc.lock().await = Some(sched.clone());
-                            e.enqueue(Command::SetSchedule(sched));
+                            e.enqueue(Command::SetSchedule(Box::new(sched)));
                         }
 
                         // Sync EVC state from Modbus writes before tick
@@ -1397,7 +1397,7 @@ pub async fn start_simulation(
                             }
                             // Charge target SOC (HR 116)
                             *schedule_arc.lock().await = Some(sched.clone());
-                            e.enqueue(Command::SetSchedule(sched));
+                            e.enqueue(Command::SetSchedule(Box::new(sched)));
                         }
 
                         // Sync EVC state from Modbus writes before tick

@@ -4,7 +4,11 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 ## Golden Rule
 
-**Always run `cargo test` after every change.** The suite is fast (~3s, 216 tests). Don't move on without green tests.
+**Always run `cargo fmt --check`, `cargo clippy --all-targets`, AND `cargo test` before every commit and push.** Never commit with formatting diffs, linter warnings, or failing tests.
+
+- `cargo fmt --all -- --check` — must be clean (no diff).
+- `cargo clippy --all-targets` — must produce **zero** warnings.
+- `cargo test` — must be green. The suite is fast (~3s, 245 tests). Don't move on without green tests.
 
 ## Workspace
 

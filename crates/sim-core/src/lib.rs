@@ -80,7 +80,7 @@ pub enum Command {
         end: u16,
     },
     /// Update the charge/discharge schedule.
-    SetSchedule(Schedule),
+    SetSchedule(Box<Schedule>),
     /// Set HR166 enable RTC flag.
     SetEnableRtc(bool),
     /// Set HR114 battery discharge min power reserve (%).
@@ -256,7 +256,7 @@ impl SimulationEngine {
                 Command::SetSchedule(sched) => {
                     for device in &mut self.devices {
                         if let Some(se) = device.as_any_mut().downcast_mut::<ScheduleEngine>() {
-                            se.schedule = sched.clone();
+                            se.schedule = (*sched).clone();
                             break;
                         }
                     }

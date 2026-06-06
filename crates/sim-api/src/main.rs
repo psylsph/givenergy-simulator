@@ -454,7 +454,7 @@ async fn run_scenario(
                     if !sched_updates.is_empty() {
                         let mut sched = schedule_opt.clone().unwrap_or_default();
                         apply_schedule_updates(&mut sched, &sched_updates);
-                        engine.enqueue(Command::SetSchedule(sched.clone()));
+                        engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
                         schedule_opt = Some(sched);
                     }
                 }
@@ -526,7 +526,7 @@ async fn run_scenario(
                 if !sched_updates.is_empty() {
                     let mut sched = schedule_opt.clone().unwrap_or_default();
                     apply_schedule_updates(&mut sched, &sched_updates);
-                    engine.enqueue(Command::SetSchedule(sched.clone()));
+                    engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
                     schedule_opt = Some(sched);
                 }
                 if time_regs.iter().all(|r| r.is_some()) {
@@ -928,7 +928,7 @@ async fn serve_config(
             if let Some(&v) = sched_updates.get(&1121) {
                 sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
             }
-            engine.enqueue(Command::SetSchedule(sched.clone()));
+            engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
             schedule_opt = Some(sched);
         }
 

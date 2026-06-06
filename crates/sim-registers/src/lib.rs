@@ -6993,21 +6993,23 @@ mod tests {
     #[test]
     fn extended_givtcp_schedule_registers_are_catalogued_and_projected() {
         let mut store = RegisterStore::new(default_register_catalogue());
-        let mut sched = sim_models::Schedule::default();
-        sched.charge_start = 1.5;
-        sched.charge_end = 2.5;
-        sched.charge_start_2 = 3.0;
-        sched.charge_end_2 = 4.0;
-        sched.charge_target_soc = 80.0;
-        sched.charge_target_soc_2 = 90.0;
-        sched.discharge_start = 18.0;
-        sched.discharge_end = 19.0;
-        sched.discharge_start_2 = 20.0;
-        sched.discharge_end_2 = 21.0;
-        sched.discharge_target_soc = 20.0;
-        sched.discharge_target_soc_2 = 30.0;
-        sched.enable_charge = true;
-        sched.enable_discharge = true;
+        let sched = sim_models::Schedule {
+            charge_start: 1.5,
+            charge_end: 2.5,
+            charge_start_2: 3.0,
+            charge_end_2: 4.0,
+            charge_target_soc: 80.0,
+            charge_target_soc_2: 90.0,
+            discharge_start: 18.0,
+            discharge_end: 19.0,
+            discharge_start_2: 20.0,
+            discharge_end_2: 21.0,
+            discharge_target_soc: 20.0,
+            discharge_target_soc_2: 30.0,
+            enable_charge: true,
+            enable_discharge: true,
+            ..Default::default()
+        };
 
         store.project_schedule(&sched);
 
@@ -7467,15 +7469,17 @@ mod tests {
         // must mirror HR 94/95 and HR 31/32. Same for discharge slots
         // at HR 1118-1121 mirroring HR 56/57 and HR 44/45.
         let mut store = RegisterStore::new(default_register_catalogue());
-        let mut sched = sim_models::Schedule::default();
-        sched.charge_start = 1.5;
-        sched.charge_end = 5.0;
-        sched.charge_start_2 = 10.0;
-        sched.charge_end_2 = 12.0;
-        sched.discharge_start = 16.0;
-        sched.discharge_end = 19.0;
-        sched.discharge_start_2 = 21.0;
-        sched.discharge_end_2 = 23.0;
+        let sched = sim_models::Schedule {
+            charge_start: 1.5,
+            charge_end: 5.0,
+            charge_start_2: 10.0,
+            charge_end_2: 12.0,
+            discharge_start: 16.0,
+            discharge_end: 19.0,
+            discharge_start_2: 21.0,
+            discharge_end_2: 23.0,
+            ..Default::default()
+        };
         store.project_schedule_for(&sched, "ThreePhase11kW");
 
         assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(130));
@@ -7520,8 +7524,10 @@ mod tests {
     #[test]
     fn threephase_11kw_charge_target_soc_mirrored_at_hr_1111() {
         let mut store = RegisterStore::new(default_register_catalogue());
-        let mut sched = sim_models::Schedule::default();
-        sched.charge_target_soc = 87.0;
+        let sched = sim_models::Schedule {
+            charge_target_soc: 87.0,
+            ..Default::default()
+        };
         store.project_schedule_for(&sched, "ThreePhase11kW");
         assert_eq!(store.read_by_space(116, RegisterSpace::Holding), Some(87));
         assert_eq!(store.read_by_space(1111, RegisterSpace::Holding), Some(87));
