@@ -1240,22 +1240,22 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_p_meter_import_high" | "tph_ir_p_meter_import_low" => {
-                    let import_w = state.grid.power_w.max(0.0);
-                    let (hi, lo) = u32_words(import_w, 0.1);
+                    // Hardcoded lifetime CT meter import total for testing
+                    let (hi, lo) = u32_words(123.4, 0.1); // raw 1234 at ×0.1
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_p_meter_export_high" | "tph_ir_p_meter_export_low" => {
-                    let export_w = (-state.grid.power_w).max(0.0);
-                    let (hi, lo) = u32_words(export_w, 0.1);
+                    // Hardcoded lifetime CT meter export total for testing
+                    let (hi, lo) = u32_words(432.1, 0.1); // raw 4321 at ×0.1
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_p_export_high" | "tph_ir_p_export_low" => {
-                    let export_w = (-state.grid.power_w).max(0.0);
-                    let (hi, lo) = u32_words(export_w, 0.1);
+                    // Hardcoded lifetime CT export total for testing
+                    let (hi, lo) = u32_words(432.1, 0.1); // raw 4321 at ×0.1
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -7561,9 +7561,9 @@ mod tests {
         assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(45));
         assert_eq!(store.read_by_space(1083, RegisterSpace::Input), Some(9000));
         assert_eq!(read_u32_ir(&store, 1089, 1090), 27000);
-        assert_eq!(read_u32_ir(&store, 1079, 1080), 18000); // CT/meter import, ×0.1W
-        assert_eq!(read_u32_ir(&store, 1081, 1082), 0); // CT/meter export
-        assert_eq!(read_u32_ir(&store, 1240, 1241), 0); // export mirror
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 1234); // CT/meter import — hardcoded lifetime
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 4321); // CT/meter export — hardcoded lifetime
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 4321); // export mirror — hardcoded lifetime
         assert_eq!(read_u32_ir(&store, 1244, 1245), 0); // second meter absent
 
         // Battery block: SoC, charge/discharge split, current and firmware IDs.
@@ -7616,14 +7616,17 @@ mod tests {
     }
 
     #[test]
-    fn threephase_11kw_ct_meter_export_registers_follow_grid_sign() {
-        let mut s = three_phase_11kw_state();
-        s.grid.power_w = -1250.0; // internal negative = exporting
+    fn threephase_11kw_ct_meter_total_registers_are_hardcoded() {
+        // CT meter lifetime totals are hardcoded test values, not derived
+        // from instant grid power. The live grid CT reading is at IR 1076
+        // (status) via tph_ir_p_inverter_out and the signed grid power at
+        // single-phase IR 30.
+        let s = three_phase_11kw_state();
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
-        assert_eq!(read_u32_ir(&store, 1079, 1080), 0);
-        assert_eq!(read_u32_ir(&store, 1081, 1082), 12500);
-        assert_eq!(read_u32_ir(&store, 1240, 1241), 12500);
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 1234);
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 4321);
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 4321);
     }
 }
