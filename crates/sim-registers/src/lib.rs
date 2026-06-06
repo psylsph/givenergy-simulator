@@ -510,9 +510,9 @@ impl RegisterStore {
                     continue;
                 }
                 "meter_frequency" => Some(50.0),
-                "meter_e_import_active" => Some(state.energy_totals.grid_import_kwh),
+                "meter_e_import_active" => Some(123.4), // hardcoded lifetime CT import total → raw 1234 at ×0.1
                 "meter_e_import_reactive" => Some(0.0),
-                "meter_e_export_active" => Some(state.energy_totals.grid_export_kwh),
+                "meter_e_export_active" => Some(432.1), // hardcoded lifetime CT export total → raw 4321 at ×0.1
                 "meter_e_export_reactive" => Some(0.0),
                 "meter_reserved" => Some(0.0),
 
@@ -1411,13 +1411,15 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_e_import_total_high" | "tph_ir_e_import_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.grid_import_kwh, 0.1);
+                    // Hardcoded lifetime CT clamp values for testing
+                    let (hi, lo) = u32_words(123.4, 0.1); // raw 1234 at ×0.1
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_e_export_total_high" | "tph_ir_e_export_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.grid_export_kwh, 0.1);
+                    // Hardcoded lifetime CT clamp values for testing
+                    let (hi, lo) = u32_words(432.1, 0.1); // raw 4321 at ×0.1
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -7589,8 +7591,8 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1368, 1369), 60);  // e_pv1_total = half
         assert_eq!(read_u32_ir(&store, 1372, 1373), 60);  // e_pv2_total = half
         assert_eq!(read_u32_ir(&store, 1374, 1375), 120); // e_pv_total
-        assert_eq!(read_u32_ir(&store, 1382, 1383), 30);  // e_import_total
-        assert_eq!(read_u32_ir(&store, 1386, 1387), 40);  // e_export_total
+        assert_eq!(read_u32_ir(&store, 1382, 1383), 1234); // e_import_total — hardcoded CT lifetime
+        assert_eq!(read_u32_ir(&store, 1386, 1387), 4321); // e_export_total — hardcoded CT lifetime
         assert_eq!(read_u32_ir(&store, 1390, 1391), 60);  // e_battery_discharge_total
         assert_eq!(read_u32_ir(&store, 1394, 1395), 50);  // e_battery_charge_total
         assert_eq!(read_u32_ir(&store, 1398, 1399), 70);  // e_load_total
