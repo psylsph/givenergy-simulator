@@ -136,6 +136,12 @@ pub fn run() {
                                 devices,
                                 tick_interval,
                             );
+                            // Populate register store so Modbus clients see
+                            // non-zero values before the first tick.
+                            {
+                                let mut rs = app_state.register_store.lock().await;
+                                rs.project_from_state(&engine.state);
+                            }
                             let dto = crate::app_state::PlantStateDto::with_schedule(
                                 &engine.state,
                                 schedule_opt.as_ref(),

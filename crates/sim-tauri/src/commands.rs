@@ -219,6 +219,13 @@ pub async fn create_plant(
 
     let engine = SimulationEngine::new(plant_state, devices, tick_interval);
 
+    // Populate register store immediately so Modbus clients see
+    // non-zero values before the first tick.
+    {
+        let mut rs = state.register_store.lock().await;
+        rs.project_from_state(&engine.state);
+    }
+
     let plant_state = {
         let mut eng = state.engine.lock().await;
         *eng = Some(engine);
@@ -1930,6 +1937,13 @@ pub async fn load_plant(
     };
 
     let engine = SimulationEngine::new(plant_state, devices, tick_interval);
+
+    // Populate register store so Modbus clients see non-zero values immediately.
+    {
+        let mut rs = tauri_state.register_store.lock().await;
+        rs.project_from_state(&engine.state);
+    }
+
     let dto = {
         let mut eng = tauri_state.engine.lock().await;
         *eng = Some(engine);

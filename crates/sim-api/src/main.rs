@@ -396,6 +396,9 @@ async fn run_scenario(
         battery_count,
     );
 
+    // Initial register projection so Modbus clients see non-zero values immediately.
+    reg_store.project_from_state(&engine.state);
+
     // Optional: launch Modbus server in background
     let (modbus_store, mut modbus_rx) = if let Some(addr) = modbus {
         let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
@@ -422,6 +425,10 @@ async fn run_scenario(
     // Run ticks, applying scenario events at matching times (repeat for each day)
     let num_days = scen.days.max(1);
     let mut time_regs: [Option<u16>; 6] = [None; 6];
+
+    // Initial register projection so Modbus clients see non-zero values immediately.
+    reg_store.project_from_state(&engine.state);
+
     for day in 0..num_days {
         let day_offset = chrono::TimeDelta::days(day as i64);
         let day_label = if num_days > 1 {
@@ -790,6 +797,9 @@ async fn serve_config(
         "Serving plant config '{}' on {modbus_addr} (tick={tick_interval}s)",
         config_path.display(),
     );
+
+    // Initial register projection so Modbus clients see non-zero values immediately.
+    reg_store.project_from_state(&engine.state);
 
     let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
     let server_store = store.clone();
