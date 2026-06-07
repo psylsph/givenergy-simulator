@@ -1051,15 +1051,15 @@ impl DeviceModel for BatteryEngine {
         let discharge_scale = (state.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
 
         for b in &mut state.batteries {
-            // Calculate max power from c-rate first
-            let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
             if b.power_kw > 0.0 {
-                // Charging: apply charge limit
-                let max_charge_kw = c_rate_kw * charge_scale.max(0.02);
+                // Charging: apply charge limit as percentage of device max
+                let max_charge_kw = b.max_charge_kw * charge_scale.max(0.02);
                 b.power_kw = b.power_kw.min(max_charge_kw);
             } else if b.power_kw < 0.0 {
-                // Discharging: apply discharge limit
-                let max_discharge_kw = c_rate_kw * discharge_scale.max(0.02);
+                // Discharging: apply discharge limit as percentage of device max.
+                // Previously this scaled the raw C-rate, which meant the percentage
+                // didn't match what the user expected from device limits.
+                let max_discharge_kw = b.max_discharge_kw * discharge_scale.max(0.02);
                 b.power_kw = b.power_kw.max(-max_discharge_kw);
             }
 
@@ -1132,6 +1132,18 @@ impl DeviceModel for BatteryEngine {
 
         // Sync convenience field
         state.sync_battery_from_vec();
+
+        // Recalculate grid and inverter AC power after capping battery power.
+        // InverterEngine::force_discharge computes these based on the uncapped
+        // device-limit rate, but BatteryEngine may have throttled it. Without
+        // this recalculation the displayed grid export is stale.
+        let total_batt_kw = state.total_battery_power_kw();
+        if total_batt_kw < 0.0 {
+            let discharge_w = (-total_batt_kw * 1000.0).min(state.config.max_ac_watts);
+            let net = state.solar.generation_w - state.load.demand_w;
+            state.grid.power_w = -(net + discharge_w);
+            state.inverter.ac_power_w = state.solar.generation_w + discharge_w;
+        }
     }
 }
 
@@ -1571,14 +1583,16 @@ mod tests {
         };
 
         let mut full = PlantState::new(ts(12));
-        full.batteries[0].capacity_kwh = 10.0; // c-rate cap = 7kW at 0.7C
+        full.batteries[0].max_charge_kw = 7.0;
+        full.batteries[0].capacity_kwh = 10.0;
         full.batteries[0].power_kw = 8.0;
         full.battery_charge_limit_percent = 100.0;
         BatteryEngine::new().update(&ctx, &mut full);
         assert!((full.batteries[0].power_kw - 7.0).abs() < 0.001);
 
         let mut half = PlantState::new(ts(12));
-        half.batteries[0].capacity_kwh = 10.0; // c-rate cap = 7kW at 0.7C
+        half.batteries[0].max_charge_kw = 7.0;
+        half.batteries[0].capacity_kwh = 10.0;
         half.batteries[0].power_kw = 8.0;
         half.battery_charge_limit_percent = 50.0;
         BatteryEngine::new().update(&ctx, &mut half);
