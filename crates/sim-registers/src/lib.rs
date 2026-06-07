@@ -6842,6 +6842,26 @@ mod tests {
     }
 
     #[test]
+    fn supports_up_to_six_battery_modules() {
+        // GIV-BAT-HV modular systems stack up to 6 x GIV-BAT-3.4-HV modules.
+        // GivEnergy probes slave addresses 0x32-0x37 for up to 6 batteries.
+        let state = PlantState::with_battery_count(test_ts(), 6);
+        assert_eq!(state.batteries.len(), 6, "6 modules should be created");
+        // Clamps above 6 stay at 6.
+        let clamped = PlantState::with_battery_count(test_ts(), 99);
+        assert_eq!(clamped.batteries.len(), 6);
+
+        // BMS projection is index-agnostic: each of the 6 modules must yield
+        // valid IR 60-119 cell/temperature data via project_battery_bms.
+        let store = RegisterStore::new(default_register_catalogue());
+        for i in 0..6 {
+            let bms = store.project_battery_bms(&state.batteries[i], i);
+            // IR 60 (first cell voltage, mV) must be non-zero for every module.
+            assert_ne!(bms[0], 0, "module {i} BMS data must be populated");
+        }
+    }
+
+    #[test]
     fn givenergy_input_registers_populated() {
         let mut state = PlantState::new(test_ts());
         state.solar.generation_w = 4000.0;

@@ -570,9 +570,9 @@ impl PlantState {
         }
     }
 
-    /// Create a state with the given number of battery modules (1–3).
+    /// Create a state with the given number of battery modules (1–6).
     pub fn with_battery_count(timestamp: NaiveDateTime, count: usize) -> Self {
-        let count = count.clamp(1, 3);
+        let count = count.clamp(1, 6);
         let batts: Vec<BatteryState> = (0..count).map(|_| BatteryState::default()).collect();
         Self {
             timestamp,

@@ -110,7 +110,7 @@ pub async fn create_plant(
     let mut plant_state = if let Some(modules) = params.battery_modules {
         let batts: Vec<BatteryState> = modules
             .into_iter()
-            .take(3)
+            .take(6)
             .map(|m| {
                 let soh = m.soh.clamp(0.0, 1.0);
                 let capacity = m.capacity_kwh.max(1.0);
@@ -131,7 +131,7 @@ pub async fn create_plant(
         state.sync_battery_from_vec();
         state
     } else {
-        let battery_count = params.battery_count.unwrap_or(1).clamp(1, 3);
+        let battery_count = params.battery_count.unwrap_or(1).clamp(1, 6);
         sim_models::PlantState::with_battery_count(now, battery_count)
     };
     plant_state.config.solar_peak_watts = peak_watts;

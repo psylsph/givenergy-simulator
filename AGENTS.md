@@ -277,7 +277,7 @@ cargo build && cargo test    # should complete in ~5s total
 ## Persistence
 Save path: `~/.local/share/com.givenergy.simulator/plant_state.json`
 Format: `{ "plant": PlantState, "schedule": Option<Schedule> }`
-Battery sizes: `BATTERY_SIZES = [2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0]` (nearest-value matching).
+Battery sizes: `BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4]` (nearest-value matching). Up to 6 battery modules supported (LV packs at slave 0x32–0x37, or HV stacks).
 
 ## Network ports
 | Port | Protocol | Purpose |

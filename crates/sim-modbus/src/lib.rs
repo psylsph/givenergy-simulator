@@ -354,8 +354,8 @@ pub async fn run_modbus_server(
                                 } else {
                                     None
                                 }
-                            } else if (0x33..=0x36).contains(&slave) {
-                                // Additional batteries: IR 60-119 on battery slaves
+                            } else if (0x33..=0x37).contains(&slave) {
+                                // Additional batteries: IR 60-119 on battery slaves (0x33-0x37 = modules 2-6)
                                 if inner_func == FC_READ_INPUT && (60..120).contains(&start_addr) {
                                     Some((slave - 0x33 + 1) as usize)
                                 } else {
