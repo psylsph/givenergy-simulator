@@ -656,24 +656,50 @@ impl RegisterStore {
                     continue;
                 }
                 // HR 13-17: Serial number (simulated)
+                // ThreePhase11kW uses "ZAAA111111", others use "SIM012345".
                 "ge_hr_serial_0" => {
-                    self.values.insert(key, (b'S' as u16) << 8 | b'I' as u16);
+                    let v = if state.config.inverter_type == "ThreePhase11kW" {
+                        (b'Z' as u16) << 8 | b'A' as u16
+                    } else {
+                        (b'S' as u16) << 8 | b'I' as u16
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 "ge_hr_serial_1" => {
-                    self.values.insert(key, (b'M' as u16) << 8 | b'0' as u16);
+                    let v = if state.config.inverter_type == "ThreePhase11kW" {
+                        (b'A' as u16) << 8 | b'A' as u16
+                    } else {
+                        (b'M' as u16) << 8 | b'0' as u16
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 "ge_hr_serial_2" => {
-                    self.values.insert(key, (b'0' as u16) << 8 | b'1' as u16);
+                    let v = if state.config.inverter_type == "ThreePhase11kW" {
+                        (b'1' as u16) << 8 | b'1' as u16
+                    } else {
+                        (b'0' as u16) << 8 | b'1' as u16
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 "ge_hr_serial_3" => {
-                    self.values.insert(key, (b'2' as u16) << 8 | b'3' as u16);
+                    let v = if state.config.inverter_type == "ThreePhase11kW" {
+                        (b'1' as u16) << 8 | b'1' as u16
+                    } else {
+                        (b'2' as u16) << 8 | b'3' as u16
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 "ge_hr_serial_4" => {
-                    self.values.insert(key, (b'4' as u16) << 8 | b'5' as u16);
+                    let v = if state.config.inverter_type == "ThreePhase11kW" {
+                        (b'1' as u16) << 8 | b'1' as u16
+                    } else {
+                        (b'4' as u16) << 8 | b'5' as u16
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 // HR 18: First battery BMS firmware version
@@ -1286,6 +1312,8 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_t_inverter" => Some(state.inverter.temperature_celsius),
+                "tph_ir_t_boost" => Some(state.inverter.temperature_celsius - 2.0),
+                "tph_ir_t_buck_boost" => Some(state.inverter.temperature_celsius + 3.0),
                 "tph_ir_v_battery_bms" => Some(76.8),
                 "tph_ir_battery_soc" => Some(state.aggregate_soc()),
                 "tph_ir_p_battery_discharge_high" | "tph_ir_p_battery_discharge_low" => {
@@ -1302,6 +1330,9 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
+                "tph_ir_v_battery_pcs" => Some(76.8),
+                "tph_ir_v_dc_bus" => Some(380.0),
+                "tph_ir_v_inv_bus" => Some(380.0),
                 "tph_ir_i_battery" => {
                     let amps = -(state.total_battery_power_kw() * 1000.0 / 76.8);
                     self.values.insert(key, (amps * 10.0) as i16 as u16);
@@ -1466,9 +1497,9 @@ impl RegisterStore {
 
             if let Some(eng) = engineering {
                 let raw = if def.scaling_factor > 0.0 {
-                    (eng / def.scaling_factor) as u16
+                    (eng / def.scaling_factor).round() as u16
                 } else {
-                    eng as u16
+                    eng.round() as u16
                 };
                 self.values.insert(key, raw);
             }
@@ -4736,8 +4767,54 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Input,
         },
         RegisterDef {
+            address: 1129,
+            name: "tph_ir_t_boost".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1130,
+            name: "tph_ir_t_buck_boost".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        // Battery block (IR 1131-1140)
+        RegisterDef {
             address: 1131,
             name: "tph_ir_v_battery_bms".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1133,
+            name: "tph_ir_v_battery_pcs".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1134,
+            name: "tph_ir_v_dc_bus".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadOnly,
+            space: Input,
+        },
+        RegisterDef {
+            address: 1135,
+            name: "tph_ir_v_inv_bus".into(),
             category: C::Battery,
             typ: T::U16,
             scaling_factor: 0.1,
@@ -7406,7 +7483,7 @@ mod tests {
         let mut s = PlantState::new(test_ts());
         s.config.inverter_type = "ThreePhase11kW".to_string();
         s.config.max_ac_watts = 11000.0;
-        s.inverter.dsp_firmware_version = 612;
+        s.inverter.dsp_firmware_version = 11043;
         s.batteries[0].capacity_kwh = 9.5;
         s.batteries[0].soc_percent = 50.0;
         s.sync_battery_from_vec();
@@ -7573,7 +7650,7 @@ mod tests {
         assert_eq!(store.read_by_space(1061, RegisterSpace::Input), Some(2400));
         assert_eq!(store.read_by_space(1062, RegisterSpace::Input), Some(2400));
         assert_eq!(store.read_by_space(1063, RegisterSpace::Input), Some(2400));
-        assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(45));
+        assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(46));
         assert_eq!(store.read_by_space(1083, RegisterSpace::Input), Some(9000));
         assert_eq!(read_u32_ir(&store, 1089, 1090), 27000);
         assert_eq!(read_u32_ir(&store, 1079, 1080), 1234); // CT/meter import — hardcoded lifetime
@@ -7581,11 +7658,18 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1240, 1241), 4321); // export mirror — hardcoded lifetime
         assert_eq!(read_u32_ir(&store, 1244, 1245), 0); // second meter absent
 
-        // Battery block: SoC, charge/discharge split, current and firmware IDs.
+        // Battery block: temperatures, voltages, SoC, charge/discharge split, current and firmware IDs.
+        assert_eq!(store.read_by_space(1128, RegisterSpace::Input), Some(350)); // t_inverter 35.0°C
+        assert_eq!(store.read_by_space(1129, RegisterSpace::Input), Some(330)); // t_boost 33.0°C
+        assert_eq!(store.read_by_space(1130, RegisterSpace::Input), Some(380)); // t_buck_boost 38.0°C
+        assert_eq!(store.read_by_space(1131, RegisterSpace::Input), Some(768)); // v_battery_bms 76.8V
         assert_eq!(store.read_by_space(1132, RegisterSpace::Input), Some(62));
         assert_eq!(read_u32_ir(&store, 1138, 1139), 15000); // charging 1.5kW at ×0.1W
         assert_eq!(read_u32_ir(&store, 1136, 1137), 0);
         assert!((store.read_by_space(1140, RegisterSpace::Input).unwrap() as i16) < 0);
+        assert_eq!(store.read_by_space(1133, RegisterSpace::Input), Some(768)); // v_battery_pcs 76.8V
+        assert_eq!(store.read_by_space(1134, RegisterSpace::Input), Some(3800)); // v_dc_bus 380.0V
+        assert_eq!(store.read_by_space(1135, RegisterSpace::Input), Some(3800)); // v_inv_bus 380.0V
         assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
         assert_eq!(store.read_by_space(1326, RegisterSpace::Input), Some(612));
         assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(318)); // overridden in test
@@ -7623,10 +7707,10 @@ mod tests {
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
-        assert_eq!(store.read_by_space(19, RegisterSpace::Holding), Some(612));
+        assert_eq!(store.read_by_space(19, RegisterSpace::Holding), Some(11043));
         assert_eq!(store.read_by_space(21, RegisterSpace::Holding), Some(612));
-        assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
-        assert_eq!(store.read_by_space(1326, RegisterSpace::Input), Some(612));
+        assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(11043));
+        assert_eq!(store.read_by_space(1326, RegisterSpace::Input), Some(11043));
         assert_eq!(store.read_by_space(1327, RegisterSpace::Input), Some(612));
     }
 
