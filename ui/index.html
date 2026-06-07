@@ -1175,8 +1175,14 @@
       const n = timelineData.solar.length;
       if (n < 2) return;
 
-      const allVals = [...timelineData.solar, ...timelineData.load, ...timelineData.grid.map(Math.abs)];
-      const maxVal = Math.max(...allVals, 1);
+      // Include battery (converted from kW to W) in the axis range.
+      const allVals = [
+        ...timelineData.solar,
+        ...timelineData.load,
+        ...timelineData.grid.map(Math.abs),
+        ...timelineData.battery.map(v => Math.abs(v) * 1000),
+      ];
+      const maxVal = Math.max(...allVals, 1) * 1.12; // 12% headroom above peak
       const pad = { top: 10, bottom: 20, left: 40, right: 10 };
       const plotW = w - pad.left - pad.right;
       const plotH = h - pad.top - pad.bottom;
