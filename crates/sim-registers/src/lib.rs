@@ -98,6 +98,21 @@ pub struct RegisterStore {
     defs: Vec<RegisterDef>,
 }
 
+/// Deterministic per-cell voltage multiplier in [0.99, 1.01] (≤1% noise).
+///
+/// Real packs have slight cell-to-cell capacity/impedance variation. The factor
+/// is derived from a splitmix64-style hash of (module, cell) so each cell of each
+/// module gets a unique, stable offset — values don't jitter between poll cycles.
+fn cell_voltage_factor(module_index: usize, cell_index: usize) -> f64 {
+    let mut h = (module_index as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        ^ (cell_index as u64).wrapping_mul(0x517CC1B727220A95);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51AFD7ED558CCD);
+    h ^= h >> 33;
+    let frac = (h >> 11) as f64 / (1u64 << 53) as f64; // [0, 1)
+    1.0 + (frac * 2.0 - 1.0) * 0.01 // [0.99, 1.01]
+}
+
 impl RegisterStore {
     /// Create a store pre-populated from the given register definitions.
     pub fn new(defs: Vec<RegisterDef>) -> Self {
@@ -1875,11 +1890,12 @@ impl RegisterStore {
     ) -> [u16; 60] {
         let mut regs = [0u16; 60];
 
-        // Cell voltages: IR 60-75 (mV). Simulate 16 cells from total voltage.
+        // Cell voltages: IR 60-75 (mV). Simulate 16 cells from total voltage,
+        // with ≤1% deterministic per-cell variation (see cell_voltage_factor).
         let cell_count = 16usize;
-        let cell_mv = (battery.voltage_v * 1000.0 / cell_count as f64).round() as u16;
-        for reg in regs.iter_mut().take(cell_count) {
-            *reg = cell_mv; // IR 60+i
+        let base_mv = battery.voltage_v * 1000.0 / cell_count as f64;
+        for (i, reg) in regs.iter_mut().take(cell_count).enumerate() {
+            *reg = (base_mv * cell_voltage_factor(module_index, i)).round() as u16; // IR 60+i
         }
 
         // Cell group temperatures: IR 76-79 (0.1 °C)
@@ -2084,11 +2100,12 @@ impl RegisterStore {
         let cells = 24usize;
 
         // IR 60-83: 24 cell voltages (milli V). Nominal LFP ~3.2-3.4 V/cell,
-        // nudged by SOC so the cluster looks healthy and varying.
+        // nudged by SOC so the cluster looks healthy and varying, plus ≤1%
+        // deterministic per-cell noise (see cell_voltage_factor).
         let cell_v = 3.3 + (battery.soc_percent - 50.0) * 0.003;
-        let cell_mv = (cell_v * 1000.0).round() as u16;
-        for reg in regs.iter_mut().take(cells) {
-            *reg = cell_mv; // IR 60+i
+        let base_mv = cell_v * 1000.0;
+        for (i, reg) in regs.iter_mut().take(cells).enumerate() {
+            *reg = (base_mv * cell_voltage_factor(module_index, i)).round() as u16; // IR 60+i
         }
 
         // IR 90-113: 24 cell temperatures (deci °C)
