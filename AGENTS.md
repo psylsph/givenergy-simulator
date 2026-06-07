@@ -99,6 +99,13 @@ commands.refresh_plant_data):
 3. Slave `0x50+m` (BMU), IR(60,60) → per-module 24 cells + serial; validity via
    `serial_number` (IR 114–118) decoding to a non-blank string.
 
+**Per-module SoC is NOT exposed on the HV wire.** BMU data is cells (IR 60–83, milli V)
++ temperatures (IR 90–113, deci °C) + serial (IR 114–118) only — confirmed against both
+`givenergy-modbus` (model/hv_bcu.py `Bmu`) and giv_tcp (model/hvbmu.py, read.py). SoC is
+**cluster-wide only**, packed at BCU IR(80) as `duint8`: high byte = `battery_soc_max`,
+low byte = `battery_soc_min` across the stack. `project_battery_bmu` correctly omits
+SoC; `project_battery_bcu` emits IR(80) as the sole SoC signal.
+
 Single-stack model: **1 BMS → 1 BCU → N BMUs** (N = `batteries.len()`), matching the
 GIV-BAT-HV datasheet systems (1–6 × GIV-BAT-3.4-HV). A 5-module stack (GIV-BAT-17.0-HV)
 needs 1 BCU + 5 BMU = **6 IR(60,60) reads per cycle**. Projectors:
