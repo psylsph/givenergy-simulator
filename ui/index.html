@@ -301,6 +301,26 @@
       color: var(--text-muted);
     }
 
+    #footer-heaters {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 10px;
+    }
+    .heater-indicator {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .heater-indicator.on {
+      background: rgba(249, 115, 22, 0.18);
+      color: #f97316;
+    }
+    .heater-indicator.off {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-muted);
+    }
+
     .status-dot {
       display: inline-block;
       width: 7px;
@@ -606,6 +626,7 @@
     <footer>GivEnergy Plant Simulator
       <span id="footer-info">GivEnergy Plant Simulator — No plant created</span>
       <span id="footer-modules">—</span>
+      <span id="footer-heaters"></span>
     </footer>
   </div>
 
@@ -1118,6 +1139,13 @@
       // Footer
       el('footer-info').textContent = `${s.inverter_mode} mode`;
       el('footer-modules').textContent = `${s.battery_module_count} module(s)`;
+      el('footer-heaters').innerHTML = `
+        <span class="heater-indicator ${s.battery_self_heating ? 'on' : 'off'}">
+          🔆 Self-Heat ${s.battery_self_heating ? 'ON' : 'OFF'}
+        </span>
+        <span class="heater-indicator ${s.manual_battery_heater ? 'on' : 'off'}">
+          🔥 Heater ${s.manual_battery_heater ? 'ON' : 'OFF'}
+        </span>`;
     }
 
     // ---- Timeline ----

@@ -118,6 +118,8 @@ pub struct PlantStateDto {
     pub energy_totals: EnergyTotalsDto,
     pub schedule: ScheduleDto,
     pub evc: sim_models::EvcState,
+    pub battery_self_heating: bool,
+    pub manual_battery_heater: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -531,6 +533,8 @@ impl From<&PlantState> for PlantStateDto {
             weather: state.weather.clone(),
             schedule: ScheduleDto::from_state(state, None),
             evc: state.evc.clone(),
+            battery_self_heating: state.inverter.battery_self_heating,
+            manual_battery_heater: state.inverter.manual_battery_heater,
             energy_totals: EnergyTotalsDto {
                 grid_import_kwh: state.energy_totals.grid_import_kwh,
                 grid_export_kwh: state.energy_totals.grid_export_kwh,

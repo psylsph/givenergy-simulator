@@ -175,6 +175,12 @@ pub struct InverterState {
     /// Total powered-on runtime in hours (IR 47-48).
     #[serde(default)]
     pub work_time_hours: f64,
+    /// HR 104: Battery self-heating enabled (hardware/batch-gated on real units).
+    #[serde(default)]
+    pub battery_self_heating: bool,
+    /// HR 172: Manual battery heater enabled (hardware-gated like 104).
+    #[serde(default)]
+    pub manual_battery_heater: bool,
 }
 
 fn default_dsp_firmware() -> u16 {
@@ -191,6 +197,8 @@ impl Default for InverterState {
             dsp_firmware_version: default_dsp_firmware(),
             arm_firmware_version: 0,
             work_time_hours: 0.0,
+            battery_self_heating: false,
+            manual_battery_heater: false,
         }
     }
 }

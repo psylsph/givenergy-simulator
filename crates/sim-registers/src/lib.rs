@@ -1128,8 +1128,14 @@ impl RegisterStore {
                 "inverter_ac_power" => Some(state.inverter.ac_power_w),
                 "inverter_export_limit_w" => Some(state.inverter.export_limit_w),
                 "inverter_temperature" => Some(state.inverter.temperature_celsius),
-                "inverter_firmware_state" => {
-                    self.values.insert(key, 1);
+                "ge_hr_enable_battery_self_heating" => {
+                    self.values
+                        .insert(key, state.inverter.battery_self_heating as u16);
+                    continue;
+                }
+                "ge_hr_enable_manual_battery_heater" => {
+                    self.values
+                        .insert(key, state.inverter.manual_battery_heater as u16);
                     continue;
                 }
                 "battery_soc" => Some(state.aggregate_soc()),
@@ -6537,8 +6543,17 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         RegisterDef {
             address: 104,
-            name: "inverter_firmware_state".into(),
-            category: C::Inverter,
+            name: "ge_hr_enable_battery_self_heating".into(),
+            category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 172,
+            name: "ge_hr_enable_manual_battery_heater".into(),
+            category: C::Battery,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadOnly,
