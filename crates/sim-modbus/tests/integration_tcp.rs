@@ -363,3 +363,69 @@ async fn read_battery_bms_on_slave_0x32() {
     // IR 97 = num_cells = 16
     assert_eq!(data[97 - 60], 16, "16 cells");
 }
+
+#[tokio::test]
+async fn hv_battery_cluster_discovery_serves_bms_bcu_and_bmus() {
+    // Reproduces the user's case: a GIV-3HY-11 (ThreePhase, 0x4004) with a
+    // GIV-BAT-17.0-HV stack (5 x GIV-BAT-3.4-HV). HV inverters are discovered
+    // via the BCU/BMU cluster protocol, NOT the LV 0x32 path, so a client issues
+    // 1 BMS read (0xA0) + 1 BCU read (0x70) + 5 BMU reads (0x50-0x54) = 6 reads.
+    let mut state = PlantState::new(
+        chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+    );
+    // Build a 5-module HV stack.
+    state.batteries = (0..5)
+        .map(|_| sim_models::BatteryState {
+            soc_percent: 60.0,
+            voltage_v: 51.2,
+            soh: 0.95,
+            ..Default::default()
+        })
+        .collect();
+    state.sync_battery_from_vec();
+
+    let (addr, _store, _rx) = start_server(&state).await;
+    let serial = serial_arr();
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+
+    // Step 1: BMS discovery at 0xA0, IR(60,5). IR(61) = number of BCUs.
+    let req = build_read_request(&serial, 0xA0, FC_READ_INPUT, 60, 5);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, _, payload) = decode_response(&raw);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data.len(), 5);
+    assert_eq!(data[1], 1, "IR(61) at 0xA0 must report 1 BCU");
+
+    // Step 2: BCU cluster read at 0x70, IR(60,60). Must decode a valid version
+    // and report 5 modules at IR(64).
+    let req = build_read_request(&serial, 0x70, FC_READ_INPUT, 60, 60);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, _, payload) = decode_response(&raw);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data.len(), 60);
+    // IR 60-63 version prefix non-blank ('H','V')
+    assert_eq!(data[0], 0x4856, "BCU version prefix must be 'HV'");
+    assert_eq!(data[4], 5, "BCU IR(64) must report 5 modules");
+    assert_eq!(data[5], 24, "BCU IR(65) cells_per_module = 24");
+
+    // Step 3: BMU per-module reads at 0x50..0x54, IR(60,60). Each must populate
+    // 24 cell voltages (IR 60-83) and a non-blank serial (IR 114-118).
+    for slave in 0x50..=0x54 {
+        let req = build_read_request(&serial, slave, FC_READ_INPUT, 60, 60);
+        let raw = send_recv(&mut stream, &req).await;
+        let (_, _, payload) = decode_response(&raw);
+        let (_, _, data) = parse_read_payload(&payload);
+        assert_eq!(data.len(), 60);
+        // IR 60 first cell voltage non-zero
+        assert_ne!(data[0], 0, "slave {slave:#04x} cell 0 voltage");
+        // IR 114 serial high byte non-blank
+        assert_ne!(
+            (data[54] >> 8) as u8,
+            b' ',
+            "slave {slave:#04x} serial must be non-blank"
+        );
+    }
+}

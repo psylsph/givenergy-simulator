@@ -172,7 +172,10 @@ pub fn build_error_response(
 /// Listens for GivEnergy proprietary frames and responds in kind.
 /// Supports multi-slave addressing for battery BMS modules:
 /// - Slave 0x32: inverter registers + battery #1 BMS (IR 60-119)
-/// - Slave 0x33-0x36: battery modules 2-5 BMS (IR 60-119)
+/// - Slave 0x33-0x37: battery modules 2-6 BMS (IR 60-119) — LV protocol
+/// - Slave 0xA0: HV BMS discovery (IR 60-64; IR 61 = number of BCUs)
+/// - Slave 0x70: HV BCU cluster (IR 60-119; aggregates all modules)
+/// - Slave 0x50-0x57: HV BMU per-module cells (IR 60-119; one per module)
 pub async fn run_modbus_server(
     addr: SocketAddr,
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
@@ -346,18 +349,35 @@ pub async fn run_modbus_server(
                                 continue;
                             }
 
-                            // Check if this is a battery BMS read (IR 60-119 on battery slaves)
-                            let battery_index = if slave == 0x32 {
-                                // Battery #1 BMS: IR 60-119 on inverter slave
-                                if inner_func == FC_READ_INPUT && (60..120).contains(&start_addr) {
-                                    Some(0usize)
-                                } else {
-                                    None
-                                }
-                            } else if (0x33..=0x37).contains(&slave) {
-                                // Additional batteries: IR 60-119 on battery slaves (0x33-0x37 = modules 2-6)
-                                if inner_func == FC_READ_INPUT && (60..120).contains(&start_addr) {
-                                    Some((slave - 0x33 + 1) as usize)
+                            // Determine if this read targets a battery device.
+                            // LV BMS protocol: slaves 0x32-0x37 (IR 60-119 per module).
+                            // HV cluster protocol: slave 0xA0 (discovery),
+                            //   0x70+i (BCU cluster), 0x50+m (BMU per-module cells).
+                            // HV inverters (DTC family 4/8) are discovered via the
+                            // cluster path; LV inverters via 0x32-0x37. Both are
+                            // served unconditionally — clients only probe the path
+                            // matching the inverter's DTC.
+                            enum BatteryRead {
+                                LvBms(usize),
+                                HvBmsDiscovery,
+                                HvBcu,
+                                HvBmu(usize),
+                            }
+                            let battery_read = if inner_func == FC_READ_INPUT {
+                                if slave == 0xA0 && (60..65).contains(&start_addr) {
+                                    Some(BatteryRead::HvBmsDiscovery)
+                                } else if slave == 0x70 && (60..120).contains(&start_addr) {
+                                    Some(BatteryRead::HvBcu)
+                                } else if (0x50..=0x6F).contains(&slave)
+                                    && (60..120).contains(&start_addr)
+                                {
+                                    Some(BatteryRead::HvBmu((slave - 0x50) as usize))
+                                } else if slave == 0x32 && (60..120).contains(&start_addr) {
+                                    Some(BatteryRead::LvBms(0usize))
+                                } else if (0x33..=0x37).contains(&slave)
+                                    && (60..120).contains(&start_addr)
+                                {
+                                    Some(BatteryRead::LvBms((slave - 0x33 + 1) as usize))
                                 } else {
                                     None
                                 }
@@ -365,25 +385,34 @@ pub async fn run_modbus_server(
                                 None
                             };
 
-                            let reg_data = if let Some(batt_idx) = battery_index {
-                                // Serve BMS data from battery state
+                            let reg_data = if let Some(br) = battery_read {
                                 let batts = batt_state.lock().await;
-                                if let Some(battery) = batts.get(batt_idx) {
-                                    let store_guard = store.lock().await;
-                                    let bms = store_guard.project_battery_bms(battery, batt_idx);
-                                    drop(store_guard);
-                                    let mut data = Vec::with_capacity(count as usize * 2);
-                                    for i in 0..count {
-                                        let idx =
-                                            start_addr.saturating_sub(60) as usize + i as usize;
-                                        let val = if idx < 60 { bms[idx] } else { 0 };
-                                        data.extend_from_slice(&val.to_be_bytes());
+                                let store_guard = store.lock().await;
+                                // Single-stack model: one BCU manages all modules.
+                                let src: Vec<u16> = match br {
+                                    BatteryRead::LvBms(idx) => match batts.get(idx) {
+                                        Some(b) => store_guard.project_battery_bms(b, idx).to_vec(),
+                                        None => vec![0u16; 60],
+                                    },
+                                    BatteryRead::HvBmsDiscovery => {
+                                        store_guard.project_battery_bms_discovery(1).to_vec()
                                     }
-                                    data
-                                } else {
-                                    // No battery at this index — return zeros
-                                    vec![0u8; count as usize * 2]
+                                    BatteryRead::HvBcu => {
+                                        store_guard.project_battery_bcu(&batts).to_vec()
+                                    }
+                                    BatteryRead::HvBmu(idx) => match batts.get(idx) {
+                                        Some(b) => store_guard.project_battery_bmu(b, idx).to_vec(),
+                                        None => vec![0u16; 60],
+                                    },
+                                };
+                                drop(store_guard);
+                                let mut data = Vec::with_capacity(count as usize * 2);
+                                for i in 0..count {
+                                    let idx = start_addr.saturating_sub(60) as usize + i as usize;
+                                    let val = src.get(idx).copied().unwrap_or(0);
+                                    data.extend_from_slice(&val.to_be_bytes());
                                 }
+                                data
                             } else {
                                 // Normal register read from store
                                 let space = if inner_func == FC_READ_INPUT {

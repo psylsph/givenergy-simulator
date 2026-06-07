@@ -8,7 +8,7 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 - `cargo fmt --all -- --check` — must be clean (no diff).
 - `cargo clippy --all-targets` — must produce **zero** warnings.
-- `cargo test` — must be green. The suite is fast (~3s, 245 tests). Don't move on without green tests.
+- `cargo test` — must be green. The suite is fast (~3s, 250 tests). Don't move on without green tests.
 
 ## Workspace
 
@@ -78,6 +78,34 @@ Internal convention: `total_battery_power_kw` positive = charging.
 GivEnergy wire convention: raw positive = discharging.
 The register projection **negates** the value for IR 52 (battery power) and IR 51 (battery current).
 The client decodes: `battery_power = -signed(raw)`, converting back to positive=charging.
+
+### Battery protocol: LV packs vs HV cluster
+There are **two distinct** battery wire protocols. Which one a client uses is decided
+by the inverter DTC (family 4 = three-phase, 8 = All-in-One → HV; families 2/3 → LV).
+The simulator serves **both** unconditionally; the client only probes the path that
+matches the inverter's DTC.
+
+**LV BMS protocol** (single packs, e.g. Gen1/Gen2/Gen3 hybrids):
+- Slave `0x32`–`0x37`: one slave per battery module, IR 60–119 each.
+- `project_battery_bms(battery, idx)` — 16 cells, validity via SOC.
+
+**HV cluster protocol** (GIV-BAT-HV modular stacks, ThreePhase/AllInOne):
+Discovered via a 3-step chain (matches `givenergy-modbus` client.py and giv_tcp
+commands.refresh_plant_data):
+1. Slave `0xA0` (BMS), IR(60,5) → IR(61) = number of BCUs.
+2. Slave `0x70+i` (BCU), IR(60,60) → cluster data; IR(64) = modules; validity via
+   `pack_software_version` (IR 60–63) decoding to a non-blank string (gateway_version
+   converter).
+3. Slave `0x50+m` (BMU), IR(60,60) → per-module 24 cells + serial; validity via
+   `serial_number` (IR 114–118) decoding to a non-blank string.
+
+Single-stack model: **1 BMS → 1 BCU → N BMUs** (N = `batteries.len()`), matching the
+GIV-BAT-HV datasheet systems (1–6 × GIV-BAT-3.4-HV). A 5-module stack (GIV-BAT-17.0-HV)
+needs 1 BCU + 5 BMU = **6 IR(60,60) reads per cycle**. Projectors:
+`project_battery_bms_discovery`, `project_battery_bcu`, `project_battery_bmu`.
+
+If battery data comes back empty for an HV inverter, the cluster path (not the LV
+`0x32` path) is what needs serving — this was the original gap.
 
 ### State sync pattern
 `PlantState.battery` (singular) is a convenience field for `batteries[0]`.
@@ -245,7 +273,7 @@ CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, sc
 ## Running Tests
 
 ```bash
-# Full suite (245 tests)
+# Full suite (250 tests)
 cargo test
 
 # Single crate

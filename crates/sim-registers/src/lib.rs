@@ -1972,6 +1972,149 @@ impl RegisterStore {
         regs
     }
 
+    /// HV BMS discovery data (slave 0xA0), IR 60-64.
+    ///
+    /// A real client (givenergy-modbus / giv_tcp) reads IR(60,5) at slave 0xA0
+    /// during cold HV discovery; IR(61) holds the number of BCUs present. We
+    /// model single-stack GIV-BAT-HV systems as one BCU, so IR(61) = 1.
+    pub fn project_battery_bms_discovery(&self, num_bcus: usize) -> [u16; 5] {
+        let mut regs = [0u16; 5];
+        // IR(60): BMS software version nibble (non-zero so the version is not blank).
+        regs[0] = 1;
+        // IR(61): number of BCUs present (the field the client decodes).
+        regs[1] = num_bcus as u16;
+        // IR(62-64): reserved / unused by either reference library.
+        regs
+    }
+
+    /// HV BCU cluster data (slave 0x70+i), IR 60-119.
+    ///
+    /// Aggregates all modules in the stack into one cluster view, following the
+    /// BCU register LUT shared by givenergy-modbus (model/hv_bcu.py) and giv_tcp
+    /// (givenergy_modbus_async/model/hvbcu.py). Validity hinges on
+    /// `pack_software_version` (IR 60-63) decoding to a non-blank string via the
+    /// gateway_version converter, so the version encoding must round-trip.
+    pub fn project_battery_bcu(&self, batteries: &[sim_models::BatteryState]) -> [u16; 60] {
+        let mut regs = [0u16; 60];
+        let n = batteries.len().max(1);
+
+        // IR 60-63: pack_software_version. gateway_version(r60,r61,r62,r63) builds
+        // prefix = latin1(r60||r61) with nulls stripped, digits = decimal bytes of
+        // r62||r63. Encode "HV00000001" so is_valid() (not blank, not all '0') holds.
+        regs[0] = 0x4856; // 'H','V'
+        regs[1] = 0x3030; // '0','0'
+        regs[2] = 0x3030; // '0','0'
+        regs[3] = 0x3031; // '0','1'
+
+        // IR 64: number_of_modules
+        regs[4] = batteries.len() as u16;
+        // IR 65: cells_per_module (all known HV stacks use 24 cells/module)
+        regs[5] = 24;
+
+        // Aggregate cluster values. Modules are in series: stack voltage sums,
+        // current is shared, power sums, SOC/SOH average.
+        let avg_soc = batteries.iter().map(|b| b.soc_percent).sum::<f64>() / n as f64;
+        let stack_voltage = batteries.iter().map(|b| b.voltage_v).sum::<f64>();
+        let stack_current = batteries.first().map(|b| b.current_a).unwrap_or(0.0);
+        let power_kw = batteries.iter().map(|b| b.power_kw).sum::<f64>();
+        let avg_soh = batteries.iter().map(|b| b.soh).sum::<f64>() / n as f64;
+        let avg_cycles = batteries.iter().map(|b| b.cycle_count).sum::<f64>() / n as f64;
+        let soc_max = batteries
+            .iter()
+            .map(|b| b.soc_percent)
+            .fold(0.0_f64, f64::max)
+            .round()
+            .clamp(0.0, 100.0) as u16;
+        let soc_min = batteries
+            .iter()
+            .map(|b| b.soc_percent)
+            .fold(300.0_f64, f64::min)
+            .round()
+            .clamp(0.0, 100.0) as u16;
+
+        // IR 73: battery_voltage (deci V)
+        regs[13] = (stack_voltage * 10.0).round() as u16;
+        // IR 74: load_voltage (deci V) — mirror stack voltage
+        regs[14] = regs[13];
+        // IR 76: battery_current (int16, deci A, signed: + = charging)
+        regs[16] = (stack_current * 10.0).round() as i16 as u16;
+        // IR 79: battery_power (milli: raw = kW * 1000, signed)
+        regs[19] = (power_kw * 1000.0).round() as i16 as u16;
+        // IR 80: SOC max/min (duint8: high byte = max, low byte = min)
+        regs[20] = (soc_max << 8) | soc_min;
+        // IR 81: battery_soh (uint16 %)
+        regs[21] = (avg_soh * 100.0).round().clamp(0.0, 100.0) as u16;
+
+        // IR 82-83: charge_energy_total (uint32, deci kWh)
+        let charge_total = batteries.iter().map(|b| b.throughput_kwh).sum::<f64>();
+        let ct_raw = (charge_total * 10.0).round() as u32;
+        regs[22] = (ct_raw >> 16) as u16;
+        regs[23] = (ct_raw & 0xFFFF) as u16;
+        // IR 84-85: discharge_energy_total — mirror (sim doesn't track separately)
+        regs[24] = regs[22];
+        regs[25] = regs[23];
+
+        // IR 90-91: charge_energy_today, IR 92-93: discharge_energy_today — left 0
+        // (cluster-level daily totals are not modelled per-module).
+
+        // IR 98: nominal_capacity (deci Ah). Series stack keeps Ah constant; the
+        // GIV-BAT-3.4-HV module is 51 Ah nominal. giv_tcp multiplies this by the
+        // module count for total kWh, so report the per-module figure.
+        regs[38] = 510; // 51.0 Ah * 10
+        // IR 99: remaining_battery_capacity (deci Ah), scaled by SOC
+        regs[39] = (51.0 * avg_soc / 100.0 * 10.0).round() as u16;
+        // IR 100: number_of_cycles (deci)
+        regs[40] = (avg_cycles * 10.0).round() as u16;
+
+        regs
+    }
+
+    /// HV BMU per-module data (slave 0x50+m), IR 60-119.
+    ///
+    /// Follows the BMU layout in givenergy-modbus (model/hv_bcu.py Bmu) and
+    /// giv_tcp (model/hvbmu.py): 24 cell voltages at IR 60-83 (milli V), 24 cell
+    /// temperatures at IR 90-113 (deci °C), and a 5-register serial at IR 114-118.
+    /// Validity hinges on the serial decoding to a non-blank string.
+    pub fn project_battery_bmu(
+        &self,
+        battery: &sim_models::BatteryState,
+        module_index: usize,
+    ) -> [u16; 60] {
+        let mut regs = [0u16; 60];
+        let cells = 24usize;
+
+        // IR 60-83: 24 cell voltages (milli V). Nominal LFP ~3.2-3.4 V/cell,
+        // nudged by SOC so the cluster looks healthy and varying.
+        let cell_v = 3.3 + (battery.soc_percent - 50.0) * 0.003;
+        let cell_mv = (cell_v * 1000.0).round() as u16;
+        for reg in regs.iter_mut().take(cells) {
+            *reg = cell_mv; // IR 60+i
+        }
+
+        // IR 90-113: 24 cell temperatures (deci °C)
+        let temp_deci = (battery.temperature_celsius * 10.0).round() as u16;
+        for i in 0..cells {
+            if 30 + i < 60 {
+                regs[30 + i] = temp_deci; // IR 90+i
+            }
+        }
+
+        // IR 114-118: serial number (5 regs = 10 Latin-1 chars). MUST be non-blank
+        // for Bmu.is_valid(). Mirror the LV projector's encoding.
+        let serial_str = format!("BMU{:04X}{:02X} ", module_index + 1, cells as u16);
+        for i in 0..5 {
+            let c1 = serial_str.as_bytes().get(i * 2).copied().unwrap_or(b' ');
+            let c2 = serial_str
+                .as_bytes()
+                .get(i * 2 + 1)
+                .copied()
+                .unwrap_or(b' ');
+            regs[54 + i] = (c1 as u16) << 8 | c2 as u16; // IR 114+i
+        }
+
+        regs
+    }
+
     pub fn definitions(&self) -> &[RegisterDef] {
         &self.defs
     }
@@ -6858,6 +7001,88 @@ mod tests {
             let bms = store.project_battery_bms(&state.batteries[i], i);
             // IR 60 (first cell voltage, mV) must be non-zero for every module.
             assert_ne!(bms[0], 0, "module {i} BMS data must be populated");
+        }
+    }
+
+    #[test]
+    fn hv_bms_discovery_reports_one_bcu() {
+        // Cold HV discovery reads IR(60,5) at slave 0xA0; IR(61) = number of BCUs.
+        // Our single-stack model always reports 1 BCU.
+        let store = RegisterStore::new(default_register_catalogue());
+        let bms = store.project_battery_bms_discovery(1);
+        assert_eq!(bms[0], 1, "IR(60) BMS version nibble must be non-zero");
+        assert_eq!(bms[1], 1, "IR(61) must report 1 BCU for a single stack");
+    }
+
+    #[test]
+    fn hv_bcu_cluster_decodes_valid_and_aggregates_modules() {
+        // The user's GIV-BAT-17.0-HV case: 5 x GIV-BAT-3.4-HV modules behind a
+        // ThreePhase inverter. The BCU at slave 0x70 must (a) decode to a valid
+        // pack_software_version so Bcu.is_valid() holds, and (b) aggregate the
+        // 5 modules into one cluster view.
+        let mut state = PlantState::with_battery_count(test_ts(), 5);
+        for b in &mut state.batteries {
+            b.soc_percent = 60.0;
+            b.voltage_v = 51.2;
+            b.soh = 0.95;
+        }
+        state.sync_battery_from_vec();
+
+        let store = RegisterStore::new(default_register_catalogue());
+        let bcu = store.project_battery_bcu(&state.batteries);
+
+        // IR 60-63 pack_software_version decodes via gateway_version to
+        // "HV00000001" — not blank, not all '0', so Bcu.is_valid() is true.
+        let prefix = [bcu[0], bcu[1]]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .map(|b| b as char)
+            .collect::<String>();
+        assert_eq!(prefix, "HV00", "version prefix must be non-blank");
+
+        // IR 64 number_of_modules = 5
+        assert_eq!(bcu[4], 5, "IR(64) must report 5 modules");
+        // IR 65 cells_per_module = 24
+        assert_eq!(bcu[5], 24, "IR(65) must report 24 cells/module");
+        // IR 73 battery_voltage (deci V) = 5 modules x 51.2 V summed = 2560
+        assert_eq!(
+            bcu[13], 2560,
+            "IR(73) stack voltage must sum module voltages"
+        );
+        // IR 80 SOC duint8: high=max, low=min. All modules 60% -> 0x3C3C
+        assert_eq!(bcu[20], (60 << 8) | 60, "IR(80) SOC max/min");
+        // IR 81 SOH = 95%
+        assert_eq!(bcu[21], 95, "IR(81) SOH");
+        // IR 98 nominal_capacity = 51.0 Ah * 10 = 510
+        assert_eq!(bcu[38], 510, "IR(98) per-module nominal Ah");
+        // IR 99 remaining = 51 Ah * 60% * 10 = 306
+        assert_eq!(bcu[39], 306, "IR(99) remaining capacity scales with SOC");
+    }
+
+    #[test]
+    fn hv_bmu_per_module_decodes_valid_serial_and_cells() {
+        // Each BMU at slave 0x50+m must (a) decode to a non-blank serial so
+        // Bmu.is_valid() holds, and (b) populate 24 cell voltages/temps.
+        let state = PlantState::with_battery_count(test_ts(), 5);
+        let store = RegisterStore::new(default_register_catalogue());
+
+        for m in 0..5 {
+            let bmu = store.project_battery_bmu(&state.batteries[m], m);
+            // IR 60-83: 24 cell voltages, all non-zero
+            for (i, &v) in bmu.iter().take(24).enumerate() {
+                assert_ne!(v, 0, "module {m} cell {i} voltage must be non-zero");
+            }
+            // IR 90-113: 24 cell temperatures, all non-zero
+            for (i, &v) in bmu.iter().skip(30).take(24).enumerate() {
+                assert_ne!(v, 0, "module {m} cell {i} temp must be non-zero");
+            }
+            // IR 114-118 serial: at least one register must carry a non-space byte
+            // so the decoded serial is non-blank.
+            let sn_bytes: Vec<u8> = (0..5).flat_map(|r| bmu[54 + r].to_be_bytes()).collect();
+            assert!(
+                sn_bytes.iter().any(|&b| b != b' ' && b != 0),
+                "module {m} serial must be non-blank for Bmu.is_valid()"
+            );
         }
     }
 
