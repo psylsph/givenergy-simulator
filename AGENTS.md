@@ -15,15 +15,15 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 ```
 crates/
   sim-models/    — DeviceModel trait, PlantState (with solar_override/load_override), all sub-state types
-  sim-core/      — SimulationEngine, Command enum (12 variants), all device model implementations
-  sim-registers/ — RegisterDef, RegisterStore, RegisterSpace (Input/Holding), 75+ register catalogue
+  sim-core/      — SimulationEngine, Command enum (29 variants), all device model implementations
+  sim-registers/ — RegisterDef, RegisterStore, RegisterSpace (Input/Holding), 500+ register catalogue
   sim-modbus/    — GivEnergy proprietary Modbus TCP server, CRC-16, transparent-message framing
   sim-scenarios/ — YAML DSL parser, assertion checking engine
   sim-faults/    — Fault definitions, FaultEngine device model
   sim-recording/ — JSON Lines recording, CSV export, JUnit XML, JSON report
   sim-storage/   — File I/O for recording load/save
   sim-api/       — Headless CLI binary (`giv-sim run`, `giv-sim replay`)
-  sim-tauri/     — Tauri v2 desktop GUI (15 IPC commands, vanilla JS frontend)
+  sim-tauri/     — Tauri v2 desktop GUI (30 IPC commands, vanilla JS frontend)
 ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 1420)
 ```
 
@@ -245,7 +245,7 @@ CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, sc
 ## Running Tests
 
 ```bash
-# Full suite (216 tests)
+# Full suite (245 tests)
 cargo test
 
 # Single crate
@@ -314,3 +314,5 @@ Target SOC register follows each slot's end register (e.g. HR 248 for charge slo
 - v0.14.0: 243
 - v0.14.1: 244
 - v0.14.2: 245
+- v0.14.3: 245
+- v0.14.4: 245
