@@ -395,6 +395,22 @@ pub async fn run_modbus_server(
                                 continue;
                             }
 
+                            // If the slave is in the meter range (0x01-0x08) but NOT a
+                            // valid CT meter for this inverter type, reject the request.
+                            // Without this guard, the normal register read path below
+                            // would serve CT data for slaves that shouldn't exist.
+                            if (1..=8).contains(&slave) && !meter_slaves.contains(&slave) {
+                                let resp = build_error_response(
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+
                             // Determine if this read targets a battery device.
                             // LV BMS protocol: slaves 0x32-0x37 (IR 60-119 per module).
                             // HV cluster protocol: slave 0xA0 (discovery),
