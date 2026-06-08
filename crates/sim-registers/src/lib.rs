@@ -2069,6 +2069,9 @@ impl RegisterStore {
         // IR 65: cells_per_module (all known HV stacks use 24 cells/module)
         regs[5] = 24;
 
+        // IR 67: cluster_cell_voltage (milli V), IR 68: cluster_cell_temperature (deci °C),
+        // IR 70: status. Set after aggregate values are computed below.
+
         // Aggregate cluster values. Modules are in series: stack voltage sums,
         // current is shared, power sums, SOC/SOH average.
         let avg_soc = batteries.iter().map(|b| b.soc_percent).sum::<f64>() / n as f64;
@@ -2089,6 +2092,15 @@ impl RegisterStore {
             .fold(300.0_f64, f64::min)
             .round()
             .clamp(0.0, 100.0) as u16;
+
+        // IR 67: cluster_cell_voltage (milli V) — average cell voltage across stack
+        let avg_cell_v = stack_voltage / (n as f64 * 24.0);
+        regs[7] = (avg_cell_v * 1000.0).round() as u16;
+        // IR 68: cluster_cell_temperature (deci °C) — average across all modules
+        let avg_temp = batteries.iter().map(|b| b.temperature_celsius).sum::<f64>() / n as f64;
+        regs[8] = (avg_temp * 10.0).round() as u16;
+        // IR 70: status — 0x01 = normal operation
+        regs[10] = 0x01;
 
         // IR 73: battery_voltage (deci V)
         regs[13] = (stack_voltage * 10.0).round() as u16;
