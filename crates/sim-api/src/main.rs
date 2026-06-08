@@ -404,15 +404,12 @@ async fn run_scenario(
         let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
         let server_store = store.clone();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let meter_slaves =
-            sim_modbus::meter_slaves_for_inverter(&engine.state.config.inverter_type);
         tokio::spawn(async move {
             if let Err(e) = sim_modbus::run_modbus_server(
                 addr,
                 server_store,
                 cmd_tx,
                 Arc::new(tokio::sync::Mutex::new(Vec::new())),
-                meter_slaves,
             )
             .await
             {
@@ -809,16 +806,9 @@ async fn serve_config(
     let battery_shared = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let batt_server = battery_shared.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    let meter_slaves = sim_modbus::meter_slaves_for_inverter(&engine.state.config.inverter_type);
     tokio::spawn(async move {
-        if let Err(e) = sim_modbus::run_modbus_server(
-            modbus_addr,
-            server_store,
-            cmd_tx,
-            batt_server,
-            meter_slaves,
-        )
-        .await
+        if let Err(e) =
+            sim_modbus::run_modbus_server(modbus_addr, server_store, cmd_tx, batt_server).await
         {
             tracing::error!("Modbus server error: {e}");
         }

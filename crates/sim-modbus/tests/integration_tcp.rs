@@ -129,7 +129,7 @@ async fn start_server(
     let b = batt_arc;
     let t = tx.clone();
     tokio::spawn(async move {
-        let _ = sim_modbus::run_modbus_server(addr, s, t, b, 1..=8).await;
+        let _ = sim_modbus::run_modbus_server(addr, s, t, b).await;
     });
 
     // Wait for server to become ready

@@ -34,10 +34,18 @@ use tokio::net::TcpListener;
 /// Fixed transaction ID for GivEnergy frames.
 pub const TRANSACTION_ID: u16 = 0x5959;
 
-/// Determine the valid CT meter slave address range for a given inverter type.
+/// Determine the valid CT meter slave address range from the device type code
+/// stored in the register store (HR 0 = ge_hr_device_type, composite key 10000).
 /// Single-phase inverters have 1 CT clamp (slave 0x01); three-phase have 3.
-pub fn meter_slaves_for_inverter(inverter_type: &str) -> std::ops::RangeInclusive<u8> {
-    if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+/// This is read at runtime so the Modbus server adapts to plant changes.
+pub fn meter_slaves_from_store(
+    store: &sim_registers::RegisterStore,
+) -> std::ops::RangeInclusive<u8> {
+    // DTC is at holding register 0
+    let dtc = store.read(0).unwrap_or(0x2001);
+    let family = dtc >> 8;
+    // Family 4x = ThreePhase, 6x = ACThreePhase → 3 CTs; all others → 1 CT
+    if family == 0x40 || family == 0x60 {
         1..=3
     } else {
         1..=1
@@ -206,15 +214,13 @@ pub fn build_error_response(
 /// - Slave 0x70: HV BCU cluster (IR 60-119; aggregates all modules)
 /// - Slave 0x50-0x57: HV BMU per-module cells (IR 60-119; one per module)
 ///
-/// `meter_slaves` controls which slave addresses are treated as CT clamp meter
-/// devices. For single-phase inverters (Gen1/2/3, ACCoupled, AIO) this should
-/// be `1..=1`; for three-phase inverters `1..=3`.
+/// CT meter slave addresses are determined at runtime from the DTC in the
+/// register store (HR 0), so the server adapts to inverter type changes.
 pub async fn run_modbus_server(
     addr: SocketAddr,
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
     command_tx: CommandSender,
     battery_state: std::sync::Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
-    meter_slaves: std::ops::RangeInclusive<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("GivEnergy Modbus TCP server listening on {addr}");
@@ -226,7 +232,6 @@ pub async fn run_modbus_server(
         let cmd_tx = command_tx.clone();
         let batt_state = battery_state.clone();
 
-        let meter_slaves = meter_slaves.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; 512];
             let mut pending: Vec<u8> = Vec::new();
@@ -350,9 +355,12 @@ pub async fn run_modbus_server(
                             }
 
                             // Check if this is a CT clamp meter read (IR 60-89 on meter slaves).
-                            // The valid slave range depends on the inverter type:
-                            //   single-phase → slave 0x01 only
-                            //   three-phase  → slaves 0x01-0x03
+                            // The valid slave range is determined at runtime from the inverter DTC
+                            // in the register store, so it adapts to plant type changes.
+                            let meter_slaves = {
+                                let guard = store.lock().await;
+                                meter_slaves_from_store(&guard)
+                            };
                             let is_meter = meter_slaves.contains(&slave)
                                 && inner_func == FC_READ_INPUT
                                 && (60..90).contains(&start_addr);
