@@ -34,6 +34,16 @@ use tokio::net::TcpListener;
 /// Fixed transaction ID for GivEnergy frames.
 pub const TRANSACTION_ID: u16 = 0x5959;
 
+/// Determine the valid CT meter slave address range for a given inverter type.
+/// Single-phase inverters have 1 CT clamp (slave 0x01); three-phase have 3.
+pub fn meter_slaves_for_inverter(inverter_type: &str) -> std::ops::RangeInclusive<u8> {
+    if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+        1..=3
+    } else {
+        1..=1
+    }
+}
+
 /// Fixed protocol ID for GivEnergy frames.
 pub const PROTOCOL_ID: u16 = 0x0001;
 
@@ -195,11 +205,16 @@ pub fn build_error_response(
 /// - Slave 0xA0: HV BMS discovery (IR 60-64; IR 61 = number of BCUs)
 /// - Slave 0x70: HV BCU cluster (IR 60-119; aggregates all modules)
 /// - Slave 0x50-0x57: HV BMU per-module cells (IR 60-119; one per module)
+///
+/// `meter_slaves` controls which slave addresses are treated as CT clamp meter
+/// devices. For single-phase inverters (Gen1/2/3, ACCoupled, AIO) this should
+/// be `1..=1`; for three-phase inverters `1..=3`.
 pub async fn run_modbus_server(
     addr: SocketAddr,
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
     command_tx: CommandSender,
     battery_state: std::sync::Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
+    meter_slaves: std::ops::RangeInclusive<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("GivEnergy Modbus TCP server listening on {addr}");
@@ -211,6 +226,7 @@ pub async fn run_modbus_server(
         let cmd_tx = command_tx.clone();
         let batt_state = battery_state.clone();
 
+        let meter_slaves = meter_slaves.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; 512];
             let mut pending: Vec<u8> = Vec::new();
@@ -333,8 +349,11 @@ pub async fn run_modbus_server(
                                 continue;
                             }
 
-                            // Check if this is a meter read (IR 60-89 on meter slaves 0x01-0x08)
-                            let is_meter = (0x01..=0x08).contains(&slave)
+                            // Check if this is a CT clamp meter read (IR 60-89 on meter slaves).
+                            // The valid slave range depends on the inverter type:
+                            //   single-phase → slave 0x01 only
+                            //   three-phase  → slaves 0x01-0x03
+                            let is_meter = meter_slaves.contains(&slave)
                                 && inner_func == FC_READ_INPUT
                                 && (60..90).contains(&start_addr);
 

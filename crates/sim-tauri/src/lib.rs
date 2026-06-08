@@ -178,9 +178,16 @@ pub fn run() {
                     .parse()
                     .expect("invalid Modbus addr");
                 tracing::info!("Modbus TCP server listening on {addr}");
-                if let Err(e) =
-                    sim_modbus::run_modbus_server(addr, modbus_store, modbus_tx, modbus_batteries)
-                        .await
+                // In Tauri mode the inverter type isn't known at startup;
+                // accept 1..=8 to cover all possible inverter types.
+                if let Err(e) = sim_modbus::run_modbus_server(
+                    addr,
+                    modbus_store,
+                    modbus_tx,
+                    modbus_batteries,
+                    1..=8,
+                )
+                .await
                 {
                     tracing::error!("Modbus server error: {e}");
                 }
