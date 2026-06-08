@@ -8,3 +8,4 @@ build
 *.log
 *.tmp
 *.bak
+CODE_REVIEW.md

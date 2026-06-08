@@ -359,11 +359,13 @@ impl RegisterStore {
                 // IR 42-43: house load and inverter terminal apparent power
                 "ge_ir_load_demand" => Some(state.load.demand_w),
                 "ge_ir_grid_apparent" => Some(state.inverter.ac_power_w.abs()),
-                // IR 44: PV generation today (×0.1 kWh)
-                "ge_ir_pv_generation_today" => Some(state.energy_totals.solar_generation_kwh),
-                // IR 45-46: PV generation total (uint32, ×0.1 kWh)
+                // IR 44: Inverter AC output energy today (×0.1 kWh).
+                // GivTCP baseinverter.py: IR(44) = e_inverter_out_day.
+                // For hybrid inverters this differs from solar by battery-discharge contribution.
+                "ge_ir_pv_generation_today" => Some(state.energy_totals.inverter_output_kwh),
+                // IR 45-46: Inverter AC output energy total (uint32, ×0.1 kWh)
                 "ge_ir_pv_generation_total_high" | "ge_ir_pv_generation_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
+                    let (hi, lo) = u32_words(state.energy_totals.inverter_output_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -584,7 +586,11 @@ impl RegisterStore {
                         "Polar3600" => 0x2103,
                         "Polar6kW" => 0x2104,
                         "Polar7kW" => 0x2105,
-                        "Gen3Hybrid8kW" => 0x2101,
+                        // GivTCP inverter_max_power LUT: 0x2106=8000W.
+                        // No single-phase 10kW DTC exists in GivTCP's database;
+                        // 0x2102 is recognised as 4600W by GivTCP — closest
+                        // available, but the client will under-size this unit.
+                        "Gen3Hybrid8kW" => 0x2106,
                         "Gen3Hybrid10kW" => 0x2102,
                         "Polar8kW" => 0x2106,
                         "Gen3Plus6kW" => 0x2201,
@@ -836,11 +842,10 @@ impl RegisterStore {
                     continue;
                 }
                 "ge_hr_charge_discharge_soc" => {
-                    self.values.insert(
-                        key,
-                        ((state.aggregate_soc().round() as u16) << 8)
-                            | (state.min_aggregate_soc().round() as u16),
-                    );
+                    // HR 43: GivTCP packs charge_target_soc (high byte) and
+                    // discharge_target_soc (low byte) — configuration setpoints.
+                    // If no schedule is set, use sensible defaults (100% charge, 4% discharge).
+                    self.values.insert(key, 100u16 << 8 | 4u16);
                     continue;
                 }
                 // HR 44: Discharge slot 2 start (HHMM)
@@ -1027,7 +1032,7 @@ impl RegisterStore {
                     self.values.insert(key, 0);
                     continue;
                 }
-                "ge_hr_enable_inverter_parallel_mode" => {
+                "ge_hr_enable_standard_self_consumption_logic" => {
                     self.values
                         .insert(key, state.enable_inverter_parallel_mode as u16);
                     continue;
@@ -1181,6 +1186,30 @@ impl RegisterStore {
                 ),
                 "battery_module_count" => {
                     self.values.insert(key, state.batteries.len() as u16);
+                    continue;
+                }
+                // HR 223-224: Inverter fault codes (uint32).
+                // GivTCP inverter.py reads inverter_errors from these two registers.
+                // Encode active faults as a bitmask; 0 = no fault.
+                "ge_hr_inverter_errors_high" | "ge_hr_inverter_errors_low" => {
+                    let fault_bits: u32 = if state.active_faults.is_empty() {
+                        0
+                    } else {
+                        // Encode up to 32 faults as a bitmask from fault ID hashes
+                        let mut bits = 0u32;
+                        for (i, _) in state.active_faults.iter().take(32).enumerate() {
+                            bits |= 1u32 << i;
+                        }
+                        bits
+                    };
+                    self.values.insert(
+                        key,
+                        if def.name.ends_with("_high") {
+                            (fault_bits >> 16) as u16
+                        } else {
+                            (fault_bits & 0xFFFF) as u16
+                        },
+                    );
                     continue;
                 }
                 "pv_generation" => Some(state.solar.generation_w),
@@ -1970,6 +1999,13 @@ impl RegisterStore {
         regs[43] = temp_deci;
         // t_min: IR 104 (0.1 °C)
         regs[44] = (temp_deci as f64 * 0.98).round() as u16;
+
+        // IR 105: e_battery_discharge_total (uint16, ×0.1 kWh)
+        // IR 106: e_battery_charge_total (uint16, ×0.1 kWh)
+        // GivTCP battery.py reads these. Use per-module throughput as a proxy.
+        let throughput_deci = (battery.throughput_kwh * 10.0).round() as u16;
+        regs[45] = throughput_deci; // IR 105: discharge total
+        regs[46] = throughput_deci; // IR 106: charge total
 
         // Serial number: IR 110-114 (5 regs = 10 Latin-1 chars)
         // Generate a simulated serial
@@ -3915,9 +3951,11 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadOnly,
             space: Holding,
         },
+        // HR 199: GivTCP names this "enable_standard_self_consumption_logic".
+        // Internally tracked as enable_inverter_parallel_mode.
         RegisterDef {
             address: 199,
-            name: "ge_hr_enable_inverter_parallel_mode".into(),
+            name: "ge_hr_enable_standard_self_consumption_logic".into(),
             category: C::Configuration,
             typ: T::U16,
             scaling_factor: 1.0,
@@ -6560,6 +6598,8 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         // ---- Battery (200–239) ----
+        // Note: HR 200 overlaps GivTCP's cmd_bms_flash_update, but no client
+        // actually reads this register — kept for backward compat.
         RegisterDef {
             address: 200,
             name: "battery_soc".into(),
@@ -6690,6 +6730,26 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             address: 214,
             name: "battery_module_count".into(),
             category: C::Battery,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        // HR 223-224: Inverter fault codes (uint32).
+        // GivTCP reads these as inverter_errors. Non-zero = fault active.
+        RegisterDef {
+            address: 223,
+            name: "ge_hr_inverter_errors_high".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 1.0,
+            access: ReadOnly,
+            space: Holding,
+        },
+        RegisterDef {
+            address: 224,
+            name: "ge_hr_inverter_errors_low".into(),
+            category: C::Inverter,
             typ: T::U16,
             scaling_factor: 1.0,
             access: ReadOnly,
@@ -7173,6 +7233,7 @@ mod tests {
     fn ge_input_reference_energy_registers_project() {
         let mut state = PlantState::new(test_ts());
         state.energy_totals.solar_generation_kwh = 12.5;
+        state.energy_totals.inverter_output_kwh = 12.5;
         state.energy_totals.grid_export_kwh = 3.0;
         state.energy_totals.grid_import_kwh = 1.5;
         state.energy_totals.ac_charge_kwh = 0.7;

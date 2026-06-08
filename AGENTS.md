@@ -161,19 +161,50 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 | Gen1Hybrid | 0x2001 | 5000W | 2500W | 252 |
 | Gen2Hybrid | 0x2001 | 5000W | 3600W | 852 |
 | Gen3Hybrid | 0x2001 | 5000W | 3600W | 318 |
-| Gen3Hybrid8kW | 0x2101 | 8000W | 8000W | — |
-| Gen3Hybrid10kW | 0x2102 | 10000W | 10000W | — |
+| Hybrid4600 | 0x2002 | 5000W¹ | 3600W¹ | — |
+| Hybrid3600 | 0x2003 | 5000W¹ | 3600W¹ | — |
+| Polar5kW | 0x2101 | 5000W¹ | 3600W¹ | — |
+| Polar4600 / Gen3Hybrid10kW² | 0x2102 | 10000W | 10000W | — |
+| Polar3600 | 0x2103 | 5000W¹ | 3600W¹ | — |
+| Polar6kW | 0x2104 | 5000W¹ | 3600W¹ | — |
+| Polar7kW | 0x2105 | 5000W¹ | 3600W¹ | — |
+| Gen3Hybrid8kW / Polar8kW² | 0x2106 | 8000W | 8000W | — |
+| Gen3Plus6kW | 0x2201 | 5000W | 2600W | 452 |
+| Gen3Plus4600 | 0x2202 | 4600W | 2600W | 452 |
+| Gen3Plus3600 | 0x2203 | 3600W | 2600W | 452 |
+| Gen3Plus6kW2 | 0x2204 | 6000W | 2600W | 452 |
+| Gen3Plus7kW | 0x2205 | 5000W¹ | 2600W¹ | — |
+| Gen3Plus8kW | 0x2206 | 8000W¹ | 2600W¹ | — |
+| PVInverter5kW | 0x2301 | 5000W¹ | N/A (no battery) | — |
+| PVInverter4600 | 0x2302 | 5000W¹ | N/A (no battery) | — |
+| PVInverter3600 | 0x2303 | 5000W¹ | N/A (no battery) | — |
+| PVInverter6kW | 0x2304 | 5000W¹ | N/A (no battery) | — |
 | ACCoupled | 0x3001 | 3000W | 3000W | — |
 | ACCoupled2 | 0x3002 | 3000W | 3000W | — |
 | ThreePhase | 0x4001 | 6000W | 6000W | — |
 | ThreePhase8kW | 0x4002 | 8000W | 8000W | — |
 | ThreePhase10kW | 0x4003 | 10000W | 10000W | — |
 | ThreePhase11kW | 0x4004 | 11000W | 11000W | — |
+| AIOCommercial | 0x4101 | 5000W¹ | 3600W¹ | — |
+| EMS | 0x5001 | 5000W¹ | 3600W¹ | — |
+| EMSCommercial | 0x5101 | 5000W¹ | 3600W¹ | — |
+| ACThreePhase | 0x6001 | 5000W¹ | 3600W¹ | — |
+| Gateway12kW | 0x7001 | 5000W¹ | 3600W¹ | — |
 | AllInOne6 | 0x8001 | 6000W | 6000W | — |
 | AllInOne | 0x8002 | 6000W | 6000W | — |
 | AllInOne5 | 0x8003 | 5000W | 5000W | — |
+| AIO6kW | 0x8101 | 6000W¹ | 6000W¹ | — |
 | AIO8kW | 0x8102 | 8000W | 8000W | — |
 | AIO10kW | 0x8103 | 10000W | 10000W | — |
+| AIOHybrid6kW | 0x8201 | 6000W | 6000W | — |
+| AIOHybrid8kW | 0x8202 | 8000W | 8000W | — |
+| AIOHybrid10kW | 0x8203 | 10000W | 10000W | — |
+| AIOHybrid12kW | 0x8204 | 5000W¹ | 3600W¹ | — |
+| Gen4Hybrid6kW | 0x8304 | 5000W¹ | 3600W¹ | — |
+
+¹ Falls back to the `_ =>` default (5000W AC, 3600W battery).
+² The GUI uses the DTC value as the sort key. Where two names share a DTC the
+  dropdown lists only one entry with that DTC. The register projection accepts both.
 
 Dropdown and INVERTER_PRESETS are ordered by DTC hex value ascending.
 

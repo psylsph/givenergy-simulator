@@ -351,7 +351,7 @@ async fn run_scenario(
 
     let load_profile = parse_profile(profile);
 
-    // Order: Solar → Load → Inverter → Faults → Battery → EnergyTracker
+    // Order: Solar → Load → Inverter → Faults → Battery → EVC → EnergyTracker
     let initial_schedule = sim_models::Schedule::default();
     let devices: Vec<Box<dyn DeviceModel>> = vec![
         Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
@@ -360,8 +360,8 @@ async fn run_scenario(
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
-        Box::new(sim_core::EnergyTracker::new()),
         Box::new(sim_core::EvcEngine::new()),
+        Box::new(sim_core::EnergyTracker::new()),
     ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
@@ -778,8 +778,8 @@ async fn serve_config(
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
-        Box::new(sim_core::EnergyTracker::new()),
         Box::new(sim_core::EvcEngine::new()),
+        Box::new(sim_core::EnergyTracker::new()),
     ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);

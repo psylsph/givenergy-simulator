@@ -53,6 +53,12 @@ pub const SERIAL_LEN: usize = 10;
 /// + func_id(1) + serial(10) + padding(8) = 26 bytes.
 pub const HEADER_SIZE: usize = 2 + 2 + 2 + 1 + 1 + SERIAL_LEN + 8;
 
+/// Default inverter serial number (10 bytes, Latin-1, space-padded).
+/// The outer envelope always carries the data-adapter (dongle) serial from
+/// the client request. The inner response payload must carry the *inverter*
+/// serial so the client can identify which inverter is responding.
+pub const INVERTER_SERIAL: [u8; SERIAL_LEN] = *b"GE0000000 ";
+
 // ---------------------------------------------------------------------------
 // Inner Modbus function codes
 // ---------------------------------------------------------------------------
@@ -140,27 +146,40 @@ pub fn build_response_with_padding(
 }
 
 /// Build a GivEnergy heartbeat response frame.
-pub fn build_heartbeat_response(serial: &[u8; SERIAL_LEN]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(HEADER_SIZE + SERIAL_LEN);
+///
+/// Real GivEnergy data adapters echo the inverter serial and a status byte.
+/// The outer envelope uses the data-adapter serial; the payload after
+/// the header carries the inverter serial.
+pub fn build_heartbeat_response(_serial: &[u8; SERIAL_LEN]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(HEADER_SIZE + SERIAL_LEN + 1);
     frame.extend_from_slice(&TRANSACTION_ID.to_be_bytes());
     frame.extend_from_slice(&PROTOCOL_ID.to_be_bytes());
-    // length = unit_id(1) + func_id(1) + serial(10) = 12
-    let length: u16 = 12;
+    // length = unit_id(1) + func_id(1) + inverter_serial(10) + status(1) = 13
+    let length: u16 = 13;
     frame.extend_from_slice(&length.to_be_bytes());
     frame.push(UNIT_ID);
     frame.push(FUNC_HEARTBEAT);
-    frame.extend_from_slice(serial);
+    // Heartbeat response carries inverter serial, not data-adapter serial
+    frame.extend_from_slice(&INVERTER_SERIAL);
+    frame.push(0x01); // OK status
     frame
 }
 
 /// Build a GivEnergy error response frame.
+/// GivEnergy error responses MUST prepend the inverter serial (10 bytes) to
+/// the exception code. Real clients parse the inner PDU payload expecting
+/// serial(10) + exception(1) — omitting serial causes a struct underrun.
 pub fn build_error_response(
     serial: &[u8; SERIAL_LEN],
     slave: u8,
     func: u8,
     exception: u8,
 ) -> Vec<u8> {
-    build_response_with_padding(serial, slave, func | 0x80, &[exception], 0x12)
+    // Inner payload uses INVERTER_SERIAL (not data-adapter serial)
+    let mut payload = Vec::with_capacity(SERIAL_LEN + 1);
+    payload.extend_from_slice(&INVERTER_SERIAL);
+    payload.push(exception);
+    build_response_with_padding(serial, slave, func | 0x80, &payload, 0x12)
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +352,7 @@ pub async fn run_modbus_server(
                                 drop(store_guard);
                                 let mut resp_payload =
                                     Vec::with_capacity(SERIAL_LEN + 4 + data.len());
-                                resp_payload.extend_from_slice(&serial);
+                                resp_payload.extend_from_slice(&INVERTER_SERIAL);
                                 resp_payload.extend_from_slice(&start_addr.to_be_bytes());
                                 resp_payload.extend_from_slice(&count.to_be_bytes());
                                 resp_payload.extend_from_slice(&data);
@@ -433,9 +452,10 @@ pub async fn run_modbus_server(
 
                             // Build read response payload:
                             // serial(10) + base_register(2) + register_count(2) + data(N×2)
+                            // Inner payload uses INVERTER_SERIAL, not data-adapter serial
                             let mut resp_payload =
                                 Vec::with_capacity(SERIAL_LEN + 4 + reg_data.len());
-                            resp_payload.extend_from_slice(&serial);
+                            resp_payload.extend_from_slice(&INVERTER_SERIAL);
                             resp_payload.extend_from_slice(&start_addr.to_be_bytes());
                             resp_payload.extend_from_slice(&count.to_be_bytes());
                             resp_payload.extend_from_slice(&reg_data);
@@ -479,9 +499,10 @@ pub async fn run_modbus_server(
 
                             if success {
                                 // Write response: serial(10) + register(2) + value(2)
+                                // Inner payload uses INVERTER_SERIAL, not data-adapter serial
                                 let resp_payload = {
                                     let mut p = Vec::with_capacity(SERIAL_LEN + 4);
-                                    p.extend_from_slice(&serial);
+                                    p.extend_from_slice(&INVERTER_SERIAL);
                                     p.extend_from_slice(&address.to_be_bytes());
                                     p.extend_from_slice(&value.to_be_bytes());
                                     p

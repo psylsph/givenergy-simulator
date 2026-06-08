@@ -153,7 +153,9 @@ impl SimulationEngine {
                     self.state.active_faults.retain(|f| f != &id);
                 }
                 Command::SetWeather(w) => {
-                    self.state.weather = format!("{:?}", w);
+                    // Use Display instead of Debug to decouple serialization
+                    // from variant names. Renaming a variant won't break parsing.
+                    self.state.weather = format!("{}", w);
                 }
                 Command::SetSolarOverride(w) => {
                     self.state.solar_override = w;
@@ -280,12 +282,18 @@ impl SimulationEngine {
             dt_hours,
         };
 
+        // Apply calibration mode BEFORE devices run so InverterEngine sees
+        // the correct mode without 1-tick lag, and calibration doesn't
+        // overwrite schedule/fault modes set during the current tick.
+        CalibrationEngine::apply_calibration_mode(&mut self.state);
+
         for device in &mut self.devices {
             device.update(&ctx, &mut self.state);
         }
 
-        // Run calibration if active (after devices so it sees latest SOC/power)
-        CalibrationEngine::new().update(&ctx, &mut self.state);
+        // Stage-transition checks for calibration (after BatteryEngine has
+        // finalized SOC values for this tick).
+        CalibrationEngine::check_stage_transitions(&ctx, &mut self.state);
 
         self.state.inverter.work_time_hours += dt_hours;
         self.state.timestamp += chrono::TimeDelta::seconds(self.tick_interval_secs as i64);
@@ -314,6 +322,19 @@ pub enum WeatherCondition {
     PartlyCloudy,
     Overcast,
     Storm,
+}
+
+impl std::fmt::Display for WeatherCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Canonical string representation — NOT derived from Debug.
+        // Renaming a variant will NOT silently break parse_weather_from_str.
+        match self {
+            Self::Clear => write!(f, "clear"),
+            Self::PartlyCloudy => write!(f, "partly_cloudy"),
+            Self::Overcast => write!(f, "overcast"),
+            Self::Storm => write!(f, "storm"),
+        }
+    }
 }
 
 impl WeatherCondition {
@@ -374,12 +395,15 @@ impl DeviceModel for SolarEngine {
         if let Some(w) = state.solar_override {
             let w = w.max(0.0);
             state.solar.generation_w = w;
+            let pv1_peak = self.peak_capacity_w;
             let pv2_peak = state.config.pv2_peak_watts;
-            if pv2_peak > 0.0 {
-                state.solar.pv1_w = w * 0.45;
-                state.solar.pv2_w = w * 0.55;
+            let total_peak = pv1_peak + pv2_peak;
+            if total_peak > 0.0 && pv2_peak > 0.0 {
+                // Split proportionally to PV peak ratings
+                state.solar.pv1_w = (w * pv1_peak / total_peak).min(pv1_peak).max(0.0);
+                state.solar.pv2_w = (w * pv2_peak / total_peak).min(pv2_peak).max(0.0);
             } else {
-                state.solar.pv1_w = w;
+                state.solar.pv1_w = w.min(pv1_peak).max(0.0);
                 state.solar.pv2_w = 0.0;
             }
             return;
@@ -434,9 +458,14 @@ impl DeviceModel for SolarEngine {
 }
 
 /// Parse a weather string into a WeatherCondition.
+/// Accepts the canonical Display output as well as legacy Debug format
+/// (e.g. "PartlyCloudy", "Partly-Cloudy") for backward compatibility.
 pub fn parse_weather_from_str(s: &str) -> WeatherCondition {
     match s.to_lowercase().as_str() {
-        "partlycloudy" | "partly-cloudy" | "partly_cloudy" => WeatherCondition::PartlyCloudy,
+        // Canonical Display output (LOW-12 fix)
+        "partly_cloudy" => WeatherCondition::PartlyCloudy,
+        // Legacy Debug-variant formats
+        "partlycloudy" | "partly-cloudy" => WeatherCondition::PartlyCloudy,
         "overcast" => WeatherCondition::Overcast,
         "storm" => WeatherCondition::Storm,
         _ => WeatherCondition::Clear,
@@ -684,7 +713,7 @@ impl InverterEngine {
         if net >= 0.0 {
             // Solar covers load. Excess charges battery.
             let excess = net;
-            let max_charge_w = state.total_max_charge_kw() * 1000.0;
+            let max_charge_w = state.effective_max_charge_w();
             let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
@@ -698,7 +727,7 @@ impl InverterEngine {
         } else {
             // Solar deficit. Battery supplies first, then grid.
             let deficit = -net;
-            let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
+            let max_discharge_w = state.effective_max_discharge_w();
             let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
@@ -712,24 +741,29 @@ impl InverterEngine {
         }
     }
 
-    /// Eco priority: like Normal but preserves battery charge for evening peak.
+    /// Eco priority: preserves battery charge for evening peak.
     /// - During daytime (10:00–16:00): caps battery charging at 50% of max rate
     ///   and prefers grid export over charging.
     /// - During evening/night: uses battery freely to cover load.
     fn eco_priority(&self, state: &mut PlantState, solar_w: f64, load_w: f64) {
-        let _hour = state.timestamp.time().hour();
+        let hour = state.timestamp.time().hour();
         let net = solar_w - load_w;
         let inv_max_w = state.config.max_ac_watts;
 
         if net >= 0.0 {
             let excess = net;
-            let max_charge_w = state.total_max_charge_kw() * 1000.0;
+            let max_charge_w = state.effective_max_charge_w();
             let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
             let charge_limit = max_charge_w.min(soc_headroom).min(inv_max_w).max(0.0);
 
-            let eco_charge_limit = charge_limit;
+            // Daytime cap: limit charging to 50% of the calculated limit
+            let eco_charge_limit = if (10..16).contains(&hour) {
+                charge_limit * 0.5
+            } else {
+                charge_limit
+            };
 
             let to_battery = excess.min(eco_charge_limit);
             let to_grid = excess - to_battery;
@@ -739,7 +773,7 @@ impl InverterEngine {
             state.inverter.ac_power_w = solar_w;
         } else {
             let deficit = -net;
-            let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
+            let max_discharge_w = state.effective_max_discharge_w();
             let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
@@ -754,15 +788,41 @@ impl InverterEngine {
     }
 
     /// Export-limited mode: same as Normal but caps grid export.
+    /// Curtailed solar is redirected to battery charging if headroom exists.
+    /// active_power_rate_percent (HR 50) caps total AC output.
     fn export_limit(&self, state: &mut PlantState, solar_w: f64, load_w: f64) {
         self.normal_priority(state, solar_w, load_w);
+
+        // Apply HR 50 active power rate to total AC output
+        let ac_rate = (state.active_power_rate_percent / 100.0).clamp(0.0, 1.0);
+        let ac_cap = state.config.max_ac_watts * ac_rate;
+        if state.inverter.ac_power_w > ac_cap {
+            state.inverter.ac_power_w = ac_cap;
+        }
 
         if state.grid.power_w < 0.0 {
             let export = -state.grid.power_w;
             let capped = export.min(state.inverter.export_limit_w);
             let curtailed = export - capped;
-            state.grid.power_w = -capped;
-            state.inverter.ac_power_w -= curtailed;
+            if curtailed > 0.0 {
+                // Redirect curtailed solar to battery if headroom exists
+                let max_charge_w = state.effective_max_charge_w();
+                let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
+                    * state.total_battery_capacity()
+                    * 1000.0;
+                let charge_room = max_charge_w.min(soc_headroom).max(0.0);
+                let already_charging = state.total_battery_power_kw() * 1000.0;
+                let room = (charge_room - already_charging).max(0.0);
+                let to_battery = curtailed.min(room);
+                let lost = curtailed - to_battery;
+
+                if to_battery > 0.0 {
+                    let new_charge_kw = state.total_battery_power_kw() + to_battery / 1000.0;
+                    state.distribute_battery_power(new_charge_kw);
+                }
+                state.grid.power_w = -capped;
+                state.inverter.ac_power_w -= lost;
+            }
         }
     }
 
@@ -775,7 +835,7 @@ impl InverterEngine {
         let solar_deficit = (-net).max(0.0);
         let inv_max_w = state.config.max_ac_watts;
 
-        let max_charge_w = state.total_max_charge_kw() * 1000.0;
+        let max_charge_w = state.effective_max_charge_w();
         let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
             * state.total_battery_capacity()
             * 1000.0;
@@ -797,7 +857,7 @@ impl InverterEngine {
         let net = solar_w - load_w;
         let inv_max_w = state.config.max_ac_watts;
 
-        let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
+        let max_discharge_w = state.effective_max_discharge_w();
         let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
             * state.total_battery_capacity()
             * 1000.0;
@@ -824,7 +884,7 @@ impl InverterEngine {
 
         if net >= 0.0 {
             let excess = net;
-            let max_charge_w = state.total_max_charge_kw() * 1000.0;
+            let max_charge_w = state.effective_max_charge_w();
             let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
@@ -835,7 +895,7 @@ impl InverterEngine {
             state.inverter.ac_power_w = load_w + to_battery;
         } else {
             let deficit = -net;
-            let max_discharge_w = state.total_max_discharge_kw() * 1000.0;
+            let max_discharge_w = state.effective_max_discharge_w();
             let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
                 * state.total_battery_capacity()
                 * 1000.0;
@@ -871,8 +931,35 @@ impl CalibrationEngine {
     /// Target duration for stage 2 (holding at full charge), in seconds.
     const HOLD_SECONDS: f64 = 30.0 * 60.0; // 30 minutes
 
-    /// Advance calibration by one tick.
-    pub fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
+    /// Apply calibration mode BEFORE the device loop so InverterEngine
+    /// picks up the correct mode without 1-tick lag. Uses ModeSource::Fault
+    /// so schedule overrides are cleanly replaced rather than stacked.
+    pub fn apply_calibration_mode(state: &mut PlantState) {
+        let stage = state.calibration.stage;
+        match stage {
+            CalibrationStage::ChargeToFull | CalibrationStage::HoldingFull => {
+                state.inverter.mode_state.effective = InverterMode::ForceCharge;
+                state.inverter.mode_state.source = sim_models::ModeSource::Fault;
+                state.inverter.mode_state.scheduled_mode = None;
+            }
+            CalibrationStage::DischargeToEmpty => {
+                state.inverter.mode_state.effective = InverterMode::ForceDischarge;
+                state.inverter.mode_state.source = sim_models::ModeSource::Fault;
+                state.inverter.mode_state.scheduled_mode = None;
+            }
+            CalibrationStage::Complete => {
+                // Restore Eco mode
+                state.inverter.mode_state.effective = InverterMode::Eco;
+                state.inverter.mode_state.source = sim_models::ModeSource::User;
+                state.inverter.mode_state.scheduled_mode = None;
+            }
+            CalibrationStage::Off => {}
+        }
+    }
+
+    /// Check SOC thresholds and advance calibration stage.
+    /// Must run AFTER BatteryEngine so SOC values are final for the tick.
+    pub fn check_stage_transitions(ctx: &TickContext, state: &mut PlantState) {
         let stage = state.calibration.stage;
         if stage == CalibrationStage::Off || stage == CalibrationStage::Complete {
             return;
@@ -892,10 +979,6 @@ impl CalibrationEngine {
 
         match state.calibration.stage {
             CalibrationStage::ChargeToFull => {
-                state
-                    .inverter
-                    .mode_state
-                    .set_user(InverterMode::ForceCharge);
                 let all_full = targets
                     .iter()
                     .all(|&i| state.batteries[i].soc_percent >= 99.5);
@@ -906,25 +989,13 @@ impl CalibrationEngine {
             }
 
             CalibrationStage::HoldingFull => {
-                state
-                    .inverter
-                    .mode_state
-                    .set_user(InverterMode::ForceCharge);
                 if state.calibration.stage_elapsed_secs >= Self::HOLD_SECONDS {
                     state.calibration.stage = CalibrationStage::DischargeToEmpty;
                     state.calibration.stage_elapsed_secs = 0.0;
-                    state
-                        .inverter
-                        .mode_state
-                        .set_user(InverterMode::ForceDischarge);
                 }
             }
 
             CalibrationStage::DischargeToEmpty => {
-                state
-                    .inverter
-                    .mode_state
-                    .set_user(InverterMode::ForceDischarge);
                 let reserve = state.min_aggregate_soc().min(state.max_aggregate_soc());
                 let all_empty = targets
                     .iter()
@@ -932,7 +1003,6 @@ impl CalibrationEngine {
                 if all_empty {
                     state.calibration.stage = CalibrationStage::Complete;
                     state.calibration.stage_elapsed_secs = 0.0;
-                    state.inverter.mode_state.set_user(InverterMode::Eco);
                 }
             }
 
@@ -1022,8 +1092,11 @@ impl DeviceModel for BatteryEngine {
         let hour = ctx.now.time().num_seconds_from_midnight() as f64 / 3600.0;
         let ambient = self.ambient_for_hour(hour);
 
-        // Check battery pause mode/slot
-        if state.battery_pause_mode == 1
+        // Check battery pause mode/slot (GivTCP BatteryPauseMode):
+        //   0 = Disabled, 1 = PAUSE_CHARGE, 2 = PAUSE_DISCHARGE, 3 = PAUSE_BOTH
+        let pause_charge = state.battery_pause_mode == 1 || state.battery_pause_mode == 3;
+        let pause_discharge = state.battery_pause_mode == 2 || state.battery_pause_mode == 3;
+        if (pause_charge || pause_discharge)
             && state.battery_pause_slot_start != 60
             && state.battery_pause_slot_end != 60
         {
@@ -1038,7 +1111,12 @@ impl DeviceModel for BatteryEngine {
             };
             if in_pause_window {
                 for b in &mut state.batteries {
-                    b.power_kw = 0.0;
+                    if pause_charge && b.power_kw > 0.0 {
+                        b.power_kw = 0.0;
+                    }
+                    if pause_discharge && b.power_kw < 0.0 {
+                        b.power_kw = 0.0;
+                    }
                 }
                 state.sync_battery_from_vec();
                 return;
@@ -1052,14 +1130,14 @@ impl DeviceModel for BatteryEngine {
 
         for b in &mut state.batteries {
             if b.power_kw > 0.0 {
-                // Charging: apply charge limit as percentage of device max
-                let max_charge_kw = b.max_charge_kw * charge_scale.max(0.02);
+                // Charging: apply charge limit as percentage of device max.
+                // Zero percent disables charging entirely (matches real hardware).
+                let max_charge_kw = b.max_charge_kw * charge_scale;
                 b.power_kw = b.power_kw.min(max_charge_kw);
             } else if b.power_kw < 0.0 {
                 // Discharging: apply discharge limit as percentage of device max.
-                // Previously this scaled the raw C-rate, which meant the percentage
-                // didn't match what the user expected from device limits.
-                let max_discharge_kw = b.max_discharge_kw * discharge_scale.max(0.02);
+                // Zero percent disables discharging entirely (matches real hardware).
+                let max_discharge_kw = b.max_discharge_kw * discharge_scale;
                 b.power_kw = b.power_kw.max(-max_discharge_kw);
             }
 
@@ -1079,9 +1157,10 @@ impl DeviceModel for BatteryEngine {
 
             // If the user just manually set SOC (via GUI slider), hold it for a
             // configurable number of ticks so the setting visibly "sticks".
-            if state.manual_soc_hold_ticks > 0 {
-                state.manual_soc_hold_ticks -= 1;
-            } else {
+            // We check the hold flag at the start of the loop; it is decremented
+            // once per tick (below) so N-module systems don't divide the hold
+            // duration by N.
+            if state.manual_soc_hold_ticks == 0 {
                 let delta_soc = (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
                 b.soc_percent += delta_soc;
                 // Clamp to min/max SOC
@@ -1119,8 +1198,29 @@ impl DeviceModel for BatteryEngine {
             // Apply SOH to capacity
             b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
 
-            // Estimate terminal voltage from SOC (Li-ion: 44V–52V range)
-            b.voltage_v = 44.0 + (b.soc_percent / 100.0) * 8.0;
+            // Estimate terminal voltage from SOC using an LFP voltage curve.
+            // Real LFP cells sit at 51-52V from 20-90% SOC, unlike the old
+            // 44-52V linear model which overstates voltage swing.
+            // Curve (16S LFP, nominal 51.2V):
+            //   0%:  44.0 V (empty)
+            //   5%:  50.5 V
+            //  20%:  51.0 V
+            //  50%:  51.5 V
+            //  90%:  52.0 V
+            // 100%:  54.0 V (full)
+            b.voltage_v = if b.soc_percent <= 5.0 {
+                // Steep rise from empty
+                44.0 + (b.soc_percent / 5.0) * (50.5 - 44.0)
+            } else if b.soc_percent <= 20.0 {
+                // Gradual rise
+                50.5 + ((b.soc_percent - 5.0) / 15.0) * (51.0 - 50.5)
+            } else if b.soc_percent <= 90.0 {
+                // Flat plateau (20-90%)
+                51.0 + ((b.soc_percent - 20.0) / 70.0) * (52.0 - 51.0)
+            } else {
+                // Steep rise to full
+                52.0 + ((b.soc_percent - 90.0) / 10.0) * (54.0 - 52.0)
+            };
 
             // Current from power and voltage (signed, positive = charging)
             b.current_a = if b.voltage_v > 0.0 {
@@ -1130,15 +1230,28 @@ impl DeviceModel for BatteryEngine {
             };
         }
 
+        // Decrement hold ticks once per tick (not per-module)
+        if state.manual_soc_hold_ticks > 0 {
+            state.manual_soc_hold_ticks -= 1;
+        }
+
         // Sync convenience field
         state.sync_battery_from_vec();
 
         // Recalculate grid and inverter AC power after capping battery power.
-        // InverterEngine::force_discharge computes these based on the uncapped
-        // device-limit rate, but BatteryEngine may have throttled it. Without
-        // this recalculation the displayed grid export is stale.
+        // BatteryEngine may throttle power below what InverterEngine allocated
+        // (percentage limits, thermal derating, per-module C-rate caps).
+        // Without this recalculation, the throttled power vanishes instead of
+        // being redirected to/from the grid — an energy conservation violation.
         let total_batt_kw = state.total_battery_power_kw();
-        if total_batt_kw < 0.0 {
+        if total_batt_kw > 0.0 {
+            // Battery charging: unabsorbed surplus becomes grid export.
+            // grid = load + charge - solar (energy balance).
+            state.grid.power_w =
+                state.load.demand_w + total_batt_kw * 1000.0 - state.solar.generation_w;
+            state.inverter.ac_power_w = state.solar.generation_w;
+        } else if total_batt_kw < 0.0 {
+            // Battery discharging: capped discharge reduces grid export/import.
             let discharge_w = (-total_batt_kw * 1000.0).min(state.config.max_ac_watts);
             let net = state.solar.generation_w - state.load.demand_w;
             state.grid.power_w = -(net + discharge_w);
@@ -1200,6 +1313,10 @@ impl DeviceModel for EnergyTracker {
 
         // Solar generation
         totals.solar_generation_kwh += solar_w / 1000.0 * dt_hours;
+
+        // Inverter AC output energy (distinct from solar — includes battery
+        // discharge contribution to AC for hybrid inverters).
+        totals.inverter_output_kwh += state.inverter.ac_power_w.max(0.0) / 1000.0 * dt_hours;
 
         // Load consumption
         totals.load_consumption_kwh += load_w / 1000.0 * dt_hours;
@@ -1600,6 +1717,46 @@ mod tests {
     }
 
     #[test]
+    fn charge_limit_conserves_energy_by_redirecting_to_export() {
+        // CRITICAL fix: when battery_charge_limit_percent < 100, the charge
+        // power capped by BatteryEngine must show up as additional grid export,
+        // not vanish. Energy balance: solar = load + charge + export.
+        let mut engine = test_engine();
+        engine.state.timestamp = ts(12); // midday — solar generating
+        engine.state.solar_override = Some(5000.0); // fixed 5 kW solar
+        engine.state.load_override = Some(1000.0); // fixed 1 kW load
+        engine.state.battery_charge_limit_percent = 50.0; // halve charge rate
+        engine.state.batteries[0].soc_percent = 50.0; // headroom to charge
+        // Tick once
+        engine.tick();
+
+        let solar = engine.state.solar.generation_w;
+        let load = engine.state.load.demand_w;
+        let charge_kw = engine.state.total_battery_power_kw();
+        let charge_w = charge_kw * 1000.0;
+        let grid = engine.state.grid.power_w; // negative = export
+
+        // Energy balance: solar = load + charge + export
+        // export = -grid.power_w (when negative)
+        let export = (-grid).max(0.0);
+        let energy_balance = solar - load - charge_w - export;
+
+        assert!(
+            energy_balance.abs() < 1.0,
+            "Energy not conserved: solar={solar:.0}W, load={load:.0}W, \
+             charge={charge_w:.0}W, export={export:.0}W, imbalance={energy_balance:.1}W"
+        );
+
+        // Charge should be limited to 50% of max
+        let max_charge_w = engine.state.batteries[0].max_charge_kw * 1000.0;
+        let half_limit = max_charge_w * 0.5;
+        assert!(
+            charge_w <= half_limit + 1.0, // +1 for float tolerance
+            "Charge {charge_w:.0}W exceeds 50% limit of {half_limit:.0}W"
+        );
+    }
+
+    #[test]
     fn tick_increments_inverter_work_time_hours() {
         let mut engine = test_engine();
         engine.tick_interval_secs = 1800;
@@ -1975,8 +2132,7 @@ mod tests {
 
     #[test]
     fn eco_mode_charges_slower_during_daytime() {
-        // At 12:00 with solar surplus, Eco and Normal should charge at the same rate
-        // (the old 50% daytime cap has been removed to match real inverter behavior)
+        // At 12:00 with solar surplus, Eco caps charging at 50% during daytime (10-16)
         let mut normal_state = PlantState::new(ts(12));
         normal_state.solar.generation_w = 5000.0;
         normal_state.load.demand_w = 1000.0;
@@ -2004,16 +2160,22 @@ mod tests {
         let eco_charge = eco_state.total_battery_power_kw();
 
         assert!(
-            (eco_charge - normal_charge).abs() < 0.01,
-            "Eco and Normal should charge at the same rate: eco={}, normal={}",
+            eco_charge < normal_charge,
+            "Eco should charge slower than Normal at noon: eco={}, normal={}",
             eco_charge,
             normal_charge
+        );
+        assert!(
+            (eco_charge - normal_charge * 0.5).abs() < 0.01,
+            "Eco daytime charge should be ~50% of Normal: eco={}, expected={}",
+            eco_charge,
+            normal_charge * 0.5
         );
     }
 
     #[test]
     fn eco_mode_same_as_normal_at_night() {
-        // At 21:00 with load deficit, Eco should behave same as Normal
+        // At 21:00 with load deficit, Eco should behave same as Normal (no daytime cap)
         let mut normal_state = PlantState::new(ts(21));
         normal_state.solar.generation_w = 0.0;
         normal_state.load.demand_w = 2000.0;
@@ -2751,20 +2913,22 @@ mod tests {
         };
         inv.update(&ctx, &mut state);
 
-        // Eco mode no longer caps daytime charging (matches real inverter behavior)
-        // 3 batteries × 3kW = 9kW max charge, excess = 6kW
-        // But default inverter max_ac_watts = 5000W caps charge to 5kW
-        // The remaining 1kW goes to grid
+        // Eco mode caps daytime charging at 50% (hour 12 is in 10-16 window)
+        // 3 batteries × 3kW = 9kW max charge, but inverter cap = 5000W
+        // charge_limit = min(9000, SOC_headroom, 5000) = 5000W
+        // eco_charge_limit = 5000 * 0.5 = 2500W
+        // Excess: 6kW - 2.5kW charge = 3.5kW exported
         let total_power = state.total_battery_power_kw();
         assert!(total_power > 0.0, "Battery bank should charge in Eco");
         assert!(
-            (total_power - 5.0).abs() < 0.01,
-            "Should charge at inverter cap: got {}",
+            (total_power - 2.5).abs() < 0.01,
+            "Eco should cap charge at 50% of inverter limit: got {}",
             total_power
         );
         assert!(
-            (state.grid.power_w + 1000.0).abs() < 1.0,
-            "Should export 1kW excess above inverter cap"
+            state.grid.power_w < -3000.0,
+            "Should export excess solar to grid, got grid={}",
+            state.grid.power_w
         );
     }
 

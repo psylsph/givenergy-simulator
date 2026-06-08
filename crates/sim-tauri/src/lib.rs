@@ -114,8 +114,8 @@ pub fn run() {
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
-                                        Box::new(sim_core::EnergyTracker::new()),
                                         Box::new(sim_core::EvcEngine::new()),
+                                        Box::new(sim_core::EnergyTracker::new()),
                                     ]
                                 } else {
                                     vec![
@@ -126,8 +126,8 @@ pub fn run() {
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
-                                        Box::new(sim_core::EnergyTracker::new()),
                                         Box::new(sim_core::EvcEngine::new()),
+                                        Box::new(sim_core::EnergyTracker::new()),
                                     ]
                                 };
 

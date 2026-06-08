@@ -79,8 +79,13 @@ pub trait DeviceModel: Send {
     /// Advance the model by one tick.
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState);
     /// Downcast support for schedule updates.
+    /// Default returns a leaked `Box<()>` so that unexpected downcasts
+    /// return `None` instead of panicking.
+    /// Only [`ScheduleEngine`](sim_core::ScheduleEngine) overrides this.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        unimplemented!()
+        // Leak a () so the reference is valid for 'static. This is fine
+        // because there are at most N device models (single digits).
+        Box::leak(Box::new(()))
     }
 }
 
@@ -222,9 +227,11 @@ pub struct BatteryState {
     pub max_soc: f64,
     /// Net power flow in kW: positive = charging, negative = discharging.
     pub power_kw: f64,
-    /// Round-trip charging efficiency (0.0–1.0). Typical Li-ion ≈ 0.95.
+    /// One-way charging efficiency (0.0–1.0). Default 0.95.
+    /// Round-trip efficiency is charge_efficiency × discharge_efficiency ≈ 0.9025 (90.25%).
     pub charge_efficiency: f64,
-    /// Round-trip discharging efficiency (0.0–1.0). Typical Li-ion ≈ 0.95.
+    /// One-way discharging efficiency (0.0–1.0). Default 0.95.
+    /// Round-trip efficiency is charge_efficiency × discharge_efficiency ≈ 0.9025 (90.25%).
     pub discharge_efficiency: f64,
     /// Battery temperature in °C.
     pub temperature_celsius: f64,
@@ -339,6 +346,10 @@ pub struct EnergyTotals {
     /// Energy used for AC/grid charging today (kWh).
     #[serde(default)]
     pub ac_charge_kwh: f64,
+    /// Total inverter AC output energy (kWh). Distinct from solar_generation:
+    /// for hybrid inverters this includes battery-discharge contribution to AC.
+    #[serde(default)]
+    pub inverter_output_kwh: f64,
 }
 
 impl EnergyTotals {
@@ -356,6 +367,7 @@ impl EnergyTotals {
             solar_generation_kwh: 8.5,
             load_consumption_kwh: 6.5,
             ac_charge_kwh: 0.7,
+            inverter_output_kwh: 8.0,
         }
     }
 
@@ -388,6 +400,7 @@ impl Default for EnergyTotals {
             solar_generation_kwh: 0.0,
             load_consumption_kwh: 0.0,
             ac_charge_kwh: 0.0,
+            inverter_output_kwh: 0.0,
         }
     }
 }
@@ -519,6 +532,10 @@ pub struct PlantState {
     #[serde(default)]
     pub enable_rtc: bool,
     /// HR311 export priority (0=Battery First, 1=Grid First, 2=Load First).
+    ///
+    /// **Gap (LOW-5):** This field is stored and projected to registers but no
+    /// device model reads it. InverterEngine always uses Normal/Eco/Force
+    /// priority irrespective of this setting.
     #[serde(default)]
     pub export_priority: u16,
     /// HR317 enable EPS (Emergency Power Supply) mode.
@@ -529,6 +546,11 @@ pub struct PlantState {
     pub enable_inverter_parallel_mode: bool,
     /// When true, EMS (Energy Management System) slot registers (HR 2044-2061)
     /// control the charge/discharge schedule instead of inverter-native slots.
+    ///
+    /// **Gap (LOW-6):** This flag is stored and projected but no logic switches
+    /// between EMS slot offsets (2044-2061) and inverter-native slots (94-95,
+    /// 56-57, etc.). ScheduleEngine always reads the native slot fields on
+    /// Schedule. Implement offset switching based on this flag.
     #[serde(default)]
     pub ems_enabled: bool,
     /// When `Some(tick_count)`, the BatteryEngine must not change SOC for this many
@@ -645,6 +667,20 @@ impl PlantState {
     /// Aggregate max discharge rate in kW.
     pub fn total_max_discharge_kw(&self) -> f64 {
         self.batteries.iter().map(|b| b.max_discharge_kw).sum()
+    }
+
+    /// Effective max charge rate in watts, after applying HR 111 percentage limit.
+    /// Used by InverterEngine so power allocation respects user-configured limits.
+    pub fn effective_max_charge_w(&self) -> f64 {
+        let scale = (self.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
+        self.total_max_charge_kw() * 1000.0 * scale
+    }
+
+    /// Effective max discharge rate in watts, after applying HR 112 percentage limit.
+    /// Used by InverterEngine so power allocation respects user-configured limits.
+    pub fn effective_max_discharge_w(&self) -> f64 {
+        let scale = (self.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
+        self.total_max_discharge_kw() * 1000.0 * scale
     }
 
     /// Aggregate net power in kW (positive = charging bank).

@@ -380,7 +380,15 @@ fn error_response_sets_error_bit_on_function() {
     let resp = build_error_response(&serial, 0x32, 0x03, 0x01);
     let inner_pdu = &resp[HEADER_SIZE..];
     assert_eq!(inner_pdu[1], 0x83, "Error response function = 0x03 | 0x80");
-    assert_eq!(inner_pdu[2], 0x01, "Exception code = Illegal Function");
+    // Error response payload carries INVERTER_SERIAL before exception byte
+    // Inner PDU: slave(1) + func|0x80(1) + inverter_serial(10) + exception(1) + CRC(2)
+    assert!(inner_pdu.len() >= 15, "Inner PDU must include serial");
+    assert_eq!(
+        &inner_pdu[2..12],
+        &sim_modbus::INVERTER_SERIAL[..],
+        "Inverter serial in payload"
+    );
+    assert_eq!(inner_pdu[12], 0x01, "Exception code = Illegal Function");
 }
 
 #[test]
@@ -759,7 +767,8 @@ async fn write_readonly_register_returns_error() {
     let (slave, func, payload) = decode_response(&resp);
     assert_eq!(slave, 0x11);
     assert_eq!(func, FC_WRITE_SINGLE | 0x80);
-    assert_eq!(payload[0], EC_ILLEGAL_DATA_ADDRESS);
+    // Error response payload now includes inverter serial(10) before exception
+    assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
     assert!(
         rx.try_recv().is_err(),
         "No command should be dispatched for rejected write"
@@ -822,7 +831,8 @@ async fn unsupported_inner_function_returns_error() {
     let resp = send_recv(&mut stream, &req).await;
     let (_, func, payload) = decode_response(&resp);
     assert_eq!(func, 0x81, "Error response for fn 0x01");
-    assert_eq!(payload[0], EC_ILLEGAL_FUNCTION);
+    // Error response payload now includes inverter serial(10) before exception
+    assert_eq!(payload[10], EC_ILLEGAL_FUNCTION);
 }
 
 #[tokio::test]
