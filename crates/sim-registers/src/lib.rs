@@ -2115,12 +2115,19 @@ impl RegisterStore {
         // IR 90-91: charge_energy_today, IR 92-93: discharge_energy_today — left 0
         // (cluster-level daily totals are not modelled per-module).
 
-        // IR 98: nominal_capacity (deci Ah). Series stack keeps Ah constant; the
-        // GIV-BAT-3.4-HV module is 51 Ah nominal. giv_tcp multiplies this by the
-        // module count for total kWh, so report the per-module figure.
-        regs[38] = 510; // 51.0 Ah * 10
+        // IR 98: nominal_capacity (deci Ah). Calculated from the user-configured
+        // per-module capacity and the three-phase stack nominal voltage (76.8 V).
+        // Previously hardcoded to 510 (51.0 Ah × 76.8 V = 3.9 kWh per module)
+        // which didn't reflect user-chosen battery size.
+        let module_capacity_kwh = batteries
+            .first()
+            .map(|b| b.nominal_capacity_kwh)
+            .unwrap_or(3.4);
+        let module_nominal_ah = (module_capacity_kwh * 1000.0 / 76.8 * 10.0).round() as u16;
+        regs[38] = module_nominal_ah;
         // IR 99: remaining_battery_capacity (deci Ah), scaled by SOC
-        regs[39] = (51.0 * avg_soc / 100.0 * 10.0).round() as u16;
+        let remaining_ah = module_nominal_ah as f64 * avg_soc / 100.0;
+        regs[39] = remaining_ah.round() as u16;
         // IR 100: number_of_cycles (deci)
         regs[40] = (avg_cycles * 10.0).round() as u16;
 
@@ -7114,9 +7121,12 @@ mod tests {
         // 5 modules into one cluster view.
         let mut state = PlantState::with_battery_count(test_ts(), 5);
         for b in &mut state.batteries {
+            // Use GIV-BAT-3.4-HV sizing: 3.4 kWh nominal per module
             b.soc_percent = 60.0;
             b.voltage_v = 51.2;
             b.soh = 0.95;
+            b.nominal_capacity_kwh = 3.4;
+            b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
         }
         state.sync_battery_from_vec();
 
@@ -7145,10 +7155,11 @@ mod tests {
         assert_eq!(bcu[20], (60 << 8) | 60, "IR(80) SOC max/min");
         // IR 81 SOH = 95%
         assert_eq!(bcu[21], 95, "IR(81) SOH");
-        // IR 98 nominal_capacity = 51.0 Ah * 10 = 510
-        assert_eq!(bcu[38], 510, "IR(98) per-module nominal Ah");
-        // IR 99 remaining = 51 Ah * 60% * 10 = 306
-        assert_eq!(bcu[39], 306, "IR(99) remaining capacity scales with SOC");
+        // IR 98 nominal_capacity = (3.4 kWh * 1000 / 76.8 V * 10) rounded
+        // = (3400 / 76.8 * 10).round() = 442.7 -> 443 deci Ah
+        assert_eq!(bcu[38], 443, "IR(98) per-module nominal Ah from 3.4 kWh");
+        // IR 99 remaining = 443 deci Ah * 60% = 265.8 -> 266
+        assert_eq!(bcu[39], 266, "IR(99) remaining capacity scales with SOC");
     }
 
     #[test]
