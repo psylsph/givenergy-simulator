@@ -1571,3 +1571,101 @@ fn build_read_input_request_with_slave(slave: u8, start: u16, count: u16) -> Vec
     frame.extend_from_slice(&inner);
     frame
 }
+
+// ===========================================================================
+// CT Meter tests using the real run_modbus_server
+// ===========================================================================
+
+/// Start the REAL Modbus server (not the simplified test server) so that
+/// meter-slave routing, battery BMS routing etc. are exercised.
+async fn start_real_server_with_state(
+    state: &sim_models::PlantState,
+) -> (
+    SocketAddr,
+    std::sync::Arc<tokio::sync::Mutex<RegisterStore>>,
+    tokio::sync::mpsc::UnboundedReceiver<ModbusCommand>,
+) {
+    let store = RegisterStore::new(default_register_catalogue());
+    let mut store_clone = store.clone();
+    store_clone.project_from_state(state);
+    let store = std::sync::Arc::new(tokio::sync::Mutex::new(store_clone));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener); // free the port so run_modbus_server can bind it
+
+    let store_ref = store.clone();
+    let batt = std::sync::Arc::new(tokio::sync::Mutex::new(state.batteries.clone()));
+    tokio::spawn(async move {
+        let _ = sim_modbus::run_modbus_server(addr, store_ref, tx, batt).await;
+    });
+    // Give the server time to start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (addr, store, rx)
+}
+
+#[tokio::test]
+async fn ct_meter_slave_0x01_returns_meter_data_via_real_server() {
+    let mut state = test_state();
+    state.grid.power_w = 2400.0; // 2.4 kW import
+    state.config.inverter_type = "ACCoupled".to_string();
+    state.sync_battery_from_vec();
+
+    let (addr, _store, _rx) = start_real_server_with_state(&state).await;
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+    // Client probes meter: slave 0x01, IR 60, count 30
+    let request = build_read_input_request_with_slave(0x01, 60, 30);
+    stream.write_all(&request).await.unwrap();
+
+    // Read response
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buf))
+        .await
+        .expect("timeout reading response")
+        .expect("read error");
+
+    assert!(n >= HEADER_SIZE, "Response too short: {n} bytes");
+
+    // Parse the response
+    let resp = &buf[..n];
+    // Skip GivEnergy header (26 bytes) to get to inner PDU
+    let inner_pdu = &resp[HEADER_SIZE..];
+    assert!(inner_pdu.len() >= 4, "Inner PDU too short");
+    // Inner PDU: slave(1) + func(1) + serial(10) + start(2) + count(2) + data + CRC(2)
+    let payload = &inner_pdu[2..inner_pdu.len() - 2]; // strip slave+func, strip CRC
+    // payload = serial(10) + start(2) + count(2) + data
+    assert!(payload.len() >= 14, "Payload too short: {}", payload.len());
+    let data_start = u16::from_be_bytes([payload[10], payload[11]]);
+    let data_count = u16::from_be_bytes([payload[12], payload[13]]);
+    assert_eq!(data_start, 60);
+    assert_eq!(data_count, 30);
+
+    let data: Vec<u16> = payload[14..]
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    assert_eq!(data.len(), 30);
+
+    // Decode like the real client:
+    // data[0] = IR 60 (v_phase_1, ×0.1 V)
+    let v1 = data[0] as f32 * 0.1;
+    assert!(v1 > 100.0, "v_phase_1 should be > 100V, got {v1}");
+
+    // data[7] = IR 67 (i_total, ×0.01 A)
+    let i_total = data[7] as f32 * 0.01;
+    assert!(i_total > 0.0, "i_total should be > 0, got {i_total}");
+
+    // data[19] = IR 79 (p_apparent_total, signed VA)
+    let p_apparent = data[19] as i16 as i32;
+    assert!(
+        p_apparent > 0,
+        "p_apparent_total should be > 0, got {p_apparent}"
+    );
+
+    // data[23] = IR 83 (pf_total, ×0.001)
+    let pf = data[23] as f32 * 0.001;
+    assert!(pf > 0.0, "pf_total should be > 0, got {pf}");
+}

@@ -113,6 +113,32 @@ fn cell_voltage_factor(module_index: usize, cell_index: usize) -> f64 {
     1.0 + (frac * 2.0 - 1.0) * 0.01 // [0.99, 1.01]
 }
 
+/// Returns true for inverter types that use Gen3 extended register mapping for
+/// charge slot 2 (HR 243-244 instead of classic HR 31-32).
+///
+/// Gen3/AIO/HV-Gen3/Gen4 models: charge slot 2 lives at HR 243-244.
+/// Gen1/Gen2 hybrids: charge slot 2 lives at classic HR 31-32.
+/// Three-phase models: slots 1-2 mirror to HR 1113-1116 (and HR 243-244 in the
+/// extended block), but never use HR 31-32 for scheduling.
+/// AC-coupled models: only 1 charge slot (HR 94-95), no slot 2 at all.
+fn uses_gen3_extended_slots(inverter_type: &str) -> bool {
+    match inverter_type {
+        // Gen1/Gen2 hybrids: 2-slot max, classic HR 31-32
+        "Gen1Hybrid" | "Gen2Hybrid" => false,
+        // AC-coupled: only 1 charge slot
+        "ACCoupled" | "ACCoupled2" => false,
+        // Everything else is Gen3-era or later → HR 243-244
+        _ => true,
+    }
+}
+
+/// Returns true for three-phase inverter types that report line-to-line
+/// grid voltage (~415V) at TPH registers IR 1061-1063 instead of
+/// phase-to-neutral voltage (240V) used by single-phase inverters.
+fn is_three_phase_inverter(inverter_type: &str) -> bool {
+    inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase"
+}
+
 impl RegisterStore {
     /// Create a store pre-populated from the given register definitions.
     pub fn new(defs: Vec<RegisterDef>) -> Self {
@@ -157,6 +183,8 @@ impl RegisterStore {
             None
         };
         let state = seeded_state.as_ref().unwrap_or(state);
+        let is_three_phase = is_three_phase_inverter(&state.config.inverter_type);
+        let grid_v_ll = (240.0_f64 * 3.0_f64.sqrt()).round(); // 416V line-to-line
 
         let u32_words = |engineering: f64, scaling: f64| -> (u16, u16) {
             let raw = if scaling > 0.0 {
@@ -443,20 +471,27 @@ impl RegisterStore {
                 // ================================================================
                 // CT Clamp Meter Input Registers (IR 60-89)
                 // ================================================================
-                "meter_v_phase_1" => Some(240.0),
-                "meter_v_phase_2" => Some(0.0),
-                "meter_v_phase_3" => Some(0.0),
-                "meter_i_phase_1" => {
-                    let i = state.grid.power_w.abs() / 240.0;
+                // ================================================================
+                // CT Clamp Meter Input Registers (IR 60-89)
+                // Single-phase: all power on phase 1; phases 2/3 zero.
+                // Three-phase: balanced split across all 3 phases.
+                // ================================================================
+                "meter_v_phase_1" | "meter_v_phase_2" | "meter_v_phase_3" => {
+                    if is_three_phase || def.name.ends_with('1') {
+                        Some(240.0)
+                    } else {
+                        Some(0.0)
+                    }
+                }
+                "meter_i_phase_1" | "meter_i_phase_2" | "meter_i_phase_3" => {
+                    let i = if is_three_phase {
+                        state.grid.power_w.abs() / 3.0 / 240.0
+                    } else if def.name.ends_with('1') {
+                        state.grid.power_w.abs() / 240.0
+                    } else {
+                        0.0
+                    };
                     self.values.insert(key, (i * 100.0) as u16);
-                    continue;
-                }
-                "meter_i_phase_2" => {
-                    self.values.insert(key, 0);
-                    continue;
-                }
-                "meter_i_phase_3" => {
-                    self.values.insert(key, 0);
                     continue;
                 }
                 "meter_i_ln" => {
@@ -464,22 +499,25 @@ impl RegisterStore {
                     continue;
                 }
                 "meter_i_total" => {
-                    let i = state.grid.power_w.abs() / 240.0;
+                    let i = if is_three_phase {
+                        state.grid.power_w.abs() / 3.0 / 240.0 * 3.0 // sum of 3 phases
+                    } else {
+                        state.grid.power_w.abs() / 240.0
+                    };
                     self.values.insert(key, (i * 100.0) as u16);
                     continue;
                 }
-                "meter_p_active_phase_1" => {
+                "meter_p_active_phase_1" | "meter_p_active_phase_2" | "meter_p_active_phase_3" => {
                     // GivEnergy convention: +W = import, −W = export
-                    let clamped = state.grid.power_w.clamp(-32768.0, 32767.0);
+                    let p = if is_three_phase {
+                        state.grid.power_w / 3.0
+                    } else if def.name.ends_with('1') {
+                        state.grid.power_w
+                    } else {
+                        0.0
+                    };
+                    let clamped = p.clamp(-32768.0, 32767.0);
                     self.values.insert(key, clamped as i16 as u16);
-                    continue;
-                }
-                "meter_p_active_phase_2" => {
-                    self.values.insert(key, 0);
-                    continue;
-                }
-                "meter_p_active_phase_3" => {
-                    self.values.insert(key, 0);
                     continue;
                 }
                 "meter_p_active_total" => {
@@ -494,36 +532,42 @@ impl RegisterStore {
                     self.values.insert(key, 0);
                     continue;
                 }
-                "meter_p_apparent_phase_1" => {
-                    self.values.insert(key, state.grid.power_w.abs() as u16);
-                    continue;
-                }
-                "meter_p_apparent_phase_2" | "meter_p_apparent_phase_3" => {
-                    self.values.insert(key, 0);
+                "meter_p_apparent_phase_1"
+                | "meter_p_apparent_phase_2"
+                | "meter_p_apparent_phase_3" => {
+                    let p = if is_three_phase {
+                        state.grid.power_w.abs() / 3.0
+                    } else if def.name.ends_with('1') {
+                        state.grid.power_w.abs()
+                    } else {
+                        0.0
+                    };
+                    self.values.insert(key, p as u16);
                     continue;
                 }
                 "meter_p_apparent_total" => {
                     self.values.insert(key, state.grid.power_w.abs() as u16);
                     continue;
                 }
-                "meter_pf_phase_1" => {
-                    if state.grid.power_w.abs() > 1.0 {
-                        self.values.insert(key, 1000i16 as u16);
+                "meter_pf_phase_1" | "meter_pf_phase_2" | "meter_pf_phase_3" => {
+                    let has_power = if is_three_phase {
+                        state.grid.power_w.abs() > 1.0
                     } else {
-                        self.values.insert(key, 0);
-                    }
-                    continue;
-                }
-                "meter_pf_phase_2" | "meter_pf_phase_3" => {
-                    self.values.insert(key, 0);
+                        def.name.ends_with('1') && state.grid.power_w.abs() > 1.0
+                    };
+                    self.values
+                        .insert(key, if has_power { 1000i16 as u16 } else { 0 });
                     continue;
                 }
                 "meter_pf_total" => {
-                    if state.grid.power_w.abs() > 1.0 {
-                        self.values.insert(key, 1000i16 as u16);
-                    } else {
-                        self.values.insert(key, 0);
-                    }
+                    self.values.insert(
+                        key,
+                        if state.grid.power_w.abs() > 1.0 {
+                            1000i16 as u16
+                        } else {
+                            0
+                        },
+                    );
                     continue;
                 }
                 "meter_frequency" => Some(50.0),
@@ -1301,9 +1345,23 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_v_ac1" | "tph_ir_v_ac2" | "tph_ir_v_ac3" => Some(240.0),
+                "tph_ir_v_ac1" | "tph_ir_v_ac2" | "tph_ir_v_ac3" => {
+                    if is_three_phase {
+                        Some(grid_v_ll) // line-to-line
+                    } else {
+                        Some(240.0)
+                    }
+                }
                 "tph_ir_i_ac1" | "tph_ir_i_ac2" | "tph_ir_i_ac3" => {
-                    Some(state.inverter.ac_power_w.abs() / 240.0 / 3.0)
+                    // Per-phase current.
+                    // Single-phase: inverter throughput / V_PN / 3.
+                    // Three-phase (CT display): grid current per phase = grid_power / 3 / V_PN.
+                    let i = if is_three_phase {
+                        state.grid.power_w.abs() / 3.0 / 240.0
+                    } else {
+                        state.inverter.ac_power_w.abs() / 240.0 / 3.0
+                    };
+                    Some(i)
                 }
                 "tph_ir_f_ac1" => Some(50.0),
                 "tph_ir_power_factor" => Some(10000.0),
@@ -1320,22 +1378,25 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_p_meter_import_high" | "tph_ir_p_meter_import_low" => {
-                    // Hardcoded lifetime CT meter import total for testing
-                    let (hi, lo) = u32_words(123.4, 0.1); // raw 1234 at ×0.1
+                    // Real-time import power (0 when exporting)
+                    let import_w = state.grid.power_w.max(0.0);
+                    let (hi, lo) = u32_words(import_w, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_p_meter_export_high" | "tph_ir_p_meter_export_low" => {
-                    // Hardcoded lifetime CT meter export total for testing
-                    let (hi, lo) = u32_words(432.1, 0.1); // raw 4321 at ×0.1
+                    // Real-time export power (0 when importing)
+                    let export_w = (-state.grid.power_w).max(0.0);
+                    let (hi, lo) = u32_words(export_w, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_p_export_high" | "tph_ir_p_export_low" => {
-                    // Hardcoded lifetime CT export total for testing
-                    let (hi, lo) = u32_words(432.1, 0.1); // raw 4321 at ×0.1
+                    // Mirror of p_meter_export at IR 1240-1241 (alternative address)
+                    let export_w = (-state.grid.power_w).max(0.0);
+                    let (hi, lo) = u32_words(export_w, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -1353,6 +1414,8 @@ impl RegisterStore {
                 }),
                 "tph_ir_status" | "tph_ir_dc_status" => Some(1.0),
                 "tph_ir_p_load_ac1" | "tph_ir_p_load_ac2" | "tph_ir_p_load_ac3" => {
+                    // Per-phase house load. Client sets p_active_phase to 0
+                    // for the synthetic CT meter; these are load display only.
                     Some(state.load.demand_w / 3.0)
                 }
                 "tph_ir_p_load_all_high" | "tph_ir_p_load_all_low" => {
@@ -1566,8 +1629,12 @@ impl RegisterStore {
 
     /// Like `project_schedule` but accepts inverter type string.
     /// AC-coupled inverters (prefix "ACCoupled") skip discharge slot projection.
+    /// Gen3/AIO/HV-Gen3/Gen4 inverters write charge slot 2 to HR 243-244
+    /// (not HR 31-32, which contains stale/garbage data on real Gen3 firmware).
     pub fn project_schedule_for(&mut self, schedule: &sim_models::Schedule, inverter_type: &str) {
         let is_ac_coupled = inverter_type.starts_with("ACCoupled");
+        // Gen3+ uses HR 243-244 for charge slot 2; Gen1/Gen2 uses HR 31-32.
+        let gen3_ext = uses_gen3_extended_slots(inverter_type);
         // Convert decimal hours to HHMM.
         // 0.0 → 0 (valid 00:00 midnight). Negative → 60 (disabled).
         let hrs_to_hhmm = |h: f64| -> u16 {
@@ -1595,10 +1662,16 @@ impl RegisterStore {
         self.write(94, cs1_start);
         self.write(95, cs1_end);
         let (cs2_start, cs2_end) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
-        self.write(31, cs2_start);
-        self.write(32, cs2_end);
-        self.write(243, cs2_start);
-        self.write(244, cs2_end);
+        if gen3_ext {
+            // Gen3+ firmware stores charge slot 2 at HR 243-244.
+            // HR 31-32 is stale/garbage on real Gen3 — leave at disabled sentinel.
+            self.write(243, cs2_start);
+            self.write(244, cs2_end);
+        } else if !is_ac_coupled {
+            // Gen1/Gen2: classic HR 31-32 for charge slot 2.
+            self.write(31, cs2_start);
+            self.write(32, cs2_end);
+        }
         let (cs3_s, cs3_e) = slot_pair(schedule.charge_start_3, schedule.charge_end_3);
         self.write(246, cs3_s);
         self.write(247, cs3_e);
@@ -1734,7 +1807,7 @@ impl RegisterStore {
         self.write(266, schedule.charge_target_soc_9 as u16);
         self.write(269, schedule.charge_target_soc_10 as u16);
         self.write(1111, schedule.charge_target_soc as u16);
-        self.write(1109, 10);
+        self.write(1109, 4);
         self.write(1112, if charge_enabled { 1 } else { 0 });
         self.write(
             272,
@@ -1834,7 +1907,7 @@ impl RegisterStore {
         let reserve = self
             .read_by_space(110, RegisterSpace::Holding)
             .filter(|&v| v != 0)
-            .unwrap_or(10);
+            .unwrap_or(4);
         self.write(1109, reserve);
 
         // Export schedule slots (HR 2062-2071)
@@ -7467,7 +7540,7 @@ mod tests {
         assert_eq!(store.read_by_space(245, RegisterSpace::Holding), Some(90));
         assert_eq!(store.read_by_space(272, RegisterSpace::Holding), Some(20));
         assert_eq!(store.read_by_space(275, RegisterSpace::Holding), Some(30));
-        assert_eq!(store.read_by_space(1109, RegisterSpace::Holding), Some(10));
+        assert_eq!(store.read_by_space(1109, RegisterSpace::Holding), Some(4));
         assert_eq!(store.read_by_space(1111, RegisterSpace::Holding), Some(80));
         assert_eq!(store.read_by_space(1113, RegisterSpace::Holding), Some(130));
         assert_eq!(store.read_by_space(1115, RegisterSpace::Holding), Some(300));
@@ -7925,8 +7998,12 @@ mod tests {
         assert_eq!(store.read_by_space(1113, RegisterSpace::Holding), Some(130));
         assert_eq!(store.read_by_space(1114, RegisterSpace::Holding), Some(500));
 
-        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(1000));
-        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(1200));
+        // Three-phase uses Gen3-extended mapping: slot 2 at HR 243-244, NOT HR 31-32.
+        // HR 31-32 are NOT written by project_schedule_for for Gen3-extended inverters;
+        // they retain whatever project_from_state set (disabled sentinel 60) or 0 if
+        // project_from_state hasn't run.
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(1000));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(1200));
         assert_eq!(
             store.read_by_space(1115, RegisterSpace::Holding),
             Some(1000)
@@ -8008,15 +8085,18 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1019, 1020), 19000);
 
         // Grid/load block: voltage, per-phase current/load, total load.
-        assert_eq!(store.read_by_space(1061, RegisterSpace::Input), Some(2400));
-        assert_eq!(store.read_by_space(1062, RegisterSpace::Input), Some(2400));
-        assert_eq!(store.read_by_space(1063, RegisterSpace::Input), Some(2400));
-        assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(46));
+        // Three-phase reports line-to-line voltage (~416V) at IR 1061-1063.
+        assert_eq!(store.read_by_space(1061, RegisterSpace::Input), Some(4160));
+        assert_eq!(store.read_by_space(1062, RegisterSpace::Input), Some(4160));
+        assert_eq!(store.read_by_space(1063, RegisterSpace::Input), Some(4160));
+        // Per-phase current now uses grid power for three-phase: |grid|/3/240 = 2.5A → raw 25
+        assert_eq!(store.read_by_space(1064, RegisterSpace::Input), Some(25));
+        // Per-phase house load: demand_w/3 = 900W
         assert_eq!(store.read_by_space(1083, RegisterSpace::Input), Some(9000));
         assert_eq!(read_u32_ir(&store, 1089, 1090), 27000);
-        assert_eq!(read_u32_ir(&store, 1079, 1080), 1234); // CT/meter import — hardcoded lifetime
-        assert_eq!(read_u32_ir(&store, 1081, 1082), 4321); // CT/meter export — hardcoded lifetime
-        assert_eq!(read_u32_ir(&store, 1240, 1241), 4321); // export mirror — hardcoded lifetime
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 18000); // CT/meter import — real-time 1800W
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 0); // CT/meter export — 0 (importing)
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 0); // export mirror — 0 (importing)
         assert_eq!(read_u32_ir(&store, 1244, 1245), 0); // second meter absent
 
         // Battery block: temperatures, voltages, SoC, charge/discharge split, current and firmware IDs.
@@ -8076,17 +8156,310 @@ mod tests {
     }
 
     #[test]
-    fn threephase_11kw_ct_meter_total_registers_are_hardcoded() {
-        // CT meter lifetime totals are hardcoded test values, not derived
-        // from instant grid power. The live grid CT reading is at IR 1076
-        // (status) via tph_ir_p_inverter_out and the signed grid power at
-        // single-phase IR 30.
+    fn threephase_11kw_ct_meter_power_registers_follow_grid() {
+        // CT meter import/export power follows real-time grid.power_w.
+        // Default state has grid.power_w = 0, so both import and export are 0.
         let s = three_phase_11kw_state();
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
-        assert_eq!(read_u32_ir(&store, 1079, 1080), 1234);
-        assert_eq!(read_u32_ir(&store, 1081, 1082), 4321);
-        assert_eq!(read_u32_ir(&store, 1240, 1241), 4321);
+        assert_eq!(read_u32_ir(&store, 1079, 1080), 0); // import: 0W (no grid flow)
+        assert_eq!(read_u32_ir(&store, 1081, 1082), 0); // export: 0W (no grid flow)
+        assert_eq!(read_u32_ir(&store, 1240, 1241), 0); // export mirror: 0W
+    }
+
+    #[test]
+    fn ct_meter_input_registers_project_correctly() {
+        // Verify the exact data a client would see when reading IR 60-89
+        // on slave 0x01 (CT meter). The client decodes relative to base 60.
+        let mut s = PlantState::new(test_ts());
+        s.grid.power_w = 2400.0; // 2.4 kW import
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let space = RegisterSpace::Input;
+
+        // IR 60: v_phase_1 = 240.0V → raw 2400 (×0.1)
+        assert_eq!(store.read_by_space(60, space), Some(2400));
+        // IR 63: i_phase_1 = 2400/240 = 10A → raw 1000 (×0.01)
+        assert_eq!(store.read_by_space(63, space), Some(1000));
+        // IR 67: i_total = same as i_phase_1 for single-phase
+        assert_eq!(store.read_by_space(67, space), Some(1000));
+        // IR 68: p_active_phase_1 = 2400 (signed W)
+        assert_eq!(store.read_by_space(68, space), Some(2400));
+        // IR 71: p_active_total = 2400 (signed W)
+        assert_eq!(store.read_by_space(71, space), Some(2400));
+        // IR 76: p_apparent_phase_1 = 2400 (VA)
+        assert_eq!(store.read_by_space(76, space), Some(2400));
+        // IR 79: p_apparent_total = 2400 (VA)
+        assert_eq!(store.read_by_space(79, space), Some(2400));
+        // IR 80: pf_phase_1 = 1000 (×0.001 = 1.000)
+        assert_eq!(store.read_by_space(80, space), Some(1000));
+        // IR 83: pf_total = 1000 (×0.001 = 1.000)
+        assert_eq!(store.read_by_space(83, space), Some(1000));
+        // IR 84: frequency = 5000 (×0.01 = 50.00 Hz)
+        assert_eq!(store.read_by_space(84, space), Some(5000));
+    }
+
+    #[test]
+    fn ct_meter_data_zero_when_grid_power_zero() {
+        // When grid power is 0, current and power should be 0.
+        // Power factor should also be 0 (below threshold).
+        let mut s = PlantState::new(test_ts());
+        s.grid.power_w = 0.0;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let space = RegisterSpace::Input;
+        // IR 67: i_total = 0
+        assert_eq!(store.read_by_space(67, space), Some(0));
+        // IR 79: p_apparent_total = 0
+        assert_eq!(store.read_by_space(79, space), Some(0));
+        // IR 83: pf_total = 0 (power < 1W → PF = 0)
+        assert_eq!(store.read_by_space(83, space), Some(0));
+    }
+
+    // ===================================================================
+    // Gen3 Charge Slot Register Map Tests
+    // ===================================================================
+
+    #[test]
+    fn gen3_hybrid_writes_charge_slot_2_to_extended_holding_registers() {
+        // Gen3Hybrid (ARM FW century 3) MUST use HR 243-244 for charge slot 2.
+        // HR 31-32 should NOT be written by project_schedule_for.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let sched = sim_models::Schedule {
+            charge_start: 1.0,
+            charge_end: 5.0,
+            charge_start_2: 10.0,
+            charge_end_2: 14.0,
+            charge_target_soc: 80.0,
+            enable_charge: true,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gen3Hybrid");
+
+        // Slot 1 at HR 94-95 (always)
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+
+        // Slot 2 at HR 243-244 (Gen3 extended)
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(1000));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(1400));
+
+        // HR 31-32 NOT written by Gen3 — stays at 0 (no project_from_state called)
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn gen3_hybrid_with_state_projection_leaves_hr_31_32_at_disabled_sentinel() {
+        // When project_from_state runs first (setting HR 31-32 to 60),
+        // project_schedule_for should NOT overwrite them for Gen3.
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let sched = sim_models::Schedule {
+            charge_start_2: 10.0,
+            charge_end_2: 14.0,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gen3Hybrid");
+
+        // HR 31-32 stay at disabled sentinel from project_from_state
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(60));
+        // Slot 2 correctly at HR 243-244
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(1000));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(1400));
+    }
+
+    #[test]
+    fn gen1_hybrid_writes_charge_slot_2_to_classic_holding_registers() {
+        // Gen1Hybrid (ARM FW century 2) uses classic HR 31-32 for charge slot 2.
+        // HR 243-244 should NOT be written.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let sched = sim_models::Schedule {
+            charge_start: 1.0,
+            charge_end: 5.0,
+            charge_start_2: 10.0,
+            charge_end_2: 14.0,
+            enable_charge: true,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gen1Hybrid");
+
+        // Slot 1 at HR 94-95 (always)
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+
+        // Slot 2 at HR 31-32 (classic Gen1/Gen2)
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(1000));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(1400));
+
+        // HR 243-244 NOT written by Gen1 — stays at 0
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn gen2_hybrid_writes_charge_slot_2_to_classic_holding_registers() {
+        // Gen2Hybrid (ARM FW century 8) uses classic HR 31-32.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let sched = sim_models::Schedule {
+            charge_start_2: 22.0,
+            charge_end_2: 6.0,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gen2Hybrid");
+
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(2200));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(600));
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn ac_coupled_has_no_charge_slot_2() {
+        // AC-coupled inverters only support 1 charge slot (HR 94-95).
+        // Neither HR 31-32 nor HR 243-244 should be written.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let sched = sim_models::Schedule {
+            charge_start: 1.0,
+            charge_end: 5.0,
+            charge_start_2: 10.0,
+            charge_end_2: 14.0,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "ACCoupled");
+
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+        // No slot 2 at any address
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn all_in_one_uses_gen3_extended_charge_slot_2() {
+        // AllInOne, AIO, AIOHybrid models all use Gen3-extended mapping.
+        for inv_type in &[
+            "AllInOne",
+            "AllInOne5",
+            "AllInOne6",
+            "AIO6kW",
+            "AIO8kW",
+            "AIO10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+        ] {
+            let mut store = RegisterStore::new(default_register_catalogue());
+            let sched = sim_models::Schedule {
+                charge_start_2: 11.0,
+                charge_end_2: 13.0,
+                ..Default::default()
+            };
+            store.project_schedule_for(&sched, inv_type);
+
+            assert_eq!(
+                store.read_by_space(243, RegisterSpace::Holding),
+                Some(1100),
+                "Slot 2 start should be at HR 243 for {inv_type}"
+            );
+            assert_eq!(
+                store.read_by_space(244, RegisterSpace::Holding),
+                Some(1300),
+                "Slot 2 end should be at HR 244 for {inv_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn gen3_extended_models_skip_hr_31_32() {
+        // Verify that all Gen3-era models leave HR 31-32 untouched.
+        for inv_type in &[
+            "Gen3Hybrid",
+            "Gen3Hybrid8kW",
+            "Gen3Hybrid10kW",
+            "Gen3Plus6kW",
+            "Gen3Plus8kW",
+            "ThreePhase",
+            "ThreePhase8kW",
+            "ThreePhase10kW",
+            "ThreePhase11kW",
+            "AllInOne",
+            "AIO8kW",
+            "AIOHybrid8kW",
+            "Polar5kW",
+            "Polar8kW",
+            "EMS",
+            "Gateway12kW",
+        ] {
+            let mut store = RegisterStore::new(default_register_catalogue());
+            let sched = sim_models::Schedule {
+                charge_start_2: 10.0,
+                charge_end_2: 14.0,
+                ..Default::default()
+            };
+            store.project_schedule_for(&sched, inv_type);
+
+            assert_eq!(
+                store.read_by_space(31, RegisterSpace::Holding),
+                Some(0),
+                "HR 31 should NOT be written for {inv_type}"
+            );
+            assert_eq!(
+                store.read_by_space(32, RegisterSpace::Holding),
+                Some(0),
+                "HR 32 should NOT be written for {inv_type}"
+            );
+            assert_eq!(
+                store.read_by_space(243, RegisterSpace::Holding),
+                Some(1000),
+                "HR 243 should have slot 2 start for {inv_type}"
+            );
+            assert_eq!(
+                store.read_by_space(244, RegisterSpace::Holding),
+                Some(1400),
+                "HR 244 should have slot 2 end for {inv_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn meter_registers_nonzero_after_realistic_tick() {
+        let mut s = PlantState::new(test_ts());
+        s.solar.generation_w = 4000.0;
+        s.solar.pv1_w = 4000.0;
+        s.load.demand_w = 2000.0;
+        s.grid.power_w = -2000.0;
+        s.batteries[0].soc_percent = 50.0;
+        s.sync_battery_from_vec();
+        s.config.inverter_type = "ACCoupled".to_string();
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let space = RegisterSpace::Input;
+        let i_total = store.read_by_space(67, space);
+        let p_apparent = store.read_by_space(79, space);
+        let pf = store.read_by_space(83, space);
+
+        assert_ne!(i_total, Some(0), "IR 67 i_total should be non-zero");
+        assert_ne!(
+            p_apparent,
+            Some(0),
+            "IR 79 p_apparent_total should be non-zero"
+        );
+        assert_ne!(pf, Some(0), "IR 83 pf_total should be non-zero");
+        assert_eq!(i_total, Some(833), "IR 67: expected 833 (8.33A)");
+        assert_eq!(p_apparent, Some(2000), "IR 79: expected 2000 VA");
+        assert_eq!(pf, Some(1000), "IR 83: expected 1000 (1.000)");
     }
 }

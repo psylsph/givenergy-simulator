@@ -257,7 +257,7 @@ impl Default for BatteryState {
             nominal_capacity_kwh: 9.5,
             max_charge_kw: 3.0,
             max_discharge_kw: 3.0,
-            min_soc: 10.0,
+            min_soc: 4.0,
             max_soc: 100.0,
             power_kw: 0.0,
             charge_efficiency: 0.95,
@@ -427,6 +427,13 @@ pub struct PlantConfig {
     /// Peak capacity of PV array 2 in watts (0 = disabled).
     #[serde(default)]
     pub pv2_peak_watts: f64,
+    /// Whether an external CT clamp meter is installed on slave 0x01.
+    /// When false (default), IR 60-89 on slave 0x01 returns all zeros
+    /// so the client's meter probe (`validate_meter_data`) fails.
+    /// The inverter's built-in grid CT data still reports via IR 30,
+    /// IR 42-43 on the inverter slave (0x32/0x31).
+    #[serde(default)]
+    pub ct_meter_installed: bool,
 }
 
 fn default_inverter_type() -> String {
@@ -454,6 +461,7 @@ impl Default for PlantConfig {
             inverter_type: default_inverter_type(),
             max_ac_watts: default_max_ac_watts(),
             pv2_peak_watts: 0.0,
+            ct_meter_installed: false,
         }
     }
 }

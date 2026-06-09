@@ -281,7 +281,7 @@ CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, sc
 | 20 | Enable charge target | RW | 0 |
 | 27 | Battery power mode | RW | 0=export, 1=eco |
 | 29 | Calibration stage | RW | 0 (off) |
-| 31-32 | Charge slot 2 start/end | RW (HHMM) | 60 (disabled) |
+| 31-32 | Charge slot 2 start/end (Gen1/Gen2 only) | RW (HHMM) | 60 (disabled) |
 | 35-40 | System time year/sec | RW | From timestamp |
 | 44-45 | Discharge slot 2 start/end | RW (HHMM) | 60 (disabled) |
 | 50 | Active power rate | RW | 100% |
@@ -352,14 +352,25 @@ Battery sizes: `BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 
 | 8898 | Standard Modbus TCP (no envelope) | GivEVC wallbox (HR 0-119) |
 | 1420 | HTTP | Tauri dev server (UI) |
 
+### Dongle heartbeat
+The simulator acts as the dongle. It sends heartbeat requests (func 0x01, 8-byte
+frame `59 59 00 01 00 02 01 01`) every 3 minutes per TCP connection. The client
+must echo the frame back. After 3 unanswered heartbeats the connection is closed.
+
 ## Slot maps (per `givenergy-modbus` reference)
 | Inverter class | Charge slots (start,end) | Discharge slots (start,end) |
 |----------------|--------------------------|------------------------------|
-| SINGLE_PHASE | (94,95), (31,32) | (56,57), (44,45) |
-| EXTENDED (10-slot) | (94,95), (31,32), (246,247), (249,250), (252,253), (255,256), (258,259), (261,262), (264,265), (267,268) | (56,57), (44,45), (276,277), ..., (297,298) |
+| GEN1/GEN2 (2-slot) | (94,95), (31,32) | (56,57), (44,45) |
+| EXTENDED/Gen3 (10-slot) | (94,95), **(243,244)**, (246,247), (249,250), (252,253), (255,256), (258,259), (261,262), (264,265), (267,268) | (56,57), (44,45), (276,277), ..., (297,298) |
 | THREE_PHASE | (1113,1114), (1115,1116), (246,247), ..., (267,268) | (1118,1119), (1120,1121), (276,277), ..., (297,298) |
 | EMS | (2053,2054), (2056,2057), (2059,2060) | (2044,2045), (2047,2048), (2050,2051) |
 Target SOC register follows each slot's end register (e.g. HR 248 for charge slot 3).
+
+### Gen3 charge slot 2 register quirk
+Gen3 firmware (ARM FW century 3+) stores charge slot 2 at HR 243-244, NOT HR 31-32.
+HR 31-32 on Gen3 contains stale/garbage data. The `uses_gen3_extended_slots()` helper
+gates this: Gen1Hybrid/Gen2Hybrid → HR 31-32; all others → HR 243-244.
+The `project_schedule_for` method writes to the correct address based on inverter type.
 
 ## Test count tracking
 - v0.3.0: 37
@@ -382,3 +393,4 @@ Target SOC register follows each slot's end register (e.g. HR 248 for charge slo
 - v0.14.2: 245
 - v0.14.3: 245
 - v0.14.4: 245
+- v0.14.5: 258

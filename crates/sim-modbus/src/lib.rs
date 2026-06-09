@@ -163,23 +163,20 @@ pub fn build_response_with_padding(
     frame
 }
 
-/// Build a GivEnergy heartbeat response frame.
+/// Build a GivEnergy heartbeat request frame.
 ///
-/// Real GivEnergy data adapters echo the inverter serial and a status byte.
-/// The outer envelope uses the data-adapter serial; the payload after
-/// the header carries the inverter serial.
-pub fn build_heartbeat_response(_serial: &[u8; SERIAL_LEN]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(HEADER_SIZE + SERIAL_LEN + 1);
+/// Real dongles send this ~every 3 min. The client echoes it back verbatim.
+/// After 3 missed responses the dongle closes the TCP connection (~9 min).
+///
+/// Frame: `tx_id(0x5959) + proto(0x0001) + length(2) + unit_id(0x01) + func(0x01)`
+pub fn build_heartbeat_request() -> Vec<u8> {
+    let mut frame = Vec::with_capacity(8);
     frame.extend_from_slice(&TRANSACTION_ID.to_be_bytes());
     frame.extend_from_slice(&PROTOCOL_ID.to_be_bytes());
-    // length = unit_id(1) + func_id(1) + inverter_serial(10) + status(1) = 13
-    let length: u16 = 13;
+    let length: u16 = 2; // unit_id(1) + func(1)
     frame.extend_from_slice(&length.to_be_bytes());
     frame.push(UNIT_ID);
     frame.push(FUNC_HEARTBEAT);
-    // Heartbeat response carries inverter serial, not data-adapter serial
-    frame.extend_from_slice(&INVERTER_SERIAL);
-    frame.push(0x01); // OK status
     frame
 }
 
@@ -235,23 +232,36 @@ pub async fn run_modbus_server(
         tokio::spawn(async move {
             let mut buf = [0u8; 512];
             let mut pending: Vec<u8> = Vec::new();
+            // Heartbeat: real dongles send one ~every 3 min, close after 3
+            // missed responses. We send every 3 minutes.
+            let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(180));
+            heartbeat_interval.tick().await; // skip the immediate first tick
+            let mut missed_heartbeats: u8 = 0;
+            const MAX_MISSED_HEARTBEATS: u8 = 3;
 
             loop {
-                let n = match stream.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(e) => {
-                        tracing::warn!("Modbus read error from {peer}: {e}");
-                        break;
-                    }
-                };
+                tokio::select! {
+                    read_result = stream.read(&mut buf) => {
+                        let n = match read_result {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::warn!("Modbus read error from {peer}: {e}");
+                                break;
+                            }
+                        };
 
-                pending.extend_from_slice(&buf[..n]);
+                        // Any data from client resets the missed-heartbeat counter
+                        // (the client echoes our heartbeat back, which counts as data).
+                        missed_heartbeats = 0;
+                        pending.extend_from_slice(&buf[..n]);
 
                 // Process complete frames
                 loop {
-                    // Need at least the GivEnergy header (26 bytes)
-                    if pending.len() < HEADER_SIZE {
+                    // Need at least 8 bytes (5959 header + length + unit_id + func_id)
+                    // to identify the frame type. Heartbeat frames are only 8 bytes;
+                    // transparent-message frames are >= HEADER_SIZE (26 bytes).
+                    if pending.len() < 8 {
                         break;
                     }
 
@@ -269,7 +279,6 @@ pub async fn run_modbus_server(
                     }
 
                     let func_id = pending[7];
-
                     let length = u16::from_be_bytes([pending[4], pending[5]]) as usize;
                     let frame_len = 6 + length; // bytes 0-5 + everything after
 
@@ -277,24 +286,32 @@ pub async fn run_modbus_server(
                         break; // incomplete frame, wait for more data
                     }
 
-                    let frame = &pending[..frame_len];
-
-                    // Extract serial (bytes 8-17)
-                    let mut serial = [b' '; SERIAL_LEN];
-                    serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
-
-                    // Handle heartbeat (main function 0x01)
+                    // Handle heartbeat echo from client (func 0x01).
+                    // Real dongles send heartbeat requests; clients echo them
+                    // back verbatim. Just consume and move on — the missed-
+                    // heartbeat counter is already reset by the data-ready path.
                     if func_id == FUNC_HEARTBEAT {
-                        let resp = build_heartbeat_response(&serial);
-                        let _ = stream.write_all(&resp).await;
+                        tracing::trace!("Received heartbeat echo from {peer}");
                         pending.drain(..frame_len);
                         continue;
                     }
 
+                    // All other frames must be transparent messages (func 0x02)
+                    // which have the full 26-byte header.
                     if func_id != FUNC_TRANSPARENT {
                         tracing::warn!("Invalid function ID 0x{func_id:02X}, dropping connection");
                         return;
                     }
+
+                    if pending.len() < HEADER_SIZE {
+                        break;
+                    }
+
+                    let frame = &pending[..frame_len];
+
+                    // Extract data-adapter serial (bytes 8-17)
+                    let mut serial = [b' '; SERIAL_LEN];
+                    serial.copy_from_slice(&frame[8..8 + SERIAL_LEN]);
 
                     // Inner PDU starts at byte 26 (HEADER_SIZE)
                     let inner_pdu = &frame[HEADER_SIZE..];
@@ -581,7 +598,27 @@ pub async fn run_modbus_server(
 
                     pending.drain(..frame_len);
                 }
-            }
+                    }
+
+                    _ = heartbeat_interval.tick() => {
+                        // Send heartbeat request like a real dongle.
+                        // Client should echo it back, resetting missed_heartbeats.
+                        let hb = build_heartbeat_request();
+                        if stream.write_all(&hb).await.is_err() {
+                            tracing::warn!("Heartbeat send failed for {peer}, closing");
+                            break;
+                        }
+                        missed_heartbeats += 1;
+                        if missed_heartbeats >= MAX_MISSED_HEARTBEATS {
+                            tracing::warn!(
+                                "{MAX_MISSED_HEARTBEATS} heartbeats unanswered for {peer}, closing"
+                            );
+                            break;
+                        }
+                        tracing::trace!("Sent heartbeat to {peer} (missed={missed_heartbeats})");
+                    }
+                } // end select!
+            } // end main loop
         });
     }
 }
