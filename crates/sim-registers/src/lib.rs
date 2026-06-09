@@ -117,19 +117,27 @@ fn cell_voltage_factor(module_index: usize, cell_index: usize) -> f64 {
 /// charge slot 2 (HR 243-244 instead of classic HR 31-32).
 ///
 /// Gen3/AIO/HV-Gen3/Gen4 models: charge slot 2 lives at HR 243-244.
-/// Gen1/Gen2 hybrids: charge slot 2 lives at classic HR 31-32.
+/// Gen1 hybrids: charge slot 2 lives at classic HR 31-32.
 /// Three-phase models: slots 1-2 mirror to HR 1113-1116 (and HR 243-244 in the
 /// extended block), but never use HR 31-32 for scheduling.
 /// AC-coupled models: only 1 charge slot (HR 94-95), no slot 2 at all.
 fn uses_gen3_extended_slots(inverter_type: &str) -> bool {
     match inverter_type {
-        // Gen1/Gen2 hybrids: 2-slot max, classic HR 31-32
-        "Gen1Hybrid" | "Gen2Hybrid" => false,
+        // Gen1 hybrids: 2-slot max, classic HR 31-32
+        "Gen1Hybrid" => false,
+        // Gen2 hybrids: 1 charge/discharge slot only (HR 94-95 / HR 56-57)
+        "Gen2Hybrid" => false,
         // AC-coupled: only 1 charge slot
         "ACCoupled" | "ACCoupled2" => false,
         // Everything else is Gen3-era or later → HR 243-244
         _ => true,
     }
+}
+
+/// Returns true for inverter types that support a second charge/discharge slot.
+/// Gen2 hybrids only have 1 programmable slot; AC-coupled also has 1 charge slot.
+fn has_slot_2(inverter_type: &str) -> bool {
+    !matches!(inverter_type, "Gen2Hybrid" | "ACCoupled" | "ACCoupled2")
 }
 
 /// Returns true for three-phase inverter types that report line-to-line
@@ -218,9 +226,20 @@ impl RegisterStore {
             }
             code
         };
+        // Three-phase / HV battery voltage: sum of per-module voltages from BatteryEngine.
+        // BatteryEngine scales the LFP curve by 1.5× for ThreePhase (24S, 76.8V nominal).
+        let hv_battery_v = state.batteries.iter().map(|b| b.voltage_v).sum::<f64>();
 
         for def in &self.defs {
             let key = def.store_key();
+
+            // CT clamp meter registers (IR 60-89 on slave 0x01) return all zeros
+            // when ct_meter_installed is false. The inverter's built-in grid
+            // measurement (IR 30, IR 42-43 on slave 0x32) is independent of this.
+            if def.name.starts_with("meter_") && !state.config.ct_meter_installed {
+                self.values.insert(key, 0);
+                continue;
+            }
 
             let engineering: Option<f64> = match def.name.as_str() {
                 // ================================================================
@@ -1210,8 +1229,8 @@ impl RegisterStore {
                 }
                 "battery_temperature" => Some(state.battery_temperature_celsius()),
                 "battery_capacity_kwh" => Some(state.total_battery_capacity()),
-                "battery_max_charge_kw" => Some(state.total_max_charge_kw()),
-                "battery_max_discharge_kw" => Some(state.total_max_discharge_kw()),
+                "battery_max_charge_kw" => Some(state.effective_max_charge_w() / 1000.0),
+                "battery_max_discharge_kw" => Some(state.effective_max_discharge_w() / 1000.0),
                 "battery_min_soc" => Some(state.min_aggregate_soc()),
                 "battery_max_soc" => Some(state.max_aggregate_soc()),
                 "battery_charge_efficiency" => Some(
@@ -1427,7 +1446,7 @@ impl RegisterStore {
                 "tph_ir_t_inverter" => Some(state.inverter.temperature_celsius),
                 "tph_ir_t_boost" => Some(state.inverter.temperature_celsius - 2.0),
                 "tph_ir_t_buck_boost" => Some(state.inverter.temperature_celsius + 3.0),
-                "tph_ir_v_battery_bms" => Some(76.8),
+                "tph_ir_v_battery_bms" => Some(hv_battery_v),
                 "tph_ir_battery_soc" => Some(state.aggregate_soc()),
                 "tph_ir_p_battery_discharge_high" | "tph_ir_p_battery_discharge_low" => {
                     let discharge_w = (-state.total_battery_power_kw()).max(0.0) * 1000.0;
@@ -1443,11 +1462,11 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                "tph_ir_v_battery_pcs" => Some(76.8),
+                "tph_ir_v_battery_pcs" => Some(hv_battery_v),
                 "tph_ir_v_dc_bus" => Some(380.0),
                 "tph_ir_v_inv_bus" => Some(380.0),
                 "tph_ir_i_battery" => {
-                    let amps = -(state.total_battery_power_kw() * 1000.0 / 76.8);
+                    let amps = -(state.total_battery_power_kw() * 1000.0 / hv_battery_v);
                     self.values.insert(key, (amps * 10.0) as i16 as u16);
                     continue;
                 }
@@ -1633,8 +1652,10 @@ impl RegisterStore {
     /// (not HR 31-32, which contains stale/garbage data on real Gen3 firmware).
     pub fn project_schedule_for(&mut self, schedule: &sim_models::Schedule, inverter_type: &str) {
         let is_ac_coupled = inverter_type.starts_with("ACCoupled");
-        // Gen3+ uses HR 243-244 for charge slot 2; Gen1/Gen2 uses HR 31-32.
+        // Gen3+ uses HR 243-244 for charge slot 2; Gen1 uses HR 31-32.
+        // Gen2 and AC-coupled do not support slot 2.
         let gen3_ext = uses_gen3_extended_slots(inverter_type);
+        let slot2 = has_slot_2(inverter_type);
         // Convert decimal hours to HHMM.
         // 0.0 → 0 (valid 00:00 midnight). Negative → 60 (disabled).
         let hrs_to_hhmm = |h: f64| -> u16 {
@@ -1662,13 +1683,13 @@ impl RegisterStore {
         self.write(94, cs1_start);
         self.write(95, cs1_end);
         let (cs2_start, cs2_end) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
-        if gen3_ext {
+        if gen3_ext && slot2 {
             // Gen3+ firmware stores charge slot 2 at HR 243-244.
             // HR 31-32 is stale/garbage on real Gen3 — leave at disabled sentinel.
             self.write(243, cs2_start);
             self.write(244, cs2_end);
-        } else if !is_ac_coupled {
-            // Gen1/Gen2: classic HR 31-32 for charge slot 2.
+        } else if slot2 {
+            // Gen1: classic HR 31-32 for charge slot 2.
             self.write(31, cs2_start);
             self.write(32, cs2_end);
         }
@@ -1704,63 +1725,64 @@ impl RegisterStore {
         };
         self.write(56, ds1_start);
         self.write(57, ds1_end);
-        let (ds2_start, ds2_end) = if is_ac_coupled {
+        let (ds2_start, ds2_end) = if !slot2 {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_2, schedule.discharge_end_2)
         };
         self.write(44, ds2_start);
         self.write(45, ds2_end);
-        let (ds3_s, ds3_e) = if is_ac_coupled {
+        let no_extended = is_ac_coupled || !slot2;
+        let (ds3_s, ds3_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_3, schedule.discharge_end_3)
         };
         self.write(276, ds3_s);
         self.write(277, ds3_e);
-        let (ds4_s, ds4_e) = if is_ac_coupled {
+        let (ds4_s, ds4_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_4, schedule.discharge_end_4)
         };
         self.write(279, ds4_s);
         self.write(280, ds4_e);
-        let (ds5_s, ds5_e) = if is_ac_coupled {
+        let (ds5_s, ds5_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_5, schedule.discharge_end_5)
         };
         self.write(282, ds5_s);
         self.write(283, ds5_e);
-        let (ds6_s, ds6_e) = if is_ac_coupled {
+        let (ds6_s, ds6_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_6, schedule.discharge_end_6)
         };
         self.write(285, ds6_s);
         self.write(286, ds6_e);
-        let (ds7_s, ds7_e) = if is_ac_coupled {
+        let (ds7_s, ds7_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_7, schedule.discharge_end_7)
         };
         self.write(288, ds7_s);
         self.write(289, ds7_e);
-        let (ds8_s, ds8_e) = if is_ac_coupled {
+        let (ds8_s, ds8_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_8, schedule.discharge_end_8)
         };
         self.write(291, ds8_s);
         self.write(292, ds8_e);
-        let (ds9_s, ds9_e) = if is_ac_coupled {
+        let (ds9_s, ds9_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_9, schedule.discharge_end_9)
         };
         self.write(294, ds9_s);
         self.write(295, ds9_e);
-        let (ds10_s, ds10_e) = if is_ac_coupled {
+        let (ds10_s, ds10_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_10, schedule.discharge_end_10)
@@ -8065,6 +8087,8 @@ mod tests {
         s.load.demand_w = 2700.0;
         s.batteries[0].power_kw = 1.5;
         s.batteries[0].soc_percent = 62.0;
+        // BatteryEngine would compute 77.4V for ThreePhase 24S at 62% SOC
+        s.batteries[0].voltage_v = 77.4;
         s.sync_battery_from_vec();
         s.inverter.dsp_firmware_version = 612;
         s.inverter.arm_firmware_version = 318;
@@ -8103,12 +8127,12 @@ mod tests {
         assert_eq!(store.read_by_space(1128, RegisterSpace::Input), Some(350)); // t_inverter 35.0°C
         assert_eq!(store.read_by_space(1129, RegisterSpace::Input), Some(330)); // t_boost 33.0°C
         assert_eq!(store.read_by_space(1130, RegisterSpace::Input), Some(380)); // t_buck_boost 38.0°C
-        assert_eq!(store.read_by_space(1131, RegisterSpace::Input), Some(768)); // v_battery_bms 76.8V
+        assert_eq!(store.read_by_space(1131, RegisterSpace::Input), Some(774)); // v_battery_bms 77.4V
         assert_eq!(store.read_by_space(1132, RegisterSpace::Input), Some(62));
         assert_eq!(read_u32_ir(&store, 1138, 1139), 15000); // charging 1.5kW at ×0.1W
         assert_eq!(read_u32_ir(&store, 1136, 1137), 0);
         assert!((store.read_by_space(1140, RegisterSpace::Input).unwrap() as i16) < 0);
-        assert_eq!(store.read_by_space(1133, RegisterSpace::Input), Some(768)); // v_battery_pcs 76.8V
+        assert_eq!(store.read_by_space(1133, RegisterSpace::Input), Some(774)); // v_battery_pcs 77.4V
         assert_eq!(store.read_by_space(1134, RegisterSpace::Input), Some(3800)); // v_dc_bus 380.0V
         assert_eq!(store.read_by_space(1135, RegisterSpace::Input), Some(3800)); // v_inv_bus 380.0V
         assert_eq!(store.read_by_space(1325, RegisterSpace::Input), Some(612));
@@ -8175,6 +8199,7 @@ mod tests {
         let mut s = PlantState::new(test_ts());
         s.grid.power_w = 2400.0; // 2.4 kW import
         s.config.inverter_type = "Gen3Hybrid".to_string();
+        s.config.ct_meter_installed = true;
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
@@ -8208,6 +8233,7 @@ mod tests {
         // Power factor should also be 0 (below threshold).
         let mut s = PlantState::new(test_ts());
         s.grid.power_w = 0.0;
+        s.config.ct_meter_installed = true;
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
@@ -8296,7 +8322,7 @@ mod tests {
         assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
         assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
 
-        // Slot 2 at HR 31-32 (classic Gen1/Gen2)
+        // Slot 2 at HR 31-32 (classic Gen1)
         assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(1000));
         assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(1400));
 
@@ -8306,20 +8332,54 @@ mod tests {
     }
 
     #[test]
-    fn gen2_hybrid_writes_charge_slot_2_to_classic_holding_registers() {
-        // Gen2Hybrid (ARM FW century 8) uses classic HR 31-32.
+    fn gen2_hybrid_has_no_charge_slot_2() {
+        // Gen2Hybrid only supports 1 charge slot (HR 94-95).
+        // Neither HR 31-32 nor HR 243-244 should be written for slot 2.
         let mut store = RegisterStore::new(default_register_catalogue());
         let sched = sim_models::Schedule {
+            charge_start: 1.0,
+            charge_end: 5.0,
             charge_start_2: 22.0,
             charge_end_2: 6.0,
             ..Default::default()
         };
         store.project_schedule_for(&sched, "Gen2Hybrid");
 
-        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(2200));
-        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(600));
+        // Slot 1 works normally
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+        // No slot 2 at any address
+        assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn gen2_hybrid_has_no_discharge_slot_2_or_extended_slots() {
+        // Gen2Hybrid only supports 1 discharge slot (HR 56-57).
+        // Discharge slot 2 (HR 44-45) and slots 3-10 should be disabled (60).
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let sched = sim_models::Schedule {
+            discharge_start: 17.0,
+            discharge_end: 21.0,
+            discharge_start_2: 10.0,
+            discharge_end_2: 14.0,
+            discharge_start_3: 8.0,
+            discharge_end_3: 9.0,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gen2Hybrid");
+
+        // Slot 1 works normally
+        assert_eq!(store.read_by_space(56, RegisterSpace::Holding), Some(1700));
+        assert_eq!(store.read_by_space(57, RegisterSpace::Holding), Some(2100));
+        // Slot 2 disabled
+        assert_eq!(store.read_by_space(44, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(45, RegisterSpace::Holding), Some(60));
+        // Extended slots also disabled
+        assert_eq!(store.read_by_space(276, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(277, RegisterSpace::Holding), Some(60));
     }
 
     #[test]
@@ -8442,6 +8502,7 @@ mod tests {
         s.batteries[0].soc_percent = 50.0;
         s.sync_battery_from_vec();
         s.config.inverter_type = "ACCoupled".to_string();
+        s.config.ct_meter_installed = true;
 
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);

@@ -118,6 +118,7 @@ pub struct PlantStateDto {
     pub energy_totals: EnergyTotalsDto,
     pub schedule: ScheduleDto,
     pub evc: sim_models::EvcState,
+    pub ct_meter_installed: bool,
     pub battery_self_heating: bool,
     pub manual_battery_heater: bool,
 }
@@ -533,6 +534,7 @@ impl From<&PlantState> for PlantStateDto {
             weather: state.weather.clone(),
             schedule: ScheduleDto::from_state(state, None),
             evc: state.evc.clone(),
+            ct_meter_installed: state.config.ct_meter_installed,
             battery_self_heating: state.inverter.battery_self_heating,
             manual_battery_heater: state.inverter.manual_battery_heater,
             energy_totals: EnergyTotalsDto {

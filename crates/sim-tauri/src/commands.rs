@@ -40,6 +40,7 @@ pub struct CreatePlantParams {
     pub load_profile: Option<String>,
     pub tick_interval: Option<u64>,
     pub inverter_type: Option<String>,
+    pub ct_meter_installed: Option<bool>,
 }
 
 #[tauri::command]
@@ -108,6 +109,8 @@ pub async fn create_plant(
 
     // Build battery modules from per-module config, or fall back to battery_count
     let mut plant_state = if let Some(modules) = params.battery_modules {
+        let module_count = modules.len().clamp(1, 6);
+        let per_module_max_kw = max_batt_kw / module_count as f64;
         let batts: Vec<BatteryState> = modules
             .into_iter()
             .take(6)
@@ -120,8 +123,8 @@ pub async fn create_plant(
                     capacity_kwh: effective_capacity,
                     nominal_capacity_kwh: capacity,
                     soh,
-                    max_charge_kw: c_rate_kw.min(max_batt_kw),
-                    max_discharge_kw: c_rate_kw.min(max_batt_kw),
+                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
+                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
                     ..BatteryState::default()
                 }
             })
@@ -139,6 +142,7 @@ pub async fn create_plant(
     plant_state.config.tick_interval_secs = tick_interval;
     plant_state.config.pv2_peak_watts = params.pv2_peak_watts.unwrap_or(0.0);
     plant_state.config.inverter_type = inv_type.to_string();
+    plant_state.config.ct_meter_installed = params.ct_meter_installed.unwrap_or(true);
     // Default DSP firmware per inverter type. Matches typical real-world values.
     plant_state.inverter.dsp_firmware_version = match inv_type {
         "Gen1Hybrid" => 110,
@@ -1605,6 +1609,40 @@ pub async fn set_load_override(
 }
 
 #[derive(serde::Deserialize)]
+pub struct SetCtMeterParams {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub async fn set_ct_meter(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    params: SetCtMeterParams,
+) -> Result<(), String> {
+    let mut eng = state.engine.lock().await;
+    if let Some(ref mut e) = *eng {
+        e.state.config.ct_meter_installed = params.enabled;
+        // Re-project registers so CT meter data (IR 60-89) appears immediately,
+        // without waiting for the next simulation tick.
+        let sched_ref = state.schedule.lock().await.clone();
+        {
+            let mut rs = state.register_store.lock().await;
+            rs.project_from_state(&e.state);
+            if let Some(ref sched) = sched_ref {
+                rs.project_schedule_for(sched, &e.state.config.inverter_type);
+            }
+        }
+        {
+            let mut bs = state.battery_snapshot.lock().await;
+            *bs = e.state.batteries.clone();
+        }
+        let dto = PlantStateDto::from(&e.state);
+        let _ = app.emit("state_changed", &dto);
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
 pub struct SetBatterySocParams {
     pub module: usize,
     pub soc: f64,
@@ -1690,7 +1728,8 @@ pub async fn set_battery_soh(
             b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
             let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
             let inv_max_kw = e.state.config.max_ac_watts / 1000.0;
-            let limit = c_rate_kw.min(inv_max_kw);
+            let per_module_kw = inv_max_kw / count as f64;
+            let limit = c_rate_kw.min(per_module_kw);
             b.max_charge_kw = limit;
             b.max_discharge_kw = limit;
         }

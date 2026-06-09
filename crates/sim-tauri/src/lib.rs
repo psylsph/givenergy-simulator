@@ -69,6 +69,7 @@ pub fn run() {
             commands::get_evc_state,
             commands::set_dsp_firmware,
             commands::set_arm_firmware,
+            commands::set_ct_meter,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule

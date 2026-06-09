@@ -29,6 +29,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.15.0** — CT clamp meter toggle (dropdown in Plant Setup, gates IR 60-89 on slave 0x01).
+
 **0.14.4** — Three-phase force charge/discharge register fix + missing energy total registers.
 
 **0.14.3** — Battery C-rate raised from 0.3C to 0.7C.
@@ -394,3 +396,4 @@ The `project_schedule_for` method writes to the correct address based on inverte
 - v0.14.3: 245
 - v0.14.4: 245
 - v0.14.5: 258
+- v0.15.0: 263

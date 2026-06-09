@@ -428,11 +428,11 @@ pub struct PlantConfig {
     #[serde(default)]
     pub pv2_peak_watts: f64,
     /// Whether an external CT clamp meter is installed on slave 0x01.
-    /// When false (default), IR 60-89 on slave 0x01 returns all zeros
+    /// When false, IR 60-89 on slave 0x01 returns all zeros
     /// so the client's meter probe (`validate_meter_data`) fails.
     /// The inverter's built-in grid CT data still reports via IR 30,
     /// IR 42-43 on the inverter slave (0x32/0x31).
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub ct_meter_installed: bool,
 }
 
@@ -451,6 +451,9 @@ fn default_percent_4() -> f64 {
 fn default_disabled_hhmm() -> u16 {
     60
 }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for PlantConfig {
     fn default() -> Self {
@@ -461,7 +464,7 @@ impl Default for PlantConfig {
             inverter_type: default_inverter_type(),
             max_ac_watts: default_max_ac_watts(),
             pv2_peak_watts: 0.0,
-            ct_meter_installed: false,
+            ct_meter_installed: true,
         }
     }
 }

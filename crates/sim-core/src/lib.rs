@@ -91,6 +91,8 @@ pub enum Command {
     SetEnableEps(bool),
     /// Set HR199 enable inverter parallel mode.
     SetEnableInverterParallelMode(bool),
+    /// Enable/disable external CT clamp meter (IR 60-89 on slave 0x01).
+    SetCtMeterEnabled(bool),
     /// Change simulation time step (seconds per tick) — used for speed-up.
     SetTickInterval(u64),
 }
@@ -254,6 +256,9 @@ impl SimulationEngine {
                 }
                 Command::SetEnableInverterParallelMode(v) => {
                     self.state.enable_inverter_parallel_mode = v;
+                }
+                Command::SetCtMeterEnabled(v) => {
+                    self.state.config.ct_meter_installed = v;
                 }
                 Command::SetSchedule(sched) => {
                     for device in &mut self.devices {
@@ -1208,18 +1213,22 @@ impl DeviceModel for BatteryEngine {
             //  50%:  51.5 V
             //  90%:  52.0 V
             // 100%:  54.0 V (full)
+            // For ThreePhase inverters (24S modules, 76.8V nominal), scale by 1.5.
+            let is_tph = state.config.inverter_type.starts_with("ThreePhase")
+                || state.config.inverter_type == "ACThreePhase";
+            let tph_scale = if is_tph { 1.5 } else { 1.0 };
             b.voltage_v = if b.soc_percent <= 5.0 {
                 // Steep rise from empty
-                44.0 + (b.soc_percent / 5.0) * (50.5 - 44.0)
+                tph_scale * (44.0 + (b.soc_percent / 5.0) * (50.5 - 44.0))
             } else if b.soc_percent <= 20.0 {
                 // Gradual rise
-                50.5 + ((b.soc_percent - 5.0) / 15.0) * (51.0 - 50.5)
+                tph_scale * (50.5 + ((b.soc_percent - 5.0) / 15.0) * (51.0 - 50.5))
             } else if b.soc_percent <= 90.0 {
                 // Flat plateau (20-90%)
-                51.0 + ((b.soc_percent - 20.0) / 70.0) * (52.0 - 51.0)
+                tph_scale * (51.0 + ((b.soc_percent - 20.0) / 70.0) * (52.0 - 51.0))
             } else {
                 // Steep rise to full
-                52.0 + ((b.soc_percent - 90.0) / 10.0) * (54.0 - 52.0)
+                tph_scale * (52.0 + ((b.soc_percent - 90.0) / 10.0) * (54.0 - 52.0))
             };
 
             // Current from power and voltage (signed, positive = charging)

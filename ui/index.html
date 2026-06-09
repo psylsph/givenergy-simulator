@@ -429,6 +429,12 @@
         <label>PV2 Peak (W, 0 = off)</label>
         <input type="number" id="pv2-peak-watts" value="0" min="0" step="500">
 
+        <label style="margin-top:4px">CT Clamp Meter</label>
+        <select id="ct-meter-select">
+          <option value="installed">Installed</option>
+          <option value="none">Not Installed</option>
+        </select>
+
         <label>Load Profile</label>
         <select id="load-profile">
           <option value="family">Family</option>
@@ -496,6 +502,7 @@
           <input type="number" id="override-dsp-fw" placeholder="449" min="0" max="9999" style="flex:1">
           <button id="btn-apply-dsp-fw" class="btn-mini">Set</button>
         </div>
+
       </div>
 
       <div class="sidebar-section">
@@ -640,6 +647,14 @@
 
     const el = (id) => document.getElementById(id);
 
+    async function setCtMeter() {
+      if (!invoke) return;
+      const installed = el('ct-meter-select').value === 'installed';
+      try {
+        await invoke('set_ct_meter', { params: { enabled: installed } });
+      } catch (e) { console.error('set ct meter failed:', e); }
+    }
+
     const BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4];
 
     // Inverter type presets: [max_ac_watts, default_export_limit]
@@ -718,6 +733,7 @@
     }
     updateBatteryModuleDropdowns();
     el('battery-count').addEventListener('change', updateBatteryModuleDropdowns);
+    el('ct-meter-select').addEventListener('change', setCtMeter);
 
     // ---- Update battery module display in main panel ----
     // Track slider interaction to avoid resetting slider mid-drag.
@@ -932,6 +948,9 @@
       else el('override-solar').value = '';
       if (s.load_override !== null && s.load_override !== undefined) el('override-load').value = s.load_override;
       else el('override-load').value = '';
+      // CT meter checkbox
+      // CT meter dropdown
+      if (s.ct_meter_installed !== undefined) el('ct-meter-select').value = s.ct_meter_installed ? 'installed' : 'none';
     }
 
     function updateDashboard(s, fullSync) {
@@ -1067,8 +1086,9 @@
       //   EXTENDED_SLOTS (10-slot): Gen3Hybrid (fw>302), AllInOne, AIO Hybrid,
       //     HYBRID_HV_GEN3, POLAR, HYBRID_GEN3_PLUS, HYBRID_GEN4
       //   THREE_PHASE_SLOTS (10-slot, first 2 at HR 1113-1121): ThreePhase
-      const isGen1 = s.inverter_type === 'Gen1Hybrid';
-      const hasExtendedSlots = !isGen1 && !isAcCoupled;
+      const isGen2 = s.inverter_type === 'Gen2Hybrid';
+      const isSingleSlot = isGen2; // Gen2 has only 1 charge/discharge slot
+      const hasExtendedSlots = !isGen2 && !isAcCoupled;
       const acCols = isAcCoupled ? 2 : 6;
       const CHG_ACCENT = 'var(--green)';
       const DIS_ACCENT = 'var(--orange)';
@@ -1110,9 +1130,9 @@
       el('schedule-display').innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(${acCols},1fr);gap:8px;margin-top:6px">
           ${slotHtml('Charge Slot 1',    sch.charge_slot_1_start,    sch.charge_slot_1_end,    sch.enable_charge,    '→ ', sch.charge_target_soc,    'var(--green)')}
-          ${isAcCoupled ? '' : slotHtml('Charge Slot 2',    sch.charge_slot_2_start,    sch.charge_slot_2_end,    false,                 '→ ', sch.charge_target_soc_2,  'var(--green)')}
+          ${isSingleSlot || isAcCoupled ? '' : slotHtml('Charge Slot 2',    sch.charge_slot_2_start,    sch.charge_slot_2_end,    false,                 '→ ', sch.charge_target_soc_2,  'var(--green)')}
           ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc, 'var(--orange)')}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, false,                 '↓ ', sch.discharge_target_soc_2,'var(--orange)')}
+          ${isSingleSlot || isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, false,                 '↓ ', sch.discharge_target_soc_2,'var(--orange)')}
           ${isAcCoupled ? '' : slotHtml('Pause Slot',       sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
             <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
@@ -1245,6 +1265,7 @@
             load_profile: el('load-profile').value,
             tick_interval: 1,
             inverter_type: inverterType,
+            ct_meter_installed: el('ct-meter-select').value === 'installed',
           }
         });
         updateDashboard(state);

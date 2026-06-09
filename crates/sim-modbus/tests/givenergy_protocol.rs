@@ -1610,6 +1610,7 @@ async fn ct_meter_slave_0x01_returns_meter_data_via_real_server() {
     let mut state = test_state();
     state.grid.power_w = 2400.0; // 2.4 kW import
     state.config.inverter_type = "ACCoupled".to_string();
+    state.config.ct_meter_installed = true;
     state.sync_battery_from_vec();
 
     let (addr, _store, _rx) = start_real_server_with_state(&state).await;
