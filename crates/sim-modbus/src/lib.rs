@@ -627,44 +627,132 @@ pub async fn run_modbus_server(
 // Standard Modbus TCP server for GivEVC (Electric Vehicle Charger)
 // ---------------------------------------------------------------------------
 // The EVC uses STANDARD Modbus TCP (NOT the proprietary GivEnergy framing).
-// It serves HR 0-119 on a separate port (default 8898).
+// It serves HR 0-114 (115 holding registers) on a configurable port
+// (default 5020 in the simulator; real GivEVC hardware uses port 502).
+//
+// The server accepts a port parameter and auto-falls back to 5020 if
+// binding to a privileged port (< 1024) fails with EACCES.
+//
+// Override with `GIVSIM_EVC_PORT=<port>` env var, or grant the capability:
+//   sudo setcap 'cap_net_bind_service=+ep' target/debug/sim-tauri
+//
+// Register map matches GivTCP evc.py / EVCLut.evc_lut.
+// Two standard reads cover the full map:
+//   read_holding_registers(0, 60)   // HR 0-59
+//   read_holding_registers(60, 55)  // HR 60-114
 
-const EVC_PORT: u16 = 8898;
+const EVC_REG_COUNT: u16 = 115;
 
 fn evc_state_to_registers(evc: &sim_models::EvcState) -> Vec<u16> {
-    let mut regs = vec![0u16; 120];
+    let mut regs = vec![0u16; EVC_REG_COUNT as usize];
+
+    // HR 0: Charging_State enum
     regs[0] = evc.charging_state;
-    regs[2] = evc.cable_status;
+    // HR 2: Connection_Status (0=Not Connected, 1=Connected)
+    regs[2] = evc.connection_status;
+    // HR 4: Error_Code
     regs[4] = evc.error_code;
-    regs[6] = (evc.current_l1 * 100.0) as u16;
-    regs[8] = (evc.current_l2 * 100.0) as u16;
-    regs[10] = (evc.current_l3 * 100.0) as u16;
+    // HR 6: Current_L1 (÷10 Amps)
+    regs[6] = evc.current_l1 as u16;
+    // HR 8: Current_L2 (÷10 Amps)
+    regs[8] = evc.current_l2 as u16;
+    // HR 10: Current_L3 (÷10 Amps)
+    regs[10] = evc.current_l3 as u16;
+    // HR 13: Active_Power (Watts)
     regs[13] = evc.active_power_w as u16;
-    regs[17] = (evc.active_power_w as u16).min(evc.charge_current_setting.saturating_mul(230));
-    regs[20] = 0;
-    regs[24] = 0;
-    regs[91] = evc.charge_current_setting;
-    regs[93] = evc.charge_control;
-    regs[95] = evc.charging_mode;
+    // HR 17: Active_Power_L1 (Watts)
+    regs[17] = evc.active_power_l1 as u16;
+    // HR 20: Active_Power_L2 (Watts)
+    regs[20] = evc.active_power_l2 as u16;
+    // HR 24: Active_Power_L3 (Watts)
+    regs[24] = evc.active_power_l3 as u16;
+    // HR 29: Meter_Energy (÷10 kWh)
+    regs[29] = (evc.meter_energy_kwh * 10.0) as u16;
+    // HR 32: Evse_Max_Current (Amps)
+    regs[32] = evc.evse_max_current;
+    // HR 34: Evse_Min_Current (Amps)
+    regs[34] = evc.evse_min_current;
+    // HR 36: Charge_Limit (÷10 Amps)
+    regs[36] = (evc.charge_limit * 10.0) as u16;
+    // HR 38-68: Serial_Number (ASCII, each register = one char, stop at 0)
+    let serial_bytes = evc.serial_number.as_bytes();
+    for (i, &b) in serial_bytes.iter().take(31).enumerate() {
+        regs[38 + i] = b as u16;
+    }
+    // HR 72: Charge_Session_Energy (kWh)
+    regs[72] = evc.session_energy_kwh as u16;
+    // HR 79: Charge_Session_Duration (seconds)
+    regs[79] = (evc.session_duration_secs & 0xFFFF) as u16;
+    // HR 93: Plug_and_Go (0=enable, 1=disable)
+    regs[93] = evc.plug_and_go;
+    // HR 94: Charge_Control (0=Ready, 1=Start, 2=Stop)
+    regs[94] = evc.charge_control;
+    // HR 109: Voltage_L1 (÷10 V)
+    regs[109] = (evc.voltage_l1 * 10.0) as u16;
+    // HR 111: Voltage_L2 (÷10 V)
+    regs[111] = (evc.voltage_l2 * 10.0) as u16;
+    // HR 113: Voltage_L3 (÷10 V)
+    regs[113] = (evc.voltage_l3 * 10.0) as u16;
+
     regs
 }
 
-fn registers_to_evc(_regs: &[u16], addr: u16, value: u16, evc: &mut sim_models::EvcState) {
+/// Attempt to bind a TCP listener to the given port.
+/// Returns `Ok(listener)` on success, or `Err((errno, msg))` on failure.
+async fn try_bind(port: u16) -> Result<tokio::net::TcpListener, (i32, String)> {
+    let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => Ok(listener),
+        Err(e) => {
+            let errno = e.raw_os_error().unwrap_or(0);
+            Err((errno, e.to_string()))
+        }
+    }
+}
+
+fn registers_to_evc(addr: u16, value: u16, evc: &mut sim_models::EvcState) {
     match addr {
-        91 => evc.charge_current_setting = value.clamp(6, 32),
-        93 => evc.charge_control = value.min(2),
-        95 => evc.charging_mode = value.min(2),
+        // HR 91: Charge current limit (raw, ×10 deci-Amps)
+        91 => evc.charge_current_limit = value.max(60), // min 6.0A
+        // HR 93: Plug and Go (0=enable, 1=disable)
+        93 => evc.plug_and_go = value.min(1),
+        // HR 95: Charge control (0=Ready, 1=Start, 2=Stop)
+        // Note: writes to HR 95 map to charge_control in our state
+        // (GivTCP uses HR 94 as read, HR 95 as write for charge_control)
+        95 => evc.charge_control = value.min(2),
+        // HR 97-102: System time — ignored in simulation (time is simulated)
+        97..=102 => { /* time writes ignored */ }
         _ => {}
     }
 }
 
-/// Run a standard Modbus TCP server for the EVC.
+/// Run a standard Modbus TCP server for the EVC on the given port.
+///
+/// If binding fails with EACCES (port < 1024 without CAP_NET_BIND_SERVICE),
+/// automatically falls back to 5020 with a warning.
 pub async fn run_evc_modbus_server(
     evc_state: std::sync::Arc<tokio::sync::Mutex<sim_models::EvcState>>,
+    port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let addr: std::net::SocketAddr = format!("0.0.0.0:{EVC_PORT}").parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("EVC Modbus TCP server (standard) listening on {addr}");
+    // Try the configured port. If EACCES (privileged port without
+    // CAP_NET_BIND_SERVICE), auto-fallback to 5020.
+    let listener = match try_bind(port).await {
+        Ok(l) => l,
+        Err((errno, msg)) => {
+            if errno == 13 && port < 1024 && std::env::var("GIVSIM_EVC_PORT").ok().is_none() {
+                tracing::warn!(
+                    "Cannot bind to port {port} (EACCES: {msg}), \
+                     falling back to 5020. Set GIVSIM_EVC_PORT to override, \
+                     or run: sudo setcap cap_net_bind_service=+ep target/debug/sim-tauri"
+                );
+                try_bind(5020)
+                    .await
+                    .map_err(|(_, m)| format!("Fallback bind failed: {m}"))?
+            } else {
+                return Err(format!("Cannot bind to port {port}: {msg} (errno={errno})").into());
+            }
+        }
+    };
 
     loop {
         let (mut stream, peer) = listener.accept().await?;
@@ -702,7 +790,7 @@ pub async fn run_evc_modbus_server(
                         }
                         let start = u16::from_be_bytes([buf[8], buf[9]]);
                         let count = u16::from_be_bytes([buf[10], buf[11]]);
-                        if count == 0 || count > 120 || start + count > 120 {
+                        if count == 0 || count > EVC_REG_COUNT || start + count > EVC_REG_COUNT {
                             let resp = build_evc_error(trans_id, unit_id, func, 0x02);
                             let _ = stream.write_all(&resp).await;
                             continue;
@@ -714,7 +802,7 @@ pub async fn run_evc_modbus_server(
                         let mut resp = Vec::with_capacity(9 + count as usize * 2);
                         resp.extend_from_slice(&trans_id.to_be_bytes());
                         resp.extend_from_slice(&0x0000u16.to_be_bytes());
-                        let payload_len = 2 + count as usize * 2;
+                        let payload_len = 3 + count as usize * 2;
                         resp.extend_from_slice(&(payload_len as u16).to_be_bytes());
                         resp.push(unit_id);
                         resp.push(func);
@@ -731,14 +819,14 @@ pub async fn run_evc_modbus_server(
                         }
                         let addr_r = u16::from_be_bytes([buf[8], buf[9]]);
                         let value = u16::from_be_bytes([buf[10], buf[11]]);
-                        if addr_r >= 120 {
+                        if addr_r >= EVC_REG_COUNT {
                             let resp = build_evc_error(trans_id, unit_id, func, 0x02);
                             let _ = stream.write_all(&resp).await;
                             continue;
                         }
                         {
                             let mut guard = evc.lock().await;
-                            registers_to_evc(&[], addr_r, value, &mut guard);
+                            registers_to_evc(addr_r, value, &mut guard);
                         }
                         // Echo response
                         let mut resp = Vec::with_capacity(12);
@@ -759,7 +847,7 @@ pub async fn run_evc_modbus_server(
                         }
                         let addr_r = u16::from_be_bytes([buf[8], buf[9]]);
                         let count = u16::from_be_bytes([buf[10], buf[11]]);
-                        if count == 0 || addr_r + count > 120 {
+                        if count == 0 || addr_r + count > EVC_REG_COUNT {
                             let resp = build_evc_error(trans_id, unit_id, func, 0x02);
                             let _ = stream.write_all(&resp).await;
                             continue;
@@ -770,7 +858,7 @@ pub async fn run_evc_modbus_server(
                                 let idx = 13 + i * 2;
                                 if idx + 1 < n {
                                     let v = u16::from_be_bytes([buf[idx], buf[idx + 1]]);
-                                    registers_to_evc(&[], addr_r + i as u16, v, &mut guard);
+                                    registers_to_evc(addr_r + i as u16, v, &mut guard);
                                 }
                             }
                         }

@@ -948,10 +948,10 @@ pub async fn start_simulation(
                         {
                             let evc_guard = evc_arc.lock().await;
                             e.state.evc.charge_control = evc_guard.charge_control;
-                            e.state.evc.charge_current_setting = evc_guard.charge_current_setting;
-                            e.state.evc.charging_mode = evc_guard.charging_mode;
+                            e.state.evc.charge_current_limit = evc_guard.charge_current_limit;
+                            e.state.evc.plug_and_go = evc_guard.plug_and_go;
                             e.state.evc.enabled = evc_guard.enabled;
-                            e.state.evc.cable_status = evc_guard.cable_status;
+                            e.state.evc.connection_status = evc_guard.connection_status;
                         }
                         e.tick();
                         {
@@ -1409,10 +1409,10 @@ pub async fn start_simulation(
                         {
                             let evc_guard = evc_arc.lock().await;
                             e.state.evc.charge_control = evc_guard.charge_control;
-                            e.state.evc.charge_current_setting = evc_guard.charge_current_setting;
-                            e.state.evc.charging_mode = evc_guard.charging_mode;
+                            e.state.evc.charge_current_limit = evc_guard.charge_current_limit;
+                            e.state.evc.plug_and_go = evc_guard.plug_and_go;
                             e.state.evc.enabled = evc_guard.enabled;
-                            e.state.evc.cable_status = evc_guard.cable_status;
+                            e.state.evc.connection_status = evc_guard.connection_status;
                         }
                         e.tick();
                         {
@@ -2031,58 +2031,50 @@ pub async fn set_evc_charge_control(state: State<'_, AppState>, mode: u16) -> Re
     Ok(())
 }
 
-/// Set the max charge current (Amps). Clamped to 6-32 A (typical EV range).
+/// Set the charge current limit (deci-Amps, ×10). Clamped to 60–320 (6.0–32.0 A).
 #[tauri::command]
-pub async fn set_evc_charge_current(state: State<'_, AppState>, amps: u16) -> Result<(), String> {
-    let amps = amps.clamp(6, 32);
+pub async fn set_evc_charge_current(
+    state: State<'_, AppState>,
+    deci_amps: u16,
+) -> Result<(), String> {
+    let deci_amps = deci_amps.clamp(60, 320);
     {
         let mut evc = state.evc_state.lock().await;
-        evc.charge_current_setting = amps;
+        evc.charge_current_limit = deci_amps;
     }
     let mut eng = state.engine.lock().await;
     if let Some(e) = eng.as_mut() {
-        e.state.evc.charge_current_setting = amps;
-    }
-    Ok(())
-}
-
-/// Set charging mode (0=Grid, 1=Hybrid, 2=Solar-only).
-#[tauri::command]
-pub async fn set_evc_charging_mode(state: State<'_, AppState>, mode: u16) -> Result<(), String> {
-    let mode = mode.min(2);
-    {
-        let mut evc = state.evc_state.lock().await;
-        evc.charging_mode = mode;
-    }
-    let mut eng = state.engine.lock().await;
-    if let Some(e) = eng.as_mut() {
-        e.state.evc.charging_mode = mode;
+        e.state.evc.charge_current_limit = deci_amps;
     }
     Ok(())
 }
 
 /// Simulate plugging / unplugging the charging cable.
+/// Sets connection_status (0=Not Connected, 1=Connected) and drives the
+/// charging state machine via EvcEngine.
 #[tauri::command]
 pub async fn set_evc_cable_status(state: State<'_, AppState>, status: u16) -> Result<(), String> {
     let status = status.min(1);
     {
         let mut evc = state.evc_state.lock().await;
-        evc.cable_status = status;
-        if status == 1 && evc.charging_state == 1 {
-            // Cable plugged → move from Idle (1) to Connected (2)
-            evc.charging_state = 2;
-        } else if status == 0 {
+        evc.connection_status = status;
+        if status == 0 {
             // Cable unplugged → back to Idle, reset power
             evc.charging_state = 1;
             evc.active_power_w = 0.0;
+            evc.active_power_l1 = 0.0;
+            evc.active_power_l2 = 0.0;
+            evc.active_power_l3 = 0.0;
             evc.current_l1 = 0.0;
             evc.current_l2 = 0.0;
             evc.current_l3 = 0.0;
+            evc.session_energy_kwh = 0.0;
+            evc.session_duration_secs = 0;
         }
     }
     let mut eng = state.engine.lock().await;
     if let Some(e) = eng.as_mut() {
-        e.state.evc.cable_status = status;
+        e.state.evc.connection_status = status;
     }
     Ok(())
 }
@@ -2091,6 +2083,26 @@ pub async fn set_evc_cable_status(state: State<'_, AppState>, status: u16) -> Re
 #[tauri::command]
 pub async fn get_evc_state(state: State<'_, AppState>) -> Result<sim_models::EvcState, String> {
     Ok(state.evc_state.lock().await.clone())
+}
+
+/// Set the EVC Modbus TCP port. Takes effect on next restart.
+#[tauri::command]
+pub async fn set_evc_port(state: State<'_, AppState>, port: u16) -> Result<(), String> {
+    if port == 0 {
+        return Err("Port must be >= 1".to_string());
+    }
+    {
+        let mut p = state.evc_port.lock().map_err(|e| e.to_string())?;
+        *p = port;
+    }
+    Ok(())
+}
+
+/// Get the current EVC Modbus TCP port.
+#[tauri::command]
+pub async fn get_evc_port(state: State<'_, AppState>) -> Result<u16, String> {
+    let port = state.evc_port.lock().map_err(|e| e.to_string())?;
+    Ok(*port)
 }
 
 // ---------------------------------------------------------------------------

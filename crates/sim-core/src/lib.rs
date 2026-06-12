@@ -1339,6 +1339,18 @@ impl DeviceModel for EnergyTracker {
 /// Simulates a GivEVC wallbox. Draws power from the grid when charging.
 /// State is stored in `state.evc`. Writes directly to `state.evc` and
 /// adds load to `state.grid.power_w` when charging.
+///
+/// State machine follows the GivTCP register map:
+/// - HR 0: charging_state (1=Idle, 2=Connected, 3=Starting, 4=Charging, ...)
+/// - HR 2: connection_status (0=Not Connected, 1=Connected)
+/// - HR 94: charge_control (0=Ready, 1=Start, 2=Stop)
+///
+/// Transition logic:
+///   Idle → Connected: cable plugged (connection_status set to 1)
+///   Connected → Starting: charge_control set to 1 (Start)
+///   Starting → Charging: next tick (instantaneous in sim)
+///   Charging → End of Charging: charge_control set to 2 (Stop)
+///   * → Idle: cable unplugged (connection_status set to 0)
 #[derive(Debug, Clone)]
 pub struct EvcEngine;
 
@@ -1357,46 +1369,128 @@ impl EvcEngine {
 impl DeviceModel for EvcEngine {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
         let evc = &mut state.evc;
-        if !evc.enabled || evc.charge_control != 1 {
-            // Not charging — ensure idle state
-            if evc.charging_state == 4 {
-                evc.charging_state = 1; // Idle
+
+        if !evc.enabled {
+            // EVC simulation disabled — stay idle
+            evc.charging_state = 1; // Idle
+            zero_power(evc);
+            return;
+        }
+
+        // State machine driven by connection_status and charge_control
+        match evc.charging_state {
+            // Idle — no cable connected
+            1 => {
+                zero_power(evc);
+                if evc.connection_status == 1 {
+                    evc.charging_state = 2; // → Connected
+                }
             }
-            evc.active_power_w = 0.0;
-            evc.current_l1 = 0.0;
-            evc.current_l2 = 0.0;
-            evc.current_l3 = 0.0;
-            return;
+            // Connected — cable plugged, waiting for start command
+            2 => {
+                zero_power(evc);
+                if evc.connection_status == 0 {
+                    evc.charging_state = 1; // → Idle (cable removed)
+                } else if evc.charge_control == 1 {
+                    evc.charging_state = 3; // → Starting
+                }
+            }
+            // Starting — brief transient state
+            3 => {
+                if evc.connection_status == 0 {
+                    evc.charging_state = 1;
+                    zero_power(evc);
+                } else if evc.charge_control == 2 {
+                    evc.charging_state = 6; // → End of Charging
+                    zero_power(evc);
+                } else {
+                    // Transition to Charging on next tick
+                    evc.charging_state = 4;
+                    start_charging(evc);
+                }
+            }
+            // Charging — actively drawing power
+            4 => {
+                if evc.connection_status == 0 {
+                    evc.charging_state = 1;
+                    zero_power(evc);
+                    evc.session_energy_kwh = 0.0;
+                    evc.session_duration_secs = 0;
+                } else if evc.charge_control == 2 {
+                    evc.charging_state = 6; // → End of Charging
+                    zero_power(evc);
+                } else {
+                    // Continue charging
+                    continue_charging(evc, ctx);
+                }
+            }
+            // End of Charging — cable still connected but stopped
+            6 => {
+                zero_power(evc);
+                if evc.connection_status == 0 {
+                    evc.charging_state = 1;
+                    evc.session_energy_kwh = 0.0;
+                    evc.session_duration_secs = 0;
+                } else if evc.charge_control == 1 {
+                    evc.charging_state = 3; // → Starting again
+                }
+            }
+            // Any other state → reset to Idle
+            _ => {
+                evc.charging_state = 1;
+                zero_power(evc);
+            }
         }
 
-        // Charging state machine
-        if evc.cable_status == 0 {
-            evc.charging_state = 1; // Idle — no cable
-            evc.active_power_w = 0.0;
-            evc.current_l1 = 0.0;
-            evc.current_l2 = 0.0;
-            evc.current_l3 = 0.0;
-            return;
+        // Add EVC load to grid import when charging
+        if evc.charging_state == 4 {
+            state.grid.power_w += evc.active_power_w;
         }
-
-        evc.charging_state = 4; // Charging
-
-        // Calculate power draw based on charge current setting and voltage
-        let voltage_v = 230.0; // Single-phase nominal UK voltage
-        let max_power_w = evc.charge_current_setting as f64 * voltage_v;
-        let dt_hours = ctx.dt_hours;
-
-        // Apply charging mode: Grid = full draw from grid
-        // In the sim, the EVC always draws from grid (simplified)
-        evc.active_power_w = max_power_w;
-        evc.current_l1 = evc.charge_current_setting as f64;
-
-        // Add EVC load to grid import
-        state.grid.power_w += max_power_w;
-
-        // Track energy dispensed
-        evc.energy_kwh += max_power_w / 1000.0 * dt_hours;
     }
+}
+
+fn zero_power(evc: &mut sim_models::EvcState) {
+    evc.active_power_w = 0.0;
+    evc.active_power_l1 = 0.0;
+    evc.active_power_l2 = 0.0;
+    evc.active_power_l3 = 0.0;
+    evc.current_l1 = 0.0;
+    evc.current_l2 = 0.0;
+    evc.current_l3 = 0.0;
+}
+
+fn start_charging(evc: &mut sim_models::EvcState) {
+    // Reset session tracking on new charge start
+    evc.session_energy_kwh = 0.0;
+    evc.session_duration_secs = 0;
+    apply_charge_power(evc);
+}
+
+fn continue_charging(evc: &mut sim_models::EvcState, ctx: &TickContext) {
+    apply_charge_power(evc);
+    // Accumulate session energy and duration
+    let dt_hours = ctx.dt_hours;
+    evc.session_energy_kwh += evc.active_power_w / 1000.0 * dt_hours;
+    evc.session_duration_secs += (dt_hours * 3600.0) as u64;
+    // Accumulate meter energy
+    evc.meter_energy_kwh += evc.active_power_w / 1000.0 * dt_hours;
+}
+
+fn apply_charge_power(evc: &mut sim_models::EvcState) {
+    // Charge current limit is in deci-Amps (÷10), clamped to hardware limits
+    let current_a = (evc.charge_current_limit as f64 / 10.0)
+        .clamp(evc.evse_min_current as f64, evc.evse_max_current as f64);
+    let voltage = evc.voltage_l1; // Use L1 voltage
+    // Single-phase charging: all power on L1
+    let power_w = current_a * voltage;
+    evc.current_l1 = current_a * 10.0; // Store in deci-Amps (÷10)
+    evc.current_l2 = 0.0;
+    evc.current_l3 = 0.0;
+    evc.active_power_l1 = power_w;
+    evc.active_power_l2 = 0.0;
+    evc.active_power_l3 = 0.0;
+    evc.active_power_w = power_w;
+    evc.charge_limit = current_a; // Reflect actual limit
 }
 
 // ---------------------------------------------------------------------------

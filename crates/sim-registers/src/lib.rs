@@ -2071,7 +2071,7 @@ impl RegisterStore {
             0u16
         };
         regs[30] = state_code << 8; // IR 90: status_1/status_2
-        regs[31] = 0; // IR 91: status_3/status_4
+        regs[31] = 0x0E10; // IR 91: status_3/status_4
         regs[32] = 0; // IR 92: status_5/status_6
         regs[33] = 0; // IR 93: status_7
         regs[34] = 0; // IR 94: warning_1/warning_2
@@ -7817,6 +7817,7 @@ mod tests {
             1,
             "IR 90 status_1 should indicate charging"
         );
+        assert_eq!(result[31], 0x0E10, "IR 91 status_3/status_4 default");
         assert_eq!(result[34], 0, "IR 94 warnings default healthy");
         let cap_design = ((result[26] as u32) << 16) | result[27] as u32;
         let cap_design2 = ((result[41] as u32) << 16) | result[42] as u32;

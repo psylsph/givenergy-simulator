@@ -33,6 +33,8 @@ pub struct AppState {
     pub pending_time_regs: Arc<std::sync::Mutex<[Option<u16>; 6]>>,
     /// EVC (Electric Vehicle Charger) state, shared with standard Modbus TCP server.
     pub evc_state: Arc<tokio::sync::Mutex<sim_models::EvcState>>,
+    /// EVC Modbus TCP port (default 5020).
+    pub evc_port: Arc<std::sync::Mutex<u16>>,
 }
 
 impl Default for AppState {
@@ -50,6 +52,7 @@ impl Default for AppState {
             battery_snapshot: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_time_regs: Arc::new(std::sync::Mutex::new([None; 6])),
             evc_state: Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default())),
+            evc_port: Arc::new(std::sync::Mutex::new(5020)),
         }
     }
 }

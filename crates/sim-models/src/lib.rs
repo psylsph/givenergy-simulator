@@ -884,38 +884,91 @@ impl From<&PlantState> for MeterState {
 // ---------------------------------------------------------------------------
 
 /// State of a GivEVC (Electric Vehicle Charger) wallbox.
-/// Communicates via STANDARD Modbus TCP (not proprietary GivEnergy framing).
+/// Communicates via STANDARD Modbus TCP on port 502 (not proprietary GivEnergy framing).
+///
+/// Register map matches GivTCP evc.py / EVCLut.evc_lut (115 holding registers, HR 0-114).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvcState {
+    /// Whether the EVC simulation is enabled. When false, the engine is idle
+    /// regardless of cable state or charge_control.
     pub enabled: bool,
+    /// HR 0: Charging state enum (0=Unknown, 1=Idle, 2=Connected, 3=Starting,
+    /// 4=Charging, 5=Startup Failure, 6=End of Charging, 7=System Failure,
+    /// 8=Scheduled, 9=Updating, 10=Unstable CP)
     pub charging_state: u16,
-    pub cable_status: u16,
+    /// HR 2: Connection status (0=Not Connected, 1=Connected)
+    pub connection_status: u16,
+    /// HR 4: Error code (0=Clear, 11=CP voltage abnormal, etc.)
     pub error_code: u16,
-    pub active_power_w: f64,
+    /// HR 6: L1 current in deci-Amps (÷10 for Amps)
     pub current_l1: f64,
+    /// HR 8: L2 current in deci-Amps (÷10 for Amps)
     pub current_l2: f64,
+    /// HR 10: L3 current in deci-Amps (÷10 for Amps)
     pub current_l3: f64,
-    pub charge_current_setting: u16,
+    /// HR 13: Active power total (Watts)
+    pub active_power_w: f64,
+    /// HR 17: Active power L1 (Watts)
+    pub active_power_l1: f64,
+    /// HR 20: Active power L2 (Watts)
+    pub active_power_l2: f64,
+    /// HR 24: Active power L3 (Watts)
+    pub active_power_l3: f64,
+    /// HR 29: Meter energy total (÷10 kWh)
+    pub meter_energy_kwh: f64,
+    /// HR 32: EVSE max current (hardware limit, typically 32A)
+    pub evse_max_current: u16,
+    /// HR 34: EVSE min current (hardware limit, typically 6A)
+    pub evse_min_current: u16,
+    /// HR 36: Charge limit in deci-Amps (÷10 for Amps)
+    pub charge_limit: f64,
+    /// HR 38-68: Serial number (ASCII, each register = one char)
+    pub serial_number: String,
+    /// HR 72: Charge session energy (kWh)
+    pub session_energy_kwh: f64,
+    /// HR 79: Charge session duration (seconds)
+    pub session_duration_secs: u64,
+    /// HR 93: Plug and Go (0=enable, 1=disable)
+    pub plug_and_go: u16,
+    /// HR 94 / write HR 91: Charge control (0=Ready, 1=Start, 2=Stop)
     pub charge_control: u16,
-    pub charging_mode: u16,
-    pub energy_kwh: f64,
+    /// Write HR 91: Charge current limit (raw, ×10 deci-Amps)
+    pub charge_current_limit: u16,
+    /// HR 109: Voltage L1 (÷10 V)
+    pub voltage_l1: f64,
+    /// HR 111: Voltage L2 (÷10 V)
+    pub voltage_l2: f64,
+    /// HR 113: Voltage L3 (÷10 V)
+    pub voltage_l3: f64,
 }
 
 impl Default for EvcState {
     fn default() -> Self {
         Self {
             enabled: false,
-            charging_state: 1,
-            cable_status: 0,
-            error_code: 0,
-            active_power_w: 0.0,
+            charging_state: 1,    // Idle
+            connection_status: 0, // Not Connected
+            error_code: 0,        // Clear
             current_l1: 0.0,
             current_l2: 0.0,
             current_l3: 0.0,
-            charge_current_setting: 16,
-            charge_control: 0,
-            charging_mode: 0,
-            energy_kwh: 0.0,
+            active_power_w: 0.0,
+            active_power_l1: 0.0,
+            active_power_l2: 0.0,
+            active_power_l3: 0.0,
+            meter_energy_kwh: 1234.5, // realistic cumulative total
+            evse_max_current: 32,
+            evse_min_current: 6,
+            charge_limit: 32.0, // 320 ÷ 10 = 32.0A
+            serial_number: "11288853538258".to_string(),
+            session_energy_kwh: 0.0,
+            session_duration_secs: 0,
+            plug_and_go: 0,            // enabled
+            charge_control: 0,         // Ready
+            charge_current_limit: 320, // 32.0A × 10
+            voltage_l1: 241.0,
+            voltage_l2: 241.0,
+            voltage_l3: 241.0,
         }
     }
 }

@@ -619,6 +619,47 @@
         <div class="faults" id="faults-list"></div>
       </div>
 
+      <!-- EVC (Electric Vehicle Charger) -->
+      <div class="card" id="evc-card">
+        <div class="card-label">🚗 EV Charger (GivEVC) — Port 5020</div>
+        <div id="evc-controls" style="font-size:12px">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Enabled</label>
+            <button id="evc-toggle" class="btn-mini" style="width:60px">OFF</button>
+            <span id="evc-state-label" style="color:var(--text-muted);margin-left:auto">Idle</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Cable</label>
+            <button id="evc-cable" class="btn-mini" style="width:60px">Unplugged</button>
+            <span id="evc-connection-label" style="color:var(--text-muted);font-size:11px">—</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Control</label>
+            <button id="evc-start" class="btn-mini" style="width:52px">▶ Start</button>
+            <button id="evc-stop" class="btn-mini" style="width:52px">■ Stop</button>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Current</label>
+            <input type="range" id="evc-current" min="6" max="32" step="1" value="32"
+              style="flex:1;height:14px;accent-color:var(--accent)">
+            <span id="evc-current-label" style="min-width:36px;text-align:right">32 A</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Port</label>
+            <input type="number" id="evc-port-input" min="1" max="65535" value="5020"
+              style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:12px">
+            <button id="evc-port-set" class="btn-mini" style="width:40px">Set</button>
+            <span id="evc-port-status" style="color:var(--text-muted);font-size:11px"></span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-top:4px">
+            <div class="batt-stat"><span>Power</span><span id="evc-power">0 W</span></div>
+            <div class="batt-stat"><span>Session</span><span id="evc-session">0.0 kWh</span></div>
+            <div class="batt-stat"><span>Duration</span><span id="evc-duration">0:00</span></div>
+            <div class="batt-stat"><span>Meter Total</span><span id="evc-meter">0.0 kWh</span></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Timeline -->
       <div class="bottom-row">
         <div class="charts">
@@ -739,6 +780,10 @@
     // Track slider interaction to avoid resetting slider mid-drag.
     // Use input/change events (not pointerdown) for reliable cross-browser support.
     let battSliding = false;
+    let evcSliding = false;
+    let evcSlideTimer = null;
+    let evcEnabled = false;
+    let evcCableConnected = false;
     let slideTimer = null;
     const socApplyTimers = new Map();
     const pendingSoc = new Map();
@@ -1028,6 +1073,47 @@
         el('faults-list').innerHTML = s.active_faults.map(f => `<span class="fault-badge">⚠️ ${f}</span>`).join('');
       } else {
         el('faults-card').style.display = 'none';
+      }
+
+      // EVC (Electric Vehicle Charger)
+      if (s.evc) {
+        el('evc-card').style.display = '';
+        const evc = s.evc;
+        // Keep local toggle state in sync
+        evcEnabled = evc.enabled;
+        evcCableConnected = evc.connection_status === 1;
+        // State label
+        const stateNames = ['Unknown','Idle','Connected','Starting','Charging','Startup Failure','End of Charging','System Failure','Scheduled','Updating','Unstable CP'];
+        const stLabel = stateNames[evc.charging_state] || `State ${evc.charging_state}`;
+        const stColor = evc.charging_state === 4 ? 'var(--green)' : evc.charging_state === 2 ? 'var(--accent)' : 'var(--text-muted)';
+        el('evc-state-label').textContent = stLabel;
+        el('evc-state-label').style.color = stColor;
+        // Toggle button
+        el('evc-toggle').textContent = evc.enabled ? 'ON' : 'OFF';
+        el('evc-toggle').style.background = evc.enabled ? 'var(--green)' : 'var(--card)';
+        el('evc-toggle').style.color = evc.enabled ? '#000' : 'var(--text)';
+        // Cable button
+        el('evc-cable').textContent = evc.connection_status === 1 ? 'Plugged' : 'Unplugged';
+        el('evc-cable').style.background = evc.connection_status === 1 ? 'var(--accent)' : 'var(--card)';
+        // Power
+        el('evc-power').textContent = evc.active_power_w > 0 ? fmt(evc.active_power_w) : '0 W';
+        el('evc-power').style.color = evc.charging_state === 4 ? 'var(--green)' : 'var(--text-muted)';
+        // Session energy
+        el('evc-session').textContent = evc.session_energy_kwh.toFixed(1) + ' kWh';
+        // Duration
+        const dur = evc.session_duration_secs || 0;
+        const durH = Math.floor(dur / 3600);
+        const durM = Math.floor((dur % 3600) / 60);
+        el('evc-duration').textContent = `${durH}:${String(durM).padStart(2,'0')}`;
+        // Meter total
+        el('evc-meter').textContent = evc.meter_energy_kwh.toFixed(1) + ' kWh';
+        // Current slider (deci-Amps → Amps display)
+        if (!evcSliding) {
+          el('evc-current').value = Math.round(evc.charge_current_limit / 10);
+          el('evc-current-label').textContent = Math.round(evc.charge_current_limit / 10) + ' A';
+        }
+      } else {
+        el('evc-card').style.display = 'none';
       }
 
       // Override indicator
@@ -1379,6 +1465,83 @@
         el('footer-info').textContent = `DSP firmware set to ${v}`;
       } catch (e) { console.error('set dsp fw failed:', e); }
     });
+
+    // EVC controls
+    el('evc-toggle').addEventListener('click', async () => {
+      evcEnabled = !evcEnabled;
+      try {
+        await invoke('set_evc_enabled', { enabled: evcEnabled });
+        el('evc-toggle').textContent = evcEnabled ? 'ON' : 'OFF';
+        el('evc-toggle').style.background = evcEnabled ? 'var(--green)' : 'var(--card)';
+        el('evc-toggle').style.color = evcEnabled ? '#000' : 'var(--text)';
+      } catch (e) { console.error('evc enabled failed:', e); evcEnabled = !evcEnabled; }
+    });
+
+    el('evc-cable').addEventListener('click', async () => {
+      evcCableConnected = !evcCableConnected;
+      const status = evcCableConnected ? 1 : 0;
+      try {
+        await invoke('set_evc_cable_status', { status });
+        el('evc-cable').textContent = evcCableConnected ? 'Plugged' : 'Unplugged';
+        el('evc-cable').style.background = evcCableConnected ? 'var(--accent)' : 'var(--card)';
+      } catch (e) { console.error('evc cable failed:', e); evcCableConnected = !evcCableConnected; }
+    });
+
+    el('evc-start').addEventListener('click', async () => {
+      try {
+        await invoke('set_evc_charge_control', { mode: 1 });
+      } catch (e) { console.error('evc start failed:', e); }
+    });
+
+    el('evc-stop').addEventListener('click', async () => {
+      try {
+        await invoke('set_evc_charge_control', { mode: 2 });
+      } catch (e) { console.error('evc stop failed:', e); }
+    });
+
+    el('evc-current').addEventListener('input', () => {
+      evcSliding = true;
+      if (evcSlideTimer) clearTimeout(evcSlideTimer);
+      evcSlideTimer = setTimeout(() => { evcSliding = false; }, 800);
+      const amps = parseInt(el('evc-current').value);
+      el('evc-current-label').textContent = amps + ' A';
+    });
+
+    el('evc-current').addEventListener('change', async () => {
+      const amps = parseInt(el('evc-current').value);
+      const deciAmps = amps * 10;
+      try {
+        await invoke('set_evc_charge_current', { deciAmps: deciAmps });
+      } catch (e) { console.error('evc current failed:', e); }
+      if (evcSlideTimer) clearTimeout(evcSlideTimer);
+      evcSliding = false;
+    });
+
+    // EVC port control
+    el('evc-port-set').addEventListener('click', async () => {
+      const port = parseInt(el('evc-port-input').value);
+      if (Number.isNaN(port) || port < 1 || port > 65535) {
+        el('evc-port-status').textContent = 'Invalid port';
+        return;
+      }
+      try {
+        await invoke('set_evc_port', { port });
+        el('evc-port-status').textContent = `Saved (restart to apply)`;
+      } catch (e) {
+        el('evc-port-status').textContent = 'Failed to set port';
+        console.error('set_evc_port failed:', e);
+      }
+    });
+
+    // Load current EVC port on startup
+    (async () => {
+      if (invoke) {
+        try {
+          const port = await invoke('get_evc_port');
+          el('evc-port-input').value = String(port);
+        } catch (e) { /* not critical */ }
+      }
+    })();
 
     // Faults
     const faultButtons = [

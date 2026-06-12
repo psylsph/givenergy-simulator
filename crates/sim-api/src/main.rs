@@ -1,6 +1,8 @@
 //! GivEnergy Plant Simulator — headless CLI.
 //!
+//! `giv-sim simulate --inverter Gen3Hybrid --batteries 2 --battery-size 9.5`
 //! `giv-sim run scenario.yaml`
+//! `giv-sim serve plant_state.json --modbus 0.0.0.0:8899`
 //!
 //! Outputs: JSON report, JUnit XML, CSV traces, JSONL recording.
 
@@ -31,7 +33,67 @@ struct PlantConfig {
 }
 
 #[derive(clap::Parser)]
-#[command(name = "giv-sim", version, about = "GivEnergy Plant Simulator")]
+#[command(
+    name = "giv-sim",
+    version,
+    about = "GivEnergy Plant Simulator",
+    long_about = "GivEnergy Plant Simulator — simulates a GivEnergy solar battery system.\
+\n\
+Run a headless simulation with the 'simulate' subcommand (starts Modbus server automatically).\
+\nRun a scenario YAML with 'run'. Load a saved plant config with 'serve'.\
+\n\
+\nINVERTER TYPES (use with --inverter):\
+\n  Gen1Hybrid          DTC 0x2001  5kW AC, 2.5kW battery\
+\n  Gen2Hybrid          DTC 0x2001  5kW AC, 3.6kW battery\
+\n  Gen3Hybrid          DTC 0x2001  5kW AC, 3.6kW battery (default)\
+\n  Gen3Hybrid8kW       DTC 0x2106  8kW AC, 8kW battery\
+\n  Gen3Hybrid10kW      DTC 0x2102  10kW AC, 10kW battery\
+\n  Gen3Plus6kW         DTC 0x2201  5kW AC, 2.6kW battery\
+\n  Gen3Plus4600        DTC 0x2202  4.6kW AC, 2.6kW battery\
+\n  Gen3Plus3600        DTC 0x2203  3.6kW AC, 2.6kW battery\
+\n  Gen3Plus6kW2        DTC 0x2204  6kW AC, 2.6kW battery\
+\n  ACCoupled           DTC 0x3001  3kW AC, 3kW battery\
+\n  ACCoupled2          DTC 0x3002  3kW AC, 3kW battery\
+\n  ThreePhase          DTC 0x4001  6kW AC, 6kW battery\
+\n  ThreePhase8kW       DTC 0x4002  8kW AC, 8kW battery\
+\n  ThreePhase10kW      DTC 0x4003  10kW AC, 10kW battery\
+\n  ThreePhase11kW      DTC 0x4004  11kW AC, 11kW battery\
+\n  AllInOne6           DTC 0x8001  6kW AC, 6kW battery\
+\n  AllInOne            DTC 0x8002  6kW AC, 6kW battery\
+\n  AllInOne5           DTC 0x8003  5kW AC, 5kW battery\
+\n  AIO8kW              DTC 0x8102  8kW AC, 8kW battery\
+\n  AIO10kW             DTC 0x8103  10kW AC, 10kW battery\
+\n  AIOHybrid6kW        DTC 0x8201  6kW AC, 6kW battery\
+\n  AIOHybrid8kW        DTC 0x8202  8kW AC, 8kW battery\
+\n  AIOHybrid10kW       DTC 0x8203  10kW AC, 10kW battery\
+\n\
+\nBATTERY SIZES (kWh, use with --battery-size):\
+\n  2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4\
+\n\
+\nBATTERY COUNT: 1–6 modules (use with --batteries)\
+\n\
+\nLOAD PROFILES (use with --load-profile):\
+\n  minimal    ~200W baseload\
+\n  family     Typical family usage pattern (default)\
+\n  ev         Family + EV charger pattern\
+\n  heatpump   Family + heat pump pattern\
+\n  <path>     Custom YAML file with {hour, watts} entries\
+\n\
+\nWEATHER (use with --weather):\
+\n  clear           Full sun\
+\n  partly-cloudy   Some cloud cover\
+\n  overcast        Heavy cloud cover\
+\n  storm           Very low solar generation\
+\n\
+\nEXAMPLES:\
+\n  giv-sim simulate --inverter Gen3Hybrid --batteries 2 --battery-size 9.5\
+\n  giv-sim simulate --inverter ThreePhase --batteries 3 --battery-size 13.6 \
+\n                   --soc 80 --solar-peak 8000 --load-level 1500\
+\n  giv-sim simulate --inverter AllInOne --modbus 0.0.0.0:8899\
+\n  giv-sim run scenario.yaml --modbus 0.0.0.0:8899 --output results/\
+\n  giv-sim serve plant_state.json --modbus 0.0.0.0:8899\
+\n  giv-sim replay recording.jsonl"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -39,6 +101,99 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Commands {
+    /// Start a headless simulation with auto-configured plant.
+    ///
+    /// Creates a plant from CLI parameters and starts ticking immediately.
+    /// The Modbus TCP server starts automatically on 0.0.0.0:8899 (override with --modbus).
+    /// Press Ctrl+C to stop and save the recording.
+    Simulate {
+        /// Inverter type name (see list above).
+        ///
+        /// Determines AC power limit, battery power limit, DTC code, and firmware versions.
+        #[arg(long, default_value = "Gen3Hybrid")]
+        inverter: String,
+
+        /// Number of battery modules (1–6).
+        ///
+        /// Each module gets the capacity specified by --battery-size.
+        /// Total capacity = modules × battery-size.
+        #[arg(long, default_value = "1")]
+        batteries: usize,
+
+        /// Battery module capacity in kWh.
+        ///
+        /// Supported sizes: 2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2,
+        /// 12.8, 13.6, 16.0, 17.0, 19.0, 20.4
+        /// Default: 9.5 kWh (GIV-BAT-9.5)
+        #[arg(long, default_value = "9.5")]
+        battery_size: f64,
+
+        /// Battery state of charge as a percentage (0–100).
+        ///
+        /// Sets the initial SOC for all battery modules.
+        #[arg(long, default_value = "50")]
+        soc: f64,
+
+        /// Solar PV peak capacity in watts.
+        ///
+        /// Determines maximum generation under ideal conditions.
+        /// The solar engine generates power based on time-of-day, latitude, and weather.
+        #[arg(long, default_value = "5000")]
+        solar_peak: f64,
+
+        /// House load level in watts (sets a fixed load override).
+        ///
+        /// When set, the load engine uses this constant demand instead of
+        /// the time-varying profile. Set to 0 to use the load profile instead.
+        #[arg(long, default_value = "0")]
+        load_level: f64,
+
+        /// Load profile for time-varying demand: minimal, family, ev, heatpump, or path to YAML.
+        ///
+        /// Ignored if --load-level is non-zero.
+        #[arg(long, default_value = "family")]
+        load_profile: String,
+
+        /// Weather condition: clear, partly-cloudy, overcast, storm.
+        #[arg(long, default_value = "clear")]
+        weather: String,
+
+        /// Site latitude in degrees (positive = north).
+        ///
+        /// Affects solar generation curve — higher latitudes have shorter winter days.
+        #[arg(long, default_value = "51.5")]
+        latitude: f64,
+
+        /// Start date (YYYY-MM-DD).
+        ///
+        /// Season affects solar generation (summer = longer days, winter = shorter).
+        #[arg(long, default_value = "2025-06-21")]
+        date: String,
+
+        /// Simulation tick interval in seconds.
+        ///
+        /// Each tick advances the simulation clock by this amount.
+        /// Smaller values = finer resolution but more CPU.
+        #[arg(long, default_value = "1")]
+        tick_interval: u64,
+
+        /// Modbus TCP server bind address.
+        ///
+        /// The GivEnergy proprietary Modbus protocol runs on this port.
+        /// Default: 0.0.0.0:8899
+        #[arg(long, default_value = "0.0.0.0:8899")]
+        modbus: SocketAddr,
+
+        /// Output directory for recording (JSONL + CSV). Created if it doesn't exist.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// PV array 2 peak capacity in watts (0 = single array).
+        ///
+        /// When > 0, solar generation splits 45% PV1 / 55% PV2.
+        #[arg(long, default_value = "0")]
+        pv2_peak: f64,
+    },
     /// Run a scenario YAML file.
     Run {
         /// Path to the scenario file.
@@ -65,7 +220,7 @@ enum Commands {
         /// Output directory for reports and traces.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Number of battery modules (1–3).
+        /// Number of battery modules (1–6).
         #[arg(long, default_value = "1")]
         battery_count: usize,
         /// Also launch a Modbus TCP server on this address.
@@ -92,12 +247,109 @@ enum Commands {
         #[arg(long, default_value = "1")]
         tick_interval: u64,
         /// Modbus TCP server address.
-        #[arg(long)]
+        #[arg(long, default_value = "0.0.0.0:8899")]
         modbus: SocketAddr,
         /// Output directory for recording frames.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Inverter configuration helpers
+// ---------------------------------------------------------------------------
+
+/// Battery sizes supported by GivEnergy (kWh).
+const BATTERY_SIZES: [f64; 14] = [
+    2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4,
+];
+
+/// Find the nearest supported battery size to the requested value.
+fn nearest_battery_size(requested: f64) -> f64 {
+    *BATTERY_SIZES
+        .iter()
+        .min_by(|a, b| {
+            ((*a - requested).abs())
+                .partial_cmp(&((*b - requested).abs()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(&9.5)
+}
+
+/// Max battery power (W) per inverter type. Mirrors sim-tauri commands.rs.
+fn max_batt_w_for_inverter(inv_type: &str) -> f64 {
+    match inv_type {
+        "Gen1Hybrid" => 2500.0,
+        "Gen2Hybrid" => 3600.0,
+        "Gen3Hybrid" => 3600.0,
+        "Gen3Hybrid8kW" => 8000.0,
+        "Gen3Hybrid10kW" => 10000.0,
+        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 2600.0,
+        "ACCoupled" | "ACCoupled2" => 3000.0,
+        "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
+        "AllInOne6" | "AllInOne" => 6000.0,
+        "AllInOne5" => 5000.0,
+        "AIO8kW" => 8000.0,
+        "AIO10kW" => 10000.0,
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
+        _ => 3600.0,
+    }
+}
+
+/// Max AC power (W) per inverter type. Mirrors sim-tauri commands.rs.
+fn max_ac_w_for_inverter(inv_type: &str) -> f64 {
+    match inv_type {
+        "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" => 5000.0,
+        "Gen3Hybrid8kW" => 8000.0,
+        "Gen3Hybrid10kW" => 10000.0,
+        "Gen3Plus6kW" => 5000.0,
+        "Gen3Plus4600" => 4600.0,
+        "Gen3Plus3600" => 3600.0,
+        "Gen3Plus6kW2" => 6000.0,
+        "ACCoupled" | "ACCoupled2" => 3000.0,
+        "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
+        "AllInOne6" | "AllInOne" => 6000.0,
+        "AllInOne5" => 5000.0,
+        "AIO8kW" => 8000.0,
+        "AIO10kW" => 10000.0,
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
+        _ => 5000.0,
+    }
+}
+
+/// DSP firmware version per inverter type.
+fn dsp_firmware_for_inverter(inv_type: &str) -> u16 {
+    match inv_type {
+        "Gen1Hybrid" => 110,
+        "Gen2Hybrid" => 230,
+        "Gen3Hybrid" => 449,
+        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
+        "ACCoupled" | "ACCoupled2" => 305,
+        "ThreePhase" | "ThreePhase8kW" | "ThreePhase10kW" => 612,
+        "ThreePhase11kW" => 11043,
+        "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
+        "AIO8kW" | "AIO10kW" => 1010,
+        "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
+        _ => 449,
+    }
+}
+
+/// Apply inverter-type configuration to a PlantState.
+fn configure_inverter(state: &mut PlantState, inv_type: &str) {
+    state.config.inverter_type = inv_type.to_string();
+    state.config.max_ac_watts = max_ac_w_for_inverter(inv_type);
+    state.inverter.export_limit_w = state.config.max_ac_watts * 0.72;
+    state.inverter.dsp_firmware_version = dsp_firmware_for_inverter(inv_type);
 }
 
 fn parse_weather(s: &str) -> WeatherCondition {
@@ -279,6 +531,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Simulate {
+            inverter,
+            batteries,
+            battery_size,
+            soc,
+            solar_peak,
+            load_level,
+            load_profile,
+            weather,
+            latitude,
+            date,
+            tick_interval,
+            modbus,
+            output,
+            pv2_peak,
+        } => {
+            simulate(
+                &inverter,
+                batteries,
+                battery_size,
+                soc,
+                solar_peak,
+                load_level,
+                &load_profile,
+                &weather,
+                latitude,
+                &date,
+                tick_interval,
+                modbus,
+                output.as_deref(),
+                pv2_peak,
+            )
+            .await
+        }
         Commands::Run {
             scenario,
             tick_interval,
@@ -317,6 +603,235 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
         } => serve_config(&config, tick_interval, modbus, output.as_deref()).await,
     }
+}
+
+/// Start a headless simulation from CLI parameters.
+///
+/// Creates a plant with the given configuration and starts ticking.
+/// The Modbus TCP server starts automatically. Runs until Ctrl+C.
+#[allow(clippy::too_many_arguments)]
+async fn simulate(
+    inv_type: &str,
+    battery_count: usize,
+    battery_size: f64,
+    soc: f64,
+    solar_peak: f64,
+    load_level: f64,
+    load_profile: &str,
+    weather: &str,
+    latitude: f64,
+    date: &str,
+    tick_interval: u64,
+    modbus_addr: SocketAddr,
+    output_dir: Option<&std::path::Path>,
+    pv2_peak: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let battery_count = battery_count.clamp(1, 6);
+    let soc = soc.clamp(0.0, 100.0);
+    let actual_battery_size = nearest_battery_size(battery_size);
+
+    if (actual_battery_size - battery_size).abs() > 0.01 {
+        tracing::info!(
+            "Battery size {battery_size} kWh rounded to nearest supported size: {actual_battery_size} kWh"
+        );
+    }
+
+    let max_batt_w = max_batt_w_for_inverter(inv_type);
+    let max_batt_kw = max_batt_w / 1000.0;
+    let per_module_max_kw = max_batt_kw / battery_count as f64;
+    // C-rate of 0.7 continuous for LFP modules
+    let c_rate_max_kw = actual_battery_size * 0.7;
+    let module_max_kw = per_module_max_kw.min(c_rate_max_kw).min(10.0);
+
+    let start_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
+    let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap();
+
+    // Build battery modules
+    let mut state = PlantState::with_battery_count(start_ts, battery_count);
+    for b in &mut state.batteries {
+        b.soc_percent = soc;
+        b.capacity_kwh = actual_battery_size;
+        b.nominal_capacity_kwh = actual_battery_size;
+        b.max_charge_kw = module_max_kw;
+        b.max_discharge_kw = module_max_kw;
+    }
+    state.sync_battery_from_vec();
+
+    // Configure inverter
+    configure_inverter(&mut state, inv_type);
+    state.config.solar_peak_watts = solar_peak;
+    state.config.latitude = latitude;
+    state.config.tick_interval_secs = tick_interval;
+    state.config.pv2_peak_watts = pv2_peak;
+    state.weather = format!("{:?}", parse_weather(weather));
+    state.energy_totals.seed_for_testing_if_zero();
+
+    // Apply load override if specified
+    if load_level > 0.0 {
+        state.load_override = Some(load_level);
+    }
+
+    let load_profile = parse_profile(load_profile);
+    let initial_schedule = sim_models::Schedule::default();
+    let devices: Vec<Box<dyn DeviceModel>> = vec![
+        Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
+        Box::new(SolarEngine::new(solar_peak, latitude)),
+        Box::new(LoadEngine::new(load_profile)),
+        Box::new(InverterEngine::new()),
+        Box::new(FaultEngine::new()),
+        Box::new(BatteryEngine::new()),
+        Box::new(sim_core::EvcEngine::new()),
+        Box::new(sim_core::EnergyTracker::new()),
+    ];
+    let mut engine = SimulationEngine::new(state, devices, tick_interval);
+    let mut schedule_opt: Option<sim_models::Schedule> = Some(initial_schedule);
+
+    let reg_cat = sim_registers::default_register_catalogue();
+    let mut reg_store = sim_registers::RegisterStore::new(reg_cat);
+
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut recording: Vec<RecordingFrame> = Vec::new();
+
+    let total_capacity = actual_battery_size * battery_count as f64;
+    let max_ac_w = max_ac_w_for_inverter(inv_type);
+    tracing::info!("Starting GivEnergy Plant Simulator");
+    tracing::info!("  Inverter:       {inv_type} ({max_ac_w:.0}W AC, {max_batt_w:.0}W battery)");
+    tracing::info!(
+        "  Batteries:      {battery_count} × {actual_battery_size} kWh = {total_capacity:.1} kWh total"
+    );
+    tracing::info!("  Initial SOC:    {soc:.0}%");
+    let pv2_info = if pv2_peak > 0.0 {
+        format!(" + PV2 {pv2_peak:.0}W")
+    } else {
+        String::new()
+    };
+    tracing::info!("  Solar PV:       {solar_peak:.0}W peak{pv2_info}");
+    if load_level > 0.0 {
+        tracing::info!("  House load:     {load_level:.0}W (fixed override)");
+    } else {
+        tracing::info!("  House load:     profile-based");
+    }
+    tracing::info!("  Weather:        {:?}", parse_weather(weather));
+    tracing::info!("  Latitude:       {latitude}°");
+    tracing::info!("  Start date:     {date}");
+    tracing::info!("  Tick interval:  {tick_interval}s");
+    tracing::info!("  Modbus server:  {modbus_addr}");
+
+    // Initial register projection
+    reg_store.project_from_state(&engine.state);
+
+    // Start Modbus TCP server
+    let store = Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
+    let server_store = store.clone();
+    let battery_shared = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let batt_server = battery_shared.clone();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Err(e) =
+            sim_modbus::run_modbus_server(modbus_addr, server_store, cmd_tx, batt_server).await
+        {
+            tracing::error!("Modbus server error: {e}");
+        }
+    });
+    tracing::info!("Modbus TCP server running on {modbus_addr}");
+    tracing::info!("Simulation running... Press Ctrl+C to stop.");
+
+    let mut tick_count: u64 = 0;
+    let start = std::time::Instant::now();
+
+    loop {
+        // Drain Modbus write commands
+        let mut sched_updates: std::collections::HashMap<u16, u16> =
+            std::collections::HashMap::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if is_schedule_register(cmd.address) {
+                sched_updates.insert(cmd.address, cmd.value);
+            } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
+                engine.enqueue(sim_cmd);
+            }
+        }
+
+        // Apply schedule updates
+        if !sched_updates.is_empty() {
+            let mut sched = schedule_opt.clone().unwrap_or_default();
+            apply_schedule_updates(&mut sched, &sched_updates);
+            engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
+            schedule_opt = Some(sched);
+        }
+
+        engine.tick();
+        tick_count += 1;
+
+        reg_store.project_from_state(&engine.state);
+        if let Ok(mut ms) = store.try_lock() {
+            ms.project_from_state(&engine.state);
+            if let Some(ref sched) = schedule_opt {
+                ms.project_schedule_for(sched, &engine.state.config.inverter_type);
+            }
+        }
+        // Update battery snapshot for Modbus BMS reads
+        if let Ok(mut bs) = battery_shared.try_lock() {
+            *bs = engine.state.batteries.clone();
+        }
+
+        recording.push(RecordingFrame {
+            timestamp: engine.state.timestamp,
+            plant_state: engine.state.clone(),
+            register_snapshot: reg_store.snapshot(),
+        });
+
+        if tick_count.is_multiple_of(1000) {
+            let elapsed = start.elapsed();
+            let soc_now = engine.state.aggregate_soc();
+            tracing::info!(
+                "[{tick_count}] tick/s={:.0} SOC={soc_now:.1}% solar={:.0}W load={:.0}W grid={:.0}W batt={:.0}W",
+                tick_count as f64 / elapsed.as_secs_f64().max(0.001),
+                engine.state.solar.generation_w,
+                engine.state.load.demand_w,
+                engine.state.grid.power_w,
+                engine.state.total_battery_power_kw() * 1000.0,
+            );
+        }
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Shutdown requested. Saving output...");
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+    }
+
+    let elapsed = start.elapsed();
+    let final_soc = engine.state.aggregate_soc();
+    tracing::info!(
+        "Simulation ran for {:.1}s ({tick_count} ticks, avg {:.0} tick/s). Final SOC={final_soc:.1}%",
+        elapsed.as_secs_f64(),
+        tick_count as f64 / elapsed.as_secs_f64().max(0.001),
+    );
+
+    if let Some(dir) = output_dir {
+        let jsonl_path = dir.join("simulate.jsonl");
+        let mut f = std::fs::File::create(&jsonl_path)?;
+        for frame in &recording {
+            write_frame(&mut f, frame)?;
+        }
+        tracing::info!(
+            "Recording: {} ({} frames)",
+            jsonl_path.display(),
+            recording.len()
+        );
+
+        let csv_path = dir.join("simulate.csv");
+        let mut f = std::fs::File::create(&csv_path)?;
+        write_csv(&mut f, &recording)?;
+        tracing::info!("CSV traces: {}", csv_path.display());
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

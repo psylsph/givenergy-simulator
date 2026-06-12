@@ -351,13 +351,18 @@ Battery sizes: `BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | 8899 | GivEnergy proprietary Modbus TCP (with envelope) | Inverter + battery + grid registers |
-| 8898 | Standard Modbus TCP (no envelope) | GivEVC wallbox (HR 0-119) |
+| 5020 | Standard Modbus TCP (no envelope) | GivEVC wallbox (HR 0-114, configurable in UI or via `GIVSIM_EVC_PORT`) |
 | 1420 | HTTP | Tauri dev server (UI) |
 
 ### Dongle heartbeat
 The simulator acts as the dongle. It sends heartbeat requests (func 0x01, 8-byte
 frame `59 59 00 01 00 02 01 01`) every 3 minutes per TCP connection. The client
 must echo the frame back. After 3 unanswered heartbeats the connection is closed.
+
+### EVC port
+Port 5020 is the default (non-privileged). The real GivEVC hardware
+uses port 502 (which requires root or `CAP_NET_BIND_SERVICE` on Linux).
+Set the port in the UI's EVC card, or set `GIVSIM_EVC_PORT=502` env var.
 
 ## Slot maps (per `givenergy-modbus` reference)
 | Inverter class | Charge slots (start,end) | Discharge slots (start,end) |
@@ -397,3 +402,4 @@ The `project_schedule_for` method writes to the correct address based on inverte
 - v0.14.4: 245
 - v0.14.5: 258
 - v0.15.0: 263
+- v0.16.0: 362

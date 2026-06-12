@@ -34,7 +34,9 @@ pub fn run() {
         battery_snapshot: battery_snapshot.clone(),
         pending_time_regs: pending_time_regs.clone(),
         evc_state: evc_state.clone(),
+        evc_port: Arc::new(std::sync::Mutex::new(5020)),
     };
+    let evc_port_arc = app_state.evc_port.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -64,9 +66,10 @@ pub fn run() {
             commands::set_evc_enabled,
             commands::set_evc_charge_control,
             commands::set_evc_charge_current,
-            commands::set_evc_charging_mode,
             commands::set_evc_cable_status,
             commands::get_evc_state,
+            commands::set_evc_port,
+            commands::get_evc_port,
             commands::set_dsp_firmware,
             commands::set_arm_firmware,
             commands::set_ct_meter,
@@ -189,8 +192,10 @@ pub fn run() {
                 }
             });
             // Start EVC standard Modbus TCP server
+            let evc_port = evc_port_arc.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = sim_modbus::run_evc_modbus_server(evc).await {
+                let port = *evc_port.lock().unwrap();
+                if let Err(e) = sim_modbus::run_evc_modbus_server(evc, port).await {
                     tracing::error!("EVC Modbus server error: {e}");
                 }
             });
