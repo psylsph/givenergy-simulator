@@ -269,8 +269,14 @@ impl RegisterStore {
                     0.0
                 }),
                 "ge_ir_n_bus_voltage" => Some(0.0),
-                // IR 5: Grid voltage (×0.1 V)
-                "ge_ir_grid_voltage" => Some(240.0),
+                // IR 5: Grid voltage (×0.1 V). Zero when grid disconnected.
+                "ge_ir_grid_voltage" => {
+                    if state.grid.connected {
+                        Some(240.0)
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 // IR 6-7: Battery throughput total (uint32, ×0.1 kWh)
                 "ge_ir_battery_throughput_high" | "ge_ir_battery_throughput_low" => {
                     let total: f64 = state.batteries.iter().map(|b| b.throughput_kwh).sum();
@@ -292,8 +298,14 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                // IR 13: Grid frequency (×0.01 Hz)
-                "ge_ir_grid_frequency" => Some(50.0),
+                // IR 13: Grid frequency (×0.01 Hz). Zero when grid disconnected.
+                "ge_ir_grid_frequency" => {
+                    if state.grid.connected {
+                        Some(50.0)
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 // IR 14-16: status/bus/power-factor telemetry
                 "ge_ir_charge_status" => Some(if state.total_battery_power_kw() > 0.01 {
                     1.0
@@ -405,7 +417,13 @@ impl RegisterStore {
                 "ge_ir_inverter_temperature" => Some(state.inverter.temperature_celsius),
                 // IR 42-43: house load and inverter terminal apparent power
                 "ge_ir_load_demand" => Some(state.load.demand_w),
-                "ge_ir_grid_apparent" => Some(state.inverter.ac_power_w.abs()),
+                "ge_ir_grid_apparent" => {
+                    if state.grid.connected {
+                        Some(state.inverter.ac_power_w.abs())
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 // IR 44: Inverter AC output energy today (×0.1 kWh).
                 // GivTCP baseinverter.py: IR(44) = e_inverter_out_day.
                 // For hybrid inverters this differs from solar by battery-discharge contribution.
@@ -467,7 +485,13 @@ impl RegisterStore {
                         0.0
                     },
                 ),
-                "ge_ir_grid_port_current" => Some(state.inverter.ac_power_w.abs() / 240.0),
+                "ge_ir_grid_port_current" => {
+                    if state.grid.connected {
+                        Some(state.inverter.ac_power_w.abs() / 240.0)
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 // IR 59: Battery SOC (%)
                 "ge_ir_battery_soc" => Some(state.aggregate_soc()),
                 // IR 180-183: model-dependent battery energy alt sources
@@ -496,7 +520,9 @@ impl RegisterStore {
                 // Three-phase: balanced split across all 3 phases.
                 // ================================================================
                 "meter_v_phase_1" | "meter_v_phase_2" | "meter_v_phase_3" => {
-                    if is_three_phase || def.name.ends_with('1') {
+                    if !state.grid.connected {
+                        Some(0.0)
+                    } else if is_three_phase || def.name.ends_with('1') {
                         Some(240.0)
                     } else {
                         Some(0.0)
@@ -1365,24 +1391,36 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_v_ac1" | "tph_ir_v_ac2" | "tph_ir_v_ac3" => {
-                    if is_three_phase {
+                    if !state.grid.connected {
+                        Some(0.0)
+                    } else if is_three_phase {
                         Some(grid_v_ll) // line-to-line
                     } else {
                         Some(240.0)
                     }
                 }
                 "tph_ir_i_ac1" | "tph_ir_i_ac2" | "tph_ir_i_ac3" => {
-                    // Per-phase current.
-                    // Single-phase: inverter throughput / V_PN / 3.
-                    // Three-phase (CT display): grid current per phase = grid_power / 3 / V_PN.
-                    let i = if is_three_phase {
-                        state.grid.power_w.abs() / 3.0 / 240.0
+                    if !state.grid.connected {
+                        Some(0.0)
                     } else {
-                        state.inverter.ac_power_w.abs() / 240.0 / 3.0
-                    };
-                    Some(i)
+                        // Per-phase current.
+                        // Single-phase: inverter throughput / V_PN / 3.
+                        // Three-phase (CT display): grid current per phase = grid_power / 3 / V_PN.
+                        let i = if is_three_phase {
+                            state.grid.power_w.abs() / 3.0 / 240.0
+                        } else {
+                            state.inverter.ac_power_w.abs() / 240.0 / 3.0
+                        };
+                        Some(i)
+                    }
                 }
-                "tph_ir_f_ac1" => Some(50.0),
+                "tph_ir_f_ac1" => {
+                    if state.grid.connected {
+                        Some(50.0)
+                    } else {
+                        Some(0.0)
+                    }
+                }
                 "tph_ir_power_factor" => Some(10000.0),
                 "tph_ir_p_inverter_out_high" | "tph_ir_p_inverter_out_low" => {
                     let (hi, lo) = i32_words(state.inverter.ac_power_w, 0.1);
