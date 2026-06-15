@@ -440,6 +440,11 @@ pub struct PlantConfig {
     /// aio1 serial @ 1841-1845). Only meaningful for gateway inverters.
     #[serde(default = "default_gateway_fw_version")]
     pub gateway_fw_version: u16,
+    /// Number of parallel AIO units behind the Gateway (1-3).
+    /// Controls how the battery stack is partitioned into per-AIO registers.
+    /// Only meaningful for gateway inverters.
+    #[serde(default = "default_parallel_aio_num")]
+    pub parallel_aio_num: u16,
 }
 
 fn default_inverter_type() -> String {
@@ -463,6 +468,9 @@ fn default_true() -> bool {
 fn default_gateway_fw_version() -> u16 {
     9
 }
+fn default_parallel_aio_num() -> u16 {
+    1
+}
 
 impl Default for PlantConfig {
     fn default() -> Self {
@@ -475,6 +483,7 @@ impl Default for PlantConfig {
             pv2_peak_watts: 0.0,
             ct_meter_installed: true,
             gateway_fw_version: 9,
+            parallel_aio_num: 1,
         }
     }
 }

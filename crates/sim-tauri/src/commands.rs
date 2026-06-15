@@ -171,6 +171,11 @@ pub async fn create_plant(
     plant_state.config.pv2_peak_watts = params.pv2_peak_watts.unwrap_or(0.0);
     plant_state.config.inverter_type = inv_type.to_string();
     plant_state.config.ct_meter_installed = params.ct_meter_installed.unwrap_or(true);
+    // Gateway: derive parallel_aio_num from battery count (1 AIO per 3 modules)
+    if inv_type.starts_with("Gateway") {
+        let n = plant_state.batteries.len();
+        plant_state.config.parallel_aio_num = (n as u16).div_ceil(3).clamp(1, 3);
+    }
     // Default DSP firmware per inverter type. Matches typical real-world values.
     plant_state.inverter.dsp_firmware_version = match inv_type {
         "Gen1Hybrid" => 110,

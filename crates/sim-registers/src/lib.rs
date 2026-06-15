@@ -1824,11 +1824,11 @@ impl RegisterStore {
         set(1623, 0); // gateway_fault_codes lo
         set(1624, deci(line_v)); // v_grid_relay
         set(1625, deci(line_v)); // v_inverter_relay
-        // first_inverter_serial_number (IR 1627-1631) = "SA24230001"
-        let aio_serial = b"SA24230001";
+        // first_inverter_serial_number (IR 1627-1631) = AIO1 serial
+        let aio1_serial = make_aio_serial(0);
         for i in 0..5usize {
-            let hi = aio_serial[2 * i];
-            let lo = aio_serial[2 * i + 1];
+            let hi = aio1_serial[2 * i];
+            let lo = aio1_serial[2 * i + 1];
             set(1627 + i as u16, (hi as u16) << 8 | lo as u16);
         }
 
@@ -1863,8 +1863,9 @@ impl RegisterStore {
         set(1657, l); // e_load_total
 
         // 4.4 AIO summary — IR 1700-1704 ----------------------------------
-        set(1700, 1); // parallel_aio_num (single-AIO)
-        set(1701, 1); // parallel_aio_online_num
+        let num_aio = state.config.parallel_aio_num.clamp(1, 3) as usize;
+        set(1700, num_aio as u16); // parallel_aio_num
+        set(1701, num_aio as u16); // parallel_aio_online_num (all online)
         set(1702, i16_word(aio_power_w)); // p_aio_total (signed)
         // aio_state: 1 = charging, 2 = discharging, 0 = idle
         let batt_kw = state.total_battery_power_kw();
@@ -1878,67 +1879,126 @@ impl RegisterStore {
         set(1703, aio_state);
         set(1704, 100); // battery_firmware_version
 
-        // 4.5 / 4.6 Per-AIO charge (daily + total) — IR 1705-1713 ----------
-        // Single-AIO: AIO1 carries the figures; AIO2/AIO3 stay zero.
-        set(1705, deci(et.battery_charge_kwh)); // e_aio1_charge_today
-        let (h, l) = u32_words(et.battery_charge_kwh, 0.1);
-        set(1706, h);
-        set(1707, l); // e_aio1_charge_total
-        set(1708, 0); // e_aio2_charge_today
-        set(1709, 0);
-        set(1710, 0);
-        set(1711, 0); // e_aio3_charge_today
-        set(1712, 0);
-        set(1713, 0);
+        // Per-AIO data: distribute battery data evenly across N AIO units.
+        // Since the PlantState models one shared battery stack, each AIO
+        // gets an equal fraction of the aggregate SOC / power / energy.
+        let per_aio_power_w = aio_power_w / num_aio as f64;
+        let per_aio_charge_kwh = et.battery_charge_kwh / num_aio as f64;
+        let per_aio_discharge_kwh = et.battery_discharge_kwh / num_aio as f64;
+        let battery_charge_total = et.battery_charge_kwh; // aggregate
+        let battery_discharge_total = et.battery_discharge_kwh; // aggregate
+        let per_aio_charge_total = battery_charge_total / num_aio as f64;
+        let per_aio_discharge_total = battery_discharge_total / num_aio as f64;
+        let soc = state.aggregate_soc(); // all AIOs share the same SoC
 
-        // 4.7 / 4.8 Per-AIO discharge (daily + total) — IR 1750-1758 -------
-        set(1750, deci(et.battery_discharge_kwh)); // e_aio1_discharge_today
-        let (h, l) = u32_words(et.battery_discharge_kwh, 0.1);
-        set(1751, h);
-        set(1752, l); // e_aio1_discharge_total
-        set(1753, 0);
-        set(1754, 0);
-        set(1755, 0);
-        set(1756, 0);
-        set(1757, 0);
-        set(1758, 0);
+        // V1/V2 AIO serial address bases.
+        fn aio_serial_addrs(aio_idx: usize, is_v2: bool) -> u16 {
+            if is_v2 {
+                match aio_idx {
+                    0 => 1841,
+                    1 => 1848,
+                    2 => 1855,
+                    _ => 1841,
+                }
+            } else {
+                match aio_idx {
+                    0 => 1831,
+                    1 => 1838,
+                    2 => 1845,
+                    _ => 1831,
+                }
+            }
+        }
 
-        // 4.9 Battery aggregate energy + per-AIO SOC — IR 1795-1803 -------
-        set(1795, deci(et.battery_charge_kwh)); // e_battery_charge_today
-        let (h, l) = u32_words(et.battery_charge_kwh, 0.1);
+        // Generate a unique 10-char Latin-1 serial for each AIO.
+        // "SA24230001", "SA24230002", "SA24230003" mirror real GivEnergy
+        // serial shapes (AAYYWW + sequential suffix).
+        fn make_aio_serial(aio_idx: usize) -> [u8; 10] {
+            let suffix = aio_idx + 1;
+            let s = format!("SA2423{suffix:04}");
+            let mut buf = [b' '; 10];
+            let bytes = s.as_bytes();
+            for (i, &b) in bytes.iter().enumerate().take(10) {
+                buf[i] = b;
+            }
+            buf
+        }
+
+        // Shared SOC for all AIOs (single stack model)
+        for aio_i in 0..3 {
+            let reg = [1801, 1802, 1803][aio_i];
+            let v = if aio_i < num_aio { u16_word(soc) } else { 0 };
+            set(reg, v);
+        }
+
+        // Per-AIO charge (1705-1713): today + total for each active AIO
+        // Layout: AIO1 @ 1705-1707, AIO2 @ 1708-1710, AIO3 @ 1711-1713
+        for aio_i in 0..3 {
+            let base = 1705u16 + aio_i as u16 * 3;
+            if aio_i < num_aio {
+                set(base, deci(per_aio_charge_kwh)); // today
+                let (h, l) = u32_words(per_aio_charge_total, 0.1);
+                set(base + 1, h);
+                set(base + 2, l);
+            } else {
+                set(base, 0);
+                set(base + 1, 0);
+                set(base + 2, 0);
+            }
+        }
+
+        // Per-AIO discharge (1750-1758): today + total for each active AIO
+        // Layout: AIO1 @ 1750-1752, AIO2 @ 1753-1755, AIO3 @ 1756-1758
+        for aio_i in 0..3 {
+            let base = 1750u16 + aio_i as u16 * 3;
+            if aio_i < num_aio {
+                set(base, deci(per_aio_discharge_kwh)); // today
+                let (h, l) = u32_words(per_aio_discharge_total, 0.1);
+                set(base + 1, h);
+                set(base + 2, l);
+            } else {
+                set(base, 0);
+                set(base + 1, 0);
+                set(base + 2, 0);
+            }
+        }
+
+        // 4.9 Battery aggregate energy + per-AIO SOC — IR 1795-1800 -------
+        set(1795, deci(battery_charge_total)); // e_battery_charge_today
+        let (h, l) = u32_words(battery_charge_total, 0.1);
         set(1796, h);
         set(1797, l); // e_battery_charge_total
-        set(1798, deci(et.battery_discharge_kwh)); // e_battery_discharge_today
-        let (h, l) = u32_words(et.battery_discharge_kwh, 0.1);
+        set(1798, deci(battery_discharge_total)); // e_battery_discharge_today
+        let (h, l) = u32_words(battery_discharge_total, 0.1);
         set(1799, h);
         set(1800, l); // e_battery_discharge_total
-        set(1801, u16_word(state.aggregate_soc())); // aio1_soc
-        set(1802, 0); // aio2_soc
-        set(1803, 0); // aio3_soc
 
         // 4.10 Per-AIO inverter power — IR 1816-1818 ---------------------
-        set(1816, i16_word(aio_power_w)); // p_aio1_inverter (signed)
-        set(1817, 0);
-        set(1818, 0);
+        for aio_i in 0..3 {
+            let reg = 1816u16 + aio_i as u16;
+            let v = if aio_i < num_aio {
+                i16_word(per_aio_power_w)
+            } else {
+                0
+            };
+            set(reg, v);
+        }
 
         // 4.11 Per-AIO serial numbers — IR 1831-1859 (variant-dependent) ---
-        // V1: aio1 @ 1831-1835, aio2 @ 1838-1842, aio3 @ 1845-1849.
-        // V2: aio1 @ 1841-1845, aio2 @ 1848-1852, aio3 @ 1855-1859.
-        // Fill all addresses 1831-1859 so the snapshot test stays happy (all
-        // serial addresses have RegisterDefs); unused slots get zero.
-        // First clear the full range.
+        // Clear the full range 1831-1859, then write active AIO serials.
         for addr in 1831u16..=1859 {
             set(addr, 0);
         }
-        // Write the active serial at the variant-correct offset.
-        let base = if is_v2 { 1841u16 } else { 1831u16 };
-        for i in 0..5usize {
-            let addr = base + i as u16;
-            let hi = aio_serial[2 * i];
-            let lo = aio_serial[2 * i + 1];
-            set(addr, (hi as u16) << 8 | lo as u16);
+        for aio_i in 0..num_aio {
+            let base = aio_serial_addrs(aio_i, is_v2);
+            let serial = make_aio_serial(aio_i);
+            for i in 0..5usize {
+                let addr = base + i as u16;
+                let hi = serial[2 * i];
+                let lo = serial[2 * i + 1];
+                set(addr, (hi as u16) << 8 | lo as u16);
+            }
         }
-        // aio2 and aio3 stay zero (single-AIO topology)
 
         // Serial number (HR 13-17): emit a `GW` prefix so prefix-based
         // detection classifies the device as a Gateway. "GW2423G192" mirrors
@@ -9165,6 +9225,83 @@ mod tests {
         );
         assert_eq!(ir(1838), 0, "aio2 serial empty for single-AIO");
         assert_eq!(ir(1845), 0, "aio3 serial empty for single-AIO");
+    }
+
+    #[test]
+    fn gateway_multi_aio_populates_all_registers() {
+        // With parallel_aio_num = 3, all AIO2/AIO3 registers must carry
+        // data (evenly split from the single battery stack).
+        let mut s = gateway_state();
+        s.config.parallel_aio_num = 3;
+        // 3 batteries → 1 per AIO
+        let b2 = s.batteries[0].clone();
+        let b3 = s.batteries[0].clone();
+        s.batteries.push(b2);
+        s.batteries.push(b3);
+        s.sync_battery_from_vec();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        let i16 = |a: u16| ir(a) as i16;
+
+        // AIO summary
+        assert_eq!(ir(1700), 3, "parallel_aio_num = 3");
+        assert_eq!(ir(1701), 3, "parallel_aio_online_num = 3");
+
+        // Each AIO gets 1/3 of total battery power.
+        // 3 modules × 2kW charging each = 6kW total = -6000W on wire.
+        // Each AIO: -6000/3 = -2000W (charging).
+        for aio_i in 0..3 {
+            let power_reg = 1816u16 + aio_i as u16;
+            let p = i16(power_reg);
+            assert_eq!(
+                p,
+                -2000,
+                "AIO{} inverter power must be -2000W (charging), got {}",
+                aio_i + 1,
+                p
+            );
+        }
+
+        // Each AIO gets 1/3 of SOC (same aggregate SoC for all)
+        assert_eq!(ir(1801), 65, "aio1_soc");
+        assert_eq!(ir(1802), 65, "aio2_soc shared");
+        assert_eq!(ir(1803), 65, "aio3_soc shared");
+
+        // Each AIO gets 1/3 of charge energy
+        // Total charge = 50 kWh, each gets ~16.667 kWh → deci = 167
+        assert_eq!(ir(1705), 167, "aio1_charge_today");
+        assert_eq!(ir(1708), 167, "aio2_charge_today");
+        assert_eq!(ir(1711), 167, "aio3_charge_today");
+
+        // Each AIO gets 1/3 of discharge energy
+        assert_eq!(ir(1750), 100, "aio1_discharge_today");
+        assert_eq!(ir(1753), 100, "aio2_discharge_today");
+        assert_eq!(ir(1756), 100, "aio3_discharge_today");
+
+        // AIO serials (V1)
+        let aio_serial = |base: u16| -> Vec<u8> {
+            let mut chars = Vec::new();
+            for addr in base..base + 5 {
+                let v = ir(addr);
+                chars.push((v >> 8) as u8);
+                chars.push((v & 0xFF) as u8);
+            }
+            chars
+        };
+        assert_eq!(&aio_serial(1831)[..], b"SA24230001", "aio1 serial");
+        assert_eq!(&aio_serial(1838)[..], b"SA24230002", "aio2 serial");
+        assert_eq!(&aio_serial(1845)[..], b"SA24230003", "aio3 serial");
+
+        // first_inverter_serial mirrors AIO1
+        let mut first = Vec::new();
+        for addr in [1627, 1628, 1629, 1630, 1631] {
+            let v = ir(addr);
+            first.push((v >> 8) as u8);
+            first.push((v & 0xFF) as u8);
+        }
+        assert_eq!(&first[..], b"SA24230001");
     }
 
     #[test]

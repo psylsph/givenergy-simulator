@@ -427,7 +427,7 @@
         </div>
         <div id="gateway-battery-info" style="display:none;margin-top:4px;padding:8px;background:var(--bg-raised);border-radius:6px;font-size:12px">
           <div style="font-weight:600;margin-bottom:2px">AIO Battery Stack</div>
-          <div>3 × GIV-BAT-3.4-HV (10.2 kWh) — child AIO integrated</div>
+          <div id="gw-aio-summary">3 × GIV-BAT-3.4-HV (10.2 kWh)</div>
         </div>
 
         <label>PV1 Peak (W)</label>
@@ -977,6 +977,14 @@
       if (s.inverter_type) {
         el('inverter-type').value = s.inverter_type;
         toggleGatewayBatteryUi();
+        // Update AIO count display for Gateway
+        const gwInfo = el('gw-aio-summary');
+        if (gwInfo) {
+          const aioNum = s.parallel_aio_num || 1;
+          const moduleCount = s.battery_module_count || 3;
+          const totalKwh = (moduleCount * 3.4).toFixed(1);
+          gwInfo.textContent = `${moduleCount} × GIV-BAT-3.4-HV (${totalKwh} kWh, ${aioNum} AIO${aioNum > 1 ? 's' : ''})`;
+        }
       }
       // Battery module count + capacity dropdowns
       if (s.battery_module_count) {
@@ -1272,9 +1280,12 @@
       // Footer
       el('footer-info').textContent = `${s.inverter_mode} mode`;
       const isGw = s.inverter_type?.startsWith('Gateway');
-      el('footer-modules').textContent = isGw
-        ? `${s.battery_module_count} module(s) via AIO`
-        : `${s.battery_module_count} module(s)`;
+      if (isGw) {
+        const aioNum = s.parallel_aio_num || 1;
+        el('footer-modules').textContent = `${s.battery_module_count} module(s) / ${aioNum} AIO${aioNum > 1 ? 's' : ''}`;
+      } else {
+        el('footer-modules').textContent = `${s.battery_module_count} module(s)`;
+      }
       el('footer-heaters').innerHTML = `
         <span class="heater-indicator ${s.battery_self_heating ? 'on' : 'off'}">
           🔆 Self-Heat ${s.battery_self_heating ? 'ON' : 'OFF'}

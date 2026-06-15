@@ -124,6 +124,8 @@ pub struct PlantStateDto {
     pub ct_meter_installed: bool,
     pub battery_self_heating: bool,
     pub manual_battery_heater: bool,
+    /// Number of parallel AIO units behind a Gateway (1-3, 0 for non-gateway).
+    pub parallel_aio_num: u16,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -540,6 +542,7 @@ impl From<&PlantState> for PlantStateDto {
             ct_meter_installed: state.config.ct_meter_installed,
             battery_self_heating: state.inverter.battery_self_heating,
             manual_battery_heater: state.inverter.manual_battery_heater,
+            parallel_aio_num: state.config.parallel_aio_num,
             energy_totals: EnergyTotalsDto {
                 grid_import_kwh: state.energy_totals.grid_import_kwh,
                 grid_export_kwh: state.energy_totals.grid_export_kwh,
