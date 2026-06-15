@@ -193,6 +193,16 @@ enum Commands {
         /// When > 0, solar generation splits 45% PV1 / 55% PV2.
         #[arg(long, default_value = "0")]
         pv2_peak: f64,
+
+        /// Run in fast-forward (fixed-step) mode instead of real-time.
+        ///
+        /// By default the simulation clock is locked to the host wall clock so
+        /// the served inverter time matches the computer's time exactly (no
+        /// drift). Pass --fast to instead advance the clock by `tick_interval`
+        /// seconds as fast as the loop allows — useful for burning through a
+        /// full day quickly when you don't need wall-clock alignment.
+        #[arg(long, default_value_t = false)]
+        fast: bool,
     },
     /// Run a scenario YAML file.
     Run {
@@ -297,6 +307,8 @@ fn max_batt_w_for_inverter(inv_type: &str) -> f64 {
         "AIOHybrid6kW" => 6000.0,
         "AIOHybrid8kW" => 8000.0,
         "AIOHybrid10kW" => 10000.0,
+        // Gateway: aggregates an All-in-One (6kW continuous) behind it.
+        "Gateway12kW" => 6000.0,
         _ => 3600.0,
     }
 }
@@ -323,6 +335,8 @@ fn max_ac_w_for_inverter(inv_type: &str) -> f64 {
         "AIOHybrid6kW" => 6000.0,
         "AIOHybrid8kW" => 8000.0,
         "AIOHybrid10kW" => 10000.0,
+        // Gateway: aggregates an All-in-One (6kW AC) behind it.
+        "Gateway12kW" => 6000.0,
         _ => 5000.0,
     }
 }
@@ -546,6 +560,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             modbus,
             output,
             pv2_peak,
+            fast,
         } => {
             simulate(
                 &inverter,
@@ -562,6 +577,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 modbus,
                 output.as_deref(),
                 pv2_peak,
+                fast,
             )
             .await
         }
@@ -625,6 +641,7 @@ async fn simulate(
     modbus_addr: SocketAddr,
     output_dir: Option<&std::path::Path>,
     pv2_peak: f64,
+    fast: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let battery_count = battery_count.clamp(1, 6);
     let soc = soc.clamp(0.0, 100.0);
@@ -684,6 +701,12 @@ async fn simulate(
         Box::new(sim_core::EnergyTracker::new()),
     ];
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
+    // By default lock the sim clock to the host wall clock so the served
+    // inverter time matches the computer's time (no drift). --fast keeps the
+    // original fixed-step behaviour for quick day-burns.
+    if !fast {
+        engine.anchor_to_wall_clock(None);
+    }
     let mut schedule_opt: Option<sim_models::Schedule> = Some(initial_schedule);
 
     let reg_cat = sim_registers::default_register_catalogue();
@@ -801,7 +824,14 @@ async fn simulate(
                 tracing::info!("Shutdown requested. Saving output...");
                 break;
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            // Real-time mode throttles to one tick per tick_interval seconds
+            // (the clock is anchored to wall time, so the sleep only sets the
+            // refresh cadence). --fast mode polls as tightly as possible.
+            _ = tokio::time::sleep(if fast {
+                std::time::Duration::from_millis(10)
+            } else {
+                std::time::Duration::from_secs(tick_interval.max(1))
+            }) => {}
         }
     }
 
@@ -1298,6 +1328,8 @@ async fn serve_config(
     ];
 
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
+    // Lock the served clock to the host wall clock — same rationale as `simulate`.
+    engine.anchor_to_wall_clock(None);
 
     let reg_cat = sim_registers::default_register_catalogue();
     let mut reg_store = sim_registers::RegisterStore::new(reg_cat);
@@ -1485,7 +1517,9 @@ async fn serve_config(
                 tracing::info!("Shutdown requested. Saving output...");
                 break;
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            // Real-time mode: throttle to one tick per tick_interval seconds
+            // (clock is anchored to wall time; this only sets refresh cadence).
+            _ = tokio::time::sleep(std::time::Duration::from_secs(tick_interval.max(1))) => {}
         }
     }
 

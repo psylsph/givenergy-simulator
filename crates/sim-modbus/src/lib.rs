@@ -464,6 +464,34 @@ pub async fn run_modbus_server(
                                 None
                             };
 
+                            // For Input-register reads into the gateway aggregation bank
+                            // (IR 1600-1859), reject entirely unmapped sub-ranges with an
+                            // error so client bounds-checks behave — zero-filled unmapped
+                            // banks are indistinguishable from "no gateway present".
+                            // Mixed ranges (some mapped, some gaps) still get zeros for gaps.
+                            if inner_func == FC_READ_INPUT
+                                && (1600..1860).contains(&start_addr)
+                            {
+                                let store_guard = store.lock().await;
+                                let has_defs = store_guard.has_any_def_in_range(
+                                    start_addr,
+                                    count,
+                                    sim_registers::RegisterSpace::Input,
+                                );
+                                drop(store_guard);
+                                if !has_defs {
+                                    let resp = build_error_response(
+                                        &serial,
+                                        slave,
+                                        inner_func,
+                                        EC_ILLEGAL_DATA_ADDRESS,
+                                    );
+                                    let _ = stream.write_all(&resp).await;
+                                    pending.drain(..frame_len);
+                                    continue;
+                                }
+                            }
+
                             let reg_data = if let Some(br) = battery_read {
                                 let batts = batt_state.lock().await;
                                 let store_guard = store.lock().await;

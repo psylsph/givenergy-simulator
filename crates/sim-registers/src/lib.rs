@@ -85,6 +85,8 @@ pub enum RegisterCategory {
     Grid,
     Configuration,
     Schedules,
+    /// GivEnergy Gateway aggregation bank (IR 1600-1859).
+    Gateway,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +149,19 @@ fn is_three_phase_inverter(inverter_type: &str) -> bool {
     inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase"
 }
 
+/// Returns true for GivEnergy Gateway device types.
+///
+/// A Gateway is an AC aggregation/transfer hub (not an inverter) that sits in
+/// front of one or more All-in-One (AIO) units and exposes a gateway-specific
+/// Input Register bank at IR 1600-1859. When true, `project_gateway_bank`
+/// additionally serves the aggregation bank and a `GW`-prefixed serial.
+///
+/// Detection on the wire keys off the `GW` serial-number prefix; the DTC
+/// family is `0x7xxx` (`Gateway12kW` = `0x7001`).
+fn is_gateway_inverter(inverter_type: &str) -> bool {
+    inverter_type.starts_with("Gateway")
+}
+
 impl RegisterStore {
     /// Create a store pre-populated from the given register definitions.
     pub fn new(defs: Vec<RegisterDef>) -> Self {
@@ -179,6 +194,16 @@ impl RegisterStore {
             return true;
         }
         false
+    }
+
+    /// Check whether any RegisterDef exists in the given address range for
+    /// the given register space. Used to distinguish "register exists but is
+    /// zero" from "register does not exist at all" — the Modbus server can
+    /// return an error for entirely unmapped ranges instead of silent zeros.
+    pub fn has_any_def_in_range(&self, start: u16, count: u16, space: RegisterSpace) -> bool {
+        self.defs
+            .iter()
+            .any(|d| d.space == space && (start..start + count).contains(&d.address))
     }
 
     /// Update all register values from plant state.
@@ -452,11 +477,19 @@ impl RegisterStore {
                 }),
                 // IR 50: Battery voltage (×0.01 V)
                 "ge_ir_battery_voltage" => {
-                    let soc = state.aggregate_soc();
-                    Some(44.0 + soc * 0.08)
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        Some(0.0)
+                    } else {
+                        let soc = state.aggregate_soc();
+                        Some(44.0 + soc * 0.08)
+                    }
                 }
                 // IR 51: Battery current (signed, ×0.01 A)
                 "ge_ir_battery_current" => {
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        self.values.insert(key, 0);
+                        continue;
+                    }
                     // Same convention as battery power: negate so positive = discharging
                     let amps = -(state.total_battery_power_kw() * 1000.0 / 48.0);
                     self.values.insert(key, amps as i16 as u16);
@@ -464,6 +497,10 @@ impl RegisterStore {
                 }
                 // IR 52: Battery power (signed, +charging)
                 "ge_ir_battery_power" => {
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        self.values.insert(key, 0);
+                        continue;
+                    }
                     // GivEnergy convention: raw positive = discharging (power OUT of battery)
                     // Our internal: total_battery_power_kw positive = charging
                     // So we negate for the wire format.
@@ -476,7 +513,13 @@ impl RegisterStore {
                 "ge_ir_eps_frequency" => Some(if state.enable_eps { 50.0 } else { 0.0 }),
                 "ge_ir_charger_temperature" => Some(state.inverter.temperature_celsius),
                 // IR 56: Battery temperature (×0.1 °C)
-                "ge_ir_battery_temperature" => Some(state.battery_temperature_celsius()),
+                "ge_ir_battery_temperature" => {
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        Some(0.0)
+                    } else {
+                        Some(state.battery_temperature_celsius())
+                    }
+                }
                 // IR 57-58: warning and inverter AC-terminal current
                 "ge_ir_charger_warning_code" => Some(
                     if state.active_faults.iter().any(|f| f == "battery_over_temp") {
@@ -492,8 +535,14 @@ impl RegisterStore {
                         Some(0.0)
                     }
                 }
-                // IR 59: Battery SOC (%)
-                "ge_ir_battery_soc" => Some(state.aggregate_soc()),
+                // IR 59: Battery SOC (%) — zero for Gateway (no direct batteries)
+                "ge_ir_battery_soc" => {
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        Some(0.0)
+                    } else {
+                        Some(state.aggregate_soc())
+                    }
+                }
                 // IR 180-183: model-dependent battery energy alt sources
                 "ge_ir_battery_discharge_total_alt1" => {
                     Some(state.energy_totals.battery_discharge_kwh)
@@ -745,24 +794,25 @@ impl RegisterStore {
                     continue;
                 }
                 // HR 8-12: First battery serial number (simulated)
-                "ge_hr_first_battery_serial_0" => {
-                    self.values.insert(key, (b'B' as u16) << 8 | b'A' as u16);
-                    continue;
-                }
-                "ge_hr_first_battery_serial_1" => {
-                    self.values.insert(key, (b'T' as u16) << 8 | b'0' as u16);
-                    continue;
-                }
-                "ge_hr_first_battery_serial_2" => {
-                    self.values.insert(key, (b'0' as u16) << 8 | b'0' as u16);
-                    continue;
-                }
-                "ge_hr_first_battery_serial_3" => {
-                    self.values.insert(key, (b'0' as u16) << 8 | b'1' as u16);
-                    continue;
-                }
-                "ge_hr_first_battery_serial_4" => {
-                    self.values.insert(key, (b' ' as u16) << 8 | b' ' as u16);
+                // Gateway has no direct batteries — leave as zeros.
+                "ge_hr_first_battery_serial_0"
+                | "ge_hr_first_battery_serial_1"
+                | "ge_hr_first_battery_serial_2"
+                | "ge_hr_first_battery_serial_3"
+                | "ge_hr_first_battery_serial_4" => {
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        self.values.insert(key, 0);
+                        continue;
+                    }
+                    let v = match def.name.as_str() {
+                        "ge_hr_first_battery_serial_0" => (b'B' as u16) << 8 | b'A' as u16,
+                        "ge_hr_first_battery_serial_1" => (b'T' as u16) << 8 | b'0' as u16,
+                        "ge_hr_first_battery_serial_2" => (b'0' as u16) << 8 | b'0' as u16,
+                        "ge_hr_first_battery_serial_3" => (b'0' as u16) << 8 | b'1' as u16,
+                        "ge_hr_first_battery_serial_4" => (b' ' as u16) << 8 | b' ' as u16,
+                        _ => 0,
+                    };
+                    self.values.insert(key, v);
                     continue;
                 }
                 // HR 13-17: Serial number (simulated)
@@ -812,9 +862,13 @@ impl RegisterStore {
                     self.values.insert(key, v);
                     continue;
                 }
-                // HR 18: First battery BMS firmware version
+                // HR 18: First battery BMS firmware version — zero for Gateway (no direct batteries)
                 "ge_hr_first_battery_bms_firmware" => {
-                    self.values.insert(key, 100);
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        self.values.insert(key, 0);
+                    } else {
+                        self.values.insert(key, 100);
+                    }
                     continue;
                 }
                 // HR 19: DSP firmware version (user-overridable, defaults
@@ -1274,7 +1328,12 @@ impl RegisterStore {
                         .unwrap_or(0.95),
                 ),
                 "battery_module_count" => {
-                    self.values.insert(key, state.batteries.len() as u16);
+                    // Gateway has no direct batteries — report 0 (batteries live in child AIO).
+                    if is_gateway_inverter(&state.config.inverter_type) {
+                        self.values.insert(key, 0);
+                    } else {
+                        self.values.insert(key, state.batteries.len() as u16);
+                    }
                     continue;
                 }
                 // HR 223-224: Inverter fault codes (uint32).
@@ -1673,6 +1732,223 @@ impl RegisterStore {
                 };
                 self.values.insert(key, raw);
             }
+        }
+
+        // Gateway aggregation bank (IR 1600-1859) + GW serial prefix.
+        // No-op for non-gateway inverters (leaves the seeded zeros in place,
+        // which makes the version-string validity check fail so clients
+        // correctly conclude "no gateway present").
+        self.project_gateway_bank(state);
+    }
+
+    /// Project the GivEnergy Gateway aggregation bank (Input Registers
+    /// IR 1600-1859) plus the `GW`-prefixed serial number.
+    ///
+    /// Models a single-AIO Gateway topology: the `PlantState` represents the
+    /// child AIO's physics (battery / inverter / solar / load / grid) and this
+    /// method derives the gateway's measured/aggregated view of it. See
+    /// `docs/gateway-register-reference.md` for the authoritative register map.
+    ///
+    /// Firmware variant selection:
+    /// - V1 (`GA000009`, IR(1603) < 10): high-register-first uint32 totals,
+    ///   aio1 serial @ 1831-1835, aio2 @ 1838-1842, aio3 @ 1845-1849.
+    /// - V2 (`GA000010`, IR(1603) >= 10): low-register-first uint32 totals,
+    ///   aio1 serial @ 1841-1845, aio2 @ 1848-1852, aio3 @ 1855-1859.
+    ///   Controlled by `state.config.gateway_fw_version` (default 9 = V1).
+    fn project_gateway_bank(&mut self, state: &sim_models::PlantState) {
+        if !is_gateway_inverter(&state.config.inverter_type) {
+            return;
+        }
+
+        // Helpers --------------------------------------------------------
+        // Values are written as raw u16 directly into the Input space (key =
+        // address), so scaling must be applied here rather than by the caller.
+        let deci = |eng: f64| -> u16 { (eng * 10.0).round().clamp(0.0, 65535.0) as u16 };
+        let i16_word = |watts: f64| -> u16 { watts.clamp(-32768.0, 32767.0) as i16 as u16 };
+        let u16_word = |w: f64| -> u16 { w.round().clamp(0.0, 65535.0) as u16 };
+        let is_v2 = state.config.gateway_fw_version >= 10;
+        // uint32: byte order depends on variant.
+        // V1: high-register-first (hi, lo). V2: low-register-first (lo, hi).
+        let u32_words = |engineering: f64, scaling: f64| -> (u16, u16) {
+            let raw = (engineering / scaling).max(0.0).round() as u32;
+            let hi = (raw >> 16) as u16;
+            let lo = (raw & 0xFFFF) as u16;
+            if is_v2 { (lo, hi) } else { (hi, lo) }
+        };
+        let mut set = |addr: u16, v: u16| {
+            self.values.insert(addr as u32, v);
+        };
+
+        let connected = state.grid.connected;
+        let line_v = if connected { 240.0 } else { 0.0 };
+
+        // GE inverter sign convention: battery power + = discharging/out,
+        // - = charging/in. Internal convention is the opposite, so negate.
+        let aio_power_w = -(state.total_battery_power_kw() * 1000.0);
+        let pv_w = state.solar.generation_w;
+        // Gateway house load correctly excludes the EV charger (key property):
+        // `load.demand_w` is household-only; `evc` draw is tracked separately.
+        let load_w = state.load.demand_w;
+        let grid_w = state.grid.power_w; // + import / - export
+
+        let et = &state.energy_totals;
+
+        // 4.1 System state & version — IR 1600-1631 ----------------------
+        // software_version = "GA000009" (V1) or "GA0000010" (V2).
+        // gateway_version converter:
+        //   prefix = latin1(r0|r1) = "GA00", digits = decimal of each byte of
+        //   r2|r3 → e.g. "00"+"09" → "GA000009" (V1) or "00"+"10" → "GA0000010" (V2).
+        //   IR(1603) < 10 selects V1, >= 10 selects V2.
+        let fw_byte = state.config.gateway_fw_version;
+        set(1600, (b'G' as u16) << 8 | b'A' as u16); // 0x4741
+        set(1601, (b'0' as u16) << 8 | b'0' as u16); // 0x3030
+        set(1602, 0x0000);
+        set(1603, fw_byte); // < 10 = V1, >= 10 = V2
+        // work_mode = On Grid (2)
+        set(1604, 2);
+        set(1608, deci(line_v)); // v_grid
+        set(
+            1609,
+            (grid_w / 240.0 * 10.0).clamp(-32768.0, 32767.0) as i16 as u16,
+        ); // i_grid signed (deci A)
+        set(1610, deci(line_v)); // v_load
+        set(1611, deci(load_w / 240.0)); // i_load (deci A)
+        set(1612, deci(pv_w / 240.0)); // i_pv (deci A)
+        set(1616, i16_word(aio_power_w)); // p_ac1 (signed)
+        set(1617, u16_word(pv_w)); // p_pv
+        set(1618, u16_word(load_w)); // p_load (excludes EV)
+        set(1619, i16_word(0.0)); // p_liberty (smart load, unmodelled)
+        set(1620, 0); // fault_protection hi
+        set(1621, 0); // fault_protection lo
+        set(1622, 0); // gateway_fault_codes hi
+        set(1623, 0); // gateway_fault_codes lo
+        set(1624, deci(line_v)); // v_grid_relay
+        set(1625, deci(line_v)); // v_inverter_relay
+        // first_inverter_serial_number (IR 1627-1631) = "SA24230001"
+        let aio_serial = b"SA24230001";
+        for i in 0..5usize {
+            let hi = aio_serial[2 * i];
+            let lo = aio_serial[2 * i + 1];
+            set(1627 + i as u16, (hi as u16) << 8 | lo as u16);
+        }
+
+        // 4.2 / 4.3 Daily + lifetime energy — IR 1640-1657 ----------------
+        // Daily counters and lifetime totals both derive from the cumulative
+        // energy_totals (the sim does not reset daily counters — consistent
+        // with the standard IR 25/35 "today" registers).
+        // uint32 byte order depends on variant (V1 = hi-first, V2 = lo-first).
+        set(1640, deci(et.grid_import_kwh)); // e_grid_import_today
+        let (h, l) = u32_words(et.grid_import_kwh, 0.1);
+        set(1641, h);
+        set(1642, l); // e_grid_import_total
+        set(1643, deci(et.solar_generation_kwh)); // e_pv_today
+        let (h, l) = u32_words(et.solar_generation_kwh, 0.1);
+        set(1644, h);
+        set(1645, l); // e_pv_total
+        set(1646, deci(et.grid_export_kwh)); // e_grid_export_today
+        let (h, l) = u32_words(et.grid_export_kwh, 0.1);
+        set(1647, h);
+        set(1648, l); // e_grid_export_total
+        set(1649, deci(et.battery_charge_kwh)); // e_aio_charge_today
+        let (h, l) = u32_words(et.battery_charge_kwh, 0.1);
+        set(1650, h);
+        set(1651, l); // e_aio_charge_total
+        set(1652, deci(et.battery_discharge_kwh)); // e_aio_discharge_today
+        let (h, l) = u32_words(et.battery_discharge_kwh, 0.1);
+        set(1653, h);
+        set(1654, l); // e_aio_discharge_total
+        set(1655, deci(et.load_consumption_kwh)); // e_load_today
+        let (h, l) = u32_words(et.load_consumption_kwh, 0.1);
+        set(1656, h);
+        set(1657, l); // e_load_total
+
+        // 4.4 AIO summary — IR 1700-1704 ----------------------------------
+        set(1700, 1); // parallel_aio_num (single-AIO)
+        set(1701, 1); // parallel_aio_online_num
+        set(1702, i16_word(aio_power_w)); // p_aio_total (signed)
+        // aio_state: 1 = charging, 2 = discharging, 0 = idle
+        let batt_kw = state.total_battery_power_kw();
+        let aio_state = if batt_kw > 0.01 {
+            1u16
+        } else if batt_kw < -0.01 {
+            2u16
+        } else {
+            0u16
+        };
+        set(1703, aio_state);
+        set(1704, 100); // battery_firmware_version
+
+        // 4.5 / 4.6 Per-AIO charge (daily + total) — IR 1705-1713 ----------
+        // Single-AIO: AIO1 carries the figures; AIO2/AIO3 stay zero.
+        set(1705, deci(et.battery_charge_kwh)); // e_aio1_charge_today
+        let (h, l) = u32_words(et.battery_charge_kwh, 0.1);
+        set(1706, h);
+        set(1707, l); // e_aio1_charge_total
+        set(1708, 0); // e_aio2_charge_today
+        set(1709, 0);
+        set(1710, 0);
+        set(1711, 0); // e_aio3_charge_today
+        set(1712, 0);
+        set(1713, 0);
+
+        // 4.7 / 4.8 Per-AIO discharge (daily + total) — IR 1750-1758 -------
+        set(1750, deci(et.battery_discharge_kwh)); // e_aio1_discharge_today
+        let (h, l) = u32_words(et.battery_discharge_kwh, 0.1);
+        set(1751, h);
+        set(1752, l); // e_aio1_discharge_total
+        set(1753, 0);
+        set(1754, 0);
+        set(1755, 0);
+        set(1756, 0);
+        set(1757, 0);
+        set(1758, 0);
+
+        // 4.9 Battery aggregate energy + per-AIO SOC — IR 1795-1803 -------
+        set(1795, deci(et.battery_charge_kwh)); // e_battery_charge_today
+        let (h, l) = u32_words(et.battery_charge_kwh, 0.1);
+        set(1796, h);
+        set(1797, l); // e_battery_charge_total
+        set(1798, deci(et.battery_discharge_kwh)); // e_battery_discharge_today
+        let (h, l) = u32_words(et.battery_discharge_kwh, 0.1);
+        set(1799, h);
+        set(1800, l); // e_battery_discharge_total
+        set(1801, u16_word(state.aggregate_soc())); // aio1_soc
+        set(1802, 0); // aio2_soc
+        set(1803, 0); // aio3_soc
+
+        // 4.10 Per-AIO inverter power — IR 1816-1818 ---------------------
+        set(1816, i16_word(aio_power_w)); // p_aio1_inverter (signed)
+        set(1817, 0);
+        set(1818, 0);
+
+        // 4.11 Per-AIO serial numbers — IR 1831-1859 (variant-dependent) ---
+        // V1: aio1 @ 1831-1835, aio2 @ 1838-1842, aio3 @ 1845-1849.
+        // V2: aio1 @ 1841-1845, aio2 @ 1848-1852, aio3 @ 1855-1859.
+        // Fill all addresses 1831-1859 so the snapshot test stays happy (all
+        // serial addresses have RegisterDefs); unused slots get zero.
+        // First clear the full range.
+        for addr in 1831u16..=1859 {
+            set(addr, 0);
+        }
+        // Write the active serial at the variant-correct offset.
+        let base = if is_v2 { 1841u16 } else { 1831u16 };
+        for i in 0..5usize {
+            let addr = base + i as u16;
+            let hi = aio_serial[2 * i];
+            let lo = aio_serial[2 * i + 1];
+            set(addr, (hi as u16) << 8 | lo as u16);
+        }
+        // aio2 and aio3 stay zero (single-AIO topology)
+
+        // Serial number (HR 13-17): emit a `GW` prefix so prefix-based
+        // detection classifies the device as a Gateway. "GW2423G192" mirrors
+        // the GivTCP reference example.
+        let gw_serial: [u8; 10] = *b"GW2423G192";
+        for i in 0..5usize {
+            let hi = gw_serial[2 * i];
+            let lo = gw_serial[2 * i + 1];
+            self.values
+                .insert(HOLDING_OFFSET + 13 + i as u32, (hi as u16) << 8 | lo as u16);
         }
     }
 
@@ -7137,7 +7413,138 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             access: ReadWrite,
             space: Holding,
         },
+        // ================================================================
+        // GivEnergy Gateway aggregation bank (Input Registers, IR 1600-1859)
+        // Read via fn 0x04 at the gateway slave. Populated only when the
+        // inverter type is a Gateway (see project_gateway_bank). Values are
+        // written as raw u16 directly, so scaling_factor here is informational.
+        // See docs/gateway-register-reference.md for the authoritative map.
+        // ================================================================
+        gw_ir_def(1600, "gw_sw_version_0", 1.0),
+        gw_ir_def(1601, "gw_sw_version_1", 1.0),
+        gw_ir_def(1602, "gw_sw_version_2", 1.0),
+        gw_ir_def(1603, "gw_sw_version_3", 1.0),
+        gw_ir_def(1604, "gw_work_mode", 1.0),
+        gw_ir_def(1608, "gw_v_grid", 0.1),
+        gw_ir_def(1609, "gw_i_grid", 0.1),
+        gw_ir_def(1610, "gw_v_load", 0.1),
+        gw_ir_def(1611, "gw_i_load", 0.1),
+        gw_ir_def(1612, "gw_i_pv", 0.1),
+        gw_ir_def(1616, "gw_p_ac1", 1.0),
+        gw_ir_def(1617, "gw_p_pv", 1.0),
+        gw_ir_def(1618, "gw_p_load", 1.0),
+        gw_ir_def(1619, "gw_p_liberty", 1.0),
+        gw_ir_def(1620, "gw_fault_protection_hi", 1.0),
+        gw_ir_def(1621, "gw_fault_protection_lo", 1.0),
+        gw_ir_def(1622, "gw_fault_codes_hi", 1.0),
+        gw_ir_def(1623, "gw_fault_codes_lo", 1.0),
+        gw_ir_def(1624, "gw_v_grid_relay", 0.1),
+        gw_ir_def(1625, "gw_v_inverter_relay", 0.1),
+        gw_ir_def(1627, "gw_first_inv_serial_0", 1.0),
+        gw_ir_def(1628, "gw_first_inv_serial_1", 1.0),
+        gw_ir_def(1629, "gw_first_inv_serial_2", 1.0),
+        gw_ir_def(1630, "gw_first_inv_serial_3", 1.0),
+        gw_ir_def(1631, "gw_first_inv_serial_4", 1.0),
+        gw_ir_def(1640, "gw_e_grid_import_today", 0.1),
+        gw_ir_def(1641, "gw_e_grid_import_total_hi", 0.1),
+        gw_ir_def(1642, "gw_e_grid_import_total_lo", 0.1),
+        gw_ir_def(1643, "gw_e_pv_today", 0.1),
+        gw_ir_def(1644, "gw_e_pv_total_hi", 0.1),
+        gw_ir_def(1645, "gw_e_pv_total_lo", 0.1),
+        gw_ir_def(1646, "gw_e_grid_export_today", 0.1),
+        gw_ir_def(1647, "gw_e_grid_export_total_hi", 0.1),
+        gw_ir_def(1648, "gw_e_grid_export_total_lo", 0.1),
+        gw_ir_def(1649, "gw_e_aio_charge_today", 0.1),
+        gw_ir_def(1650, "gw_e_aio_charge_total_hi", 0.1),
+        gw_ir_def(1651, "gw_e_aio_charge_total_lo", 0.1),
+        gw_ir_def(1652, "gw_e_aio_discharge_today", 0.1),
+        gw_ir_def(1653, "gw_e_aio_discharge_total_hi", 0.1),
+        gw_ir_def(1654, "gw_e_aio_discharge_total_lo", 0.1),
+        gw_ir_def(1655, "gw_e_load_today", 0.1),
+        gw_ir_def(1656, "gw_e_load_total_hi", 0.1),
+        gw_ir_def(1657, "gw_e_load_total_lo", 0.1),
+        gw_ir_def(1700, "gw_parallel_aio_num", 1.0),
+        gw_ir_def(1701, "gw_parallel_aio_online_num", 1.0),
+        gw_ir_def(1702, "gw_p_aio_total", 1.0),
+        gw_ir_def(1703, "gw_aio_state", 1.0),
+        gw_ir_def(1704, "gw_battery_firmware", 1.0),
+        gw_ir_def(1705, "gw_e_aio1_charge_today", 0.1),
+        gw_ir_def(1706, "gw_e_aio1_charge_total_hi", 0.1),
+        gw_ir_def(1707, "gw_e_aio1_charge_total_lo", 0.1),
+        gw_ir_def(1708, "gw_e_aio2_charge_today", 0.1),
+        gw_ir_def(1709, "gw_e_aio2_charge_total_hi", 0.1),
+        gw_ir_def(1710, "gw_e_aio2_charge_total_lo", 0.1),
+        gw_ir_def(1711, "gw_e_aio3_charge_today", 0.1),
+        gw_ir_def(1712, "gw_e_aio3_charge_total_hi", 0.1),
+        gw_ir_def(1713, "gw_e_aio3_charge_total_lo", 0.1),
+        gw_ir_def(1750, "gw_e_aio1_discharge_today", 0.1),
+        gw_ir_def(1751, "gw_e_aio1_discharge_total_hi", 0.1),
+        gw_ir_def(1752, "gw_e_aio1_discharge_total_lo", 0.1),
+        gw_ir_def(1753, "gw_e_aio2_discharge_today", 0.1),
+        gw_ir_def(1754, "gw_e_aio2_discharge_total_hi", 0.1),
+        gw_ir_def(1755, "gw_e_aio2_discharge_total_lo", 0.1),
+        gw_ir_def(1756, "gw_e_aio3_discharge_today", 0.1),
+        gw_ir_def(1757, "gw_e_aio3_discharge_total_hi", 0.1),
+        gw_ir_def(1758, "gw_e_aio3_discharge_total_lo", 0.1),
+        gw_ir_def(1795, "gw_e_battery_charge_today", 0.1),
+        gw_ir_def(1796, "gw_e_battery_charge_total_hi", 0.1),
+        gw_ir_def(1797, "gw_e_battery_charge_total_lo", 0.1),
+        gw_ir_def(1798, "gw_e_battery_discharge_today", 0.1),
+        gw_ir_def(1799, "gw_e_battery_discharge_total_hi", 0.1),
+        gw_ir_def(1800, "gw_e_battery_discharge_total_lo", 0.1),
+        gw_ir_def(1801, "gw_aio1_soc", 1.0),
+        gw_ir_def(1802, "gw_aio2_soc", 1.0),
+        gw_ir_def(1803, "gw_aio3_soc", 1.0),
+        gw_ir_def(1816, "gw_p_aio1_inverter", 1.0),
+        gw_ir_def(1817, "gw_p_aio2_inverter", 1.0),
+        gw_ir_def(1818, "gw_p_aio3_inverter", 1.0),
+        // Serial address range 1831-1859 — used by both V1 and V2 at
+        // different offsets (V1: aio1@1831, aio2@1838, aio3@1845;
+        // V2: aio1@1841, aio2@1848, aio3@1855). Define all so the
+        // snapshot always has matching catalogue entries.
+        gw_ir_def(1831, "gw_serial_1831", 1.0),
+        gw_ir_def(1832, "gw_serial_1832", 1.0),
+        gw_ir_def(1833, "gw_serial_1833", 1.0),
+        gw_ir_def(1834, "gw_serial_1834", 1.0),
+        gw_ir_def(1835, "gw_serial_1835", 1.0),
+        gw_ir_def(1836, "gw_serial_1836", 1.0),
+        gw_ir_def(1837, "gw_serial_1837", 1.0),
+        gw_ir_def(1838, "gw_serial_1838", 1.0),
+        gw_ir_def(1839, "gw_serial_1839", 1.0),
+        gw_ir_def(1840, "gw_serial_1840", 1.0),
+        gw_ir_def(1841, "gw_serial_1841", 1.0),
+        gw_ir_def(1842, "gw_serial_1842", 1.0),
+        gw_ir_def(1843, "gw_serial_1843", 1.0),
+        gw_ir_def(1844, "gw_serial_1844", 1.0),
+        gw_ir_def(1845, "gw_serial_1845", 1.0),
+        gw_ir_def(1846, "gw_serial_1846", 1.0),
+        gw_ir_def(1847, "gw_serial_1847", 1.0),
+        gw_ir_def(1848, "gw_serial_1848", 1.0),
+        gw_ir_def(1849, "gw_serial_1849", 1.0),
+        gw_ir_def(1850, "gw_serial_1850", 1.0),
+        gw_ir_def(1851, "gw_serial_1851", 1.0),
+        gw_ir_def(1852, "gw_serial_1852", 1.0),
+        gw_ir_def(1853, "gw_serial_1853", 1.0),
+        gw_ir_def(1854, "gw_serial_1854", 1.0),
+        gw_ir_def(1855, "gw_serial_1855", 1.0),
+        gw_ir_def(1856, "gw_serial_1856", 1.0),
+        gw_ir_def(1857, "gw_serial_1857", 1.0),
+        gw_ir_def(1858, "gw_serial_1858", 1.0),
+        gw_ir_def(1859, "gw_serial_1859", 1.0),
     ]
+}
+
+/// Build a read-only Input Register definition in the Gateway aggregation bank.
+fn gw_ir_def(address: u16, name: &'static str, scaling: f64) -> RegisterDef {
+    RegisterDef {
+        address,
+        name: name.into(),
+        category: RegisterCategory::Gateway,
+        typ: RegisterType::U16,
+        scaling_factor: scaling,
+        access: Access::ReadOnly,
+        space: RegisterSpace::Input,
+    }
 }
 
 #[cfg(test)]
@@ -8561,5 +8968,446 @@ mod tests {
         assert_eq!(i_total, Some(833), "IR 67: expected 833 (8.33A)");
         assert_eq!(p_apparent, Some(2000), "IR 79: expected 2000 VA");
         assert_eq!(pf, Some(1000), "IR 83: expected 1000 (1.000)");
+    }
+
+    // ==================================================================
+    // Gateway aggregation bank (IR 1600-1859) tests
+    // See docs/gateway-register-reference.md for the authoritative map.
+    // ==================================================================
+
+    fn gateway_state() -> PlantState {
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "Gateway12kW".to_string();
+        s.solar.generation_w = 3000.0;
+        s.solar.pv1_w = 3000.0;
+        s.load.demand_w = 800.0;
+        s.grid.power_w = 500.0; // importing
+        s.grid.connected = true;
+        s.batteries[0].soc_percent = 65.0;
+        s.batteries[0].power_kw = 2.0; // charging (+ = charging internal)
+        s.sync_battery_from_vec();
+        s.energy_totals.grid_import_kwh = 100.0;
+        s.energy_totals.solar_generation_kwh = 200.0;
+        s.energy_totals.battery_charge_kwh = 50.0;
+        s.energy_totals.battery_discharge_kwh = 30.0;
+        s.energy_totals.load_consumption_kwh = 80.0;
+        s.energy_totals.grid_export_kwh = 10.0;
+        s
+    }
+
+    #[test]
+    fn gateway_bank_populated_for_gateway_inverter() {
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+
+        // Version string decodes to non-empty → validity check passes.
+        assert_eq!(ir(1600), (b'G' as u16) << 8 | b'A' as u16);
+        // IR(1603) = 9 < 10 selects firmware variant V1.
+        assert_eq!(ir(1603), 9, "IR(1603) must select V1 (< 10)");
+        // Work mode = On Grid (2)
+        assert_eq!(ir(1604), 2);
+        // Single-AIO summary
+        assert_eq!(ir(1700), 1, "parallel_aio_num = 1");
+        assert_eq!(ir(1701), 1, "parallel_aio_online_num = 1");
+        // PV power
+        assert_eq!(ir(1617), 3000, "p_pv = solar generation");
+        // Load excludes EV charger
+        assert_eq!(ir(1618), 800, "p_load = household demand");
+        // SOC projected onto AIO1
+        assert_eq!(ir(1801), 65, "aio1_soc = aggregate SOC");
+        assert_eq!(ir(1802), 0, "aio2_soc empty for single-AIO");
+    }
+
+    #[test]
+    fn gateway_bank_zero_for_non_gateway_inverter() {
+        // Non-gateway inverters must leave the bank at seeded zeros so the
+        // version-string validity check fails and clients conclude "no gateway".
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(
+            store.read_by_space(1600, RegisterSpace::Input),
+            Some(0),
+            "non-gateway must not populate gateway version"
+        );
+        assert_eq!(
+            store.read_by_space(1603, RegisterSpace::Input),
+            Some(0),
+            "IR(1603) zero → variant selector sees no gateway"
+        );
+        assert_eq!(
+            store.read_by_space(1700, RegisterSpace::Input),
+            Some(0),
+            "parallel_aio_num zero for non-gateway"
+        );
+    }
+
+    #[test]
+    fn gateway_serial_has_gw_prefix() {
+        // Prefix-based detection keys off the GW serial on HR 13-17.
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let r0 = store.read_by_space(13, RegisterSpace::Holding).unwrap();
+        let r1 = store.read_by_space(14, RegisterSpace::Holding).unwrap();
+        let hi = (r0 >> 8) as u8;
+        let lo = (r0 & 0xFF) as u8;
+        assert_eq!(hi, b'G', "serial byte 0 must be 'G'");
+        assert_eq!(lo, b'W', "serial byte 1 must be 'W'");
+        // Full serial = "GW2423G192"
+        let mut chars = Vec::new();
+        for addr in 13..=17 {
+            let v = store.read_by_space(addr, RegisterSpace::Holding).unwrap();
+            chars.push((v >> 8) as u8);
+            chars.push((v & 0xFF) as u8);
+        }
+        assert_eq!(&chars[..], b"GW2423G192");
+        let _ = r1;
+    }
+
+    #[test]
+    fn gateway_aio_power_sign_convention() {
+        // GE wire convention: battery power + = discharging/out, - = charging/in.
+        // Internal: total_battery_power_kw() + = charging. So negate.
+        let s = gateway_state(); // battery charging at 2kW → wire value negative
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16;
+        assert!(
+            ir(1616) < 0,
+            "p_ac1 must be negative while charging, got {}",
+            ir(1616)
+        );
+        assert_eq!(ir(1616), ir(1702), "p_ac1 == p_aio_total for single-AIO");
+        assert_eq!(
+            ir(1702),
+            ir(1816),
+            "p_aio_total == p_aio1_inverter for single-AIO"
+        );
+        // aio_state = 1 (charging)
+        assert_eq!(store.read_by_space(1703, RegisterSpace::Input), Some(1));
+    }
+
+    #[test]
+    fn gateway_aio_power_discharge_positive() {
+        let mut s = gateway_state();
+        s.batteries[0].power_kw = -1.5; // discharging
+        // total_battery_power_kw() sums batteries[], so no re-sync needed;
+        // sync_vec_from_battery would overwrite this with the battery field.
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16;
+        assert!(
+            ir(1816) > 0,
+            "p_aio1_inverter must be positive while discharging, got {}",
+            ir(1816)
+        );
+        assert_eq!(store.read_by_space(1703, RegisterSpace::Input), Some(2));
+    }
+
+    #[test]
+    fn gateway_energy_totals_v1_byte_order() {
+        // V1: uint32 energy totals are high-register-first.
+        // grid_import_kwh = 100 → raw = 100/0.1 = 1000 = 0x03E8
+        // hi = 0, lo = 1000.
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        assert_eq!(ir(1640), 1000, "e_grid_import_today = 100kWh * 10");
+        // e_grid_import_total = (hi=0, lo=1000)
+        assert_eq!(ir(1641), 0, "V1 high word first");
+        assert_eq!(ir(1642), 1000, "V1 low word second");
+        // AIO1 charge mirrors the aggregate charge total
+        assert_eq!(ir(1705), 500, "e_aio1_charge_today = 50kWh * 10");
+        assert_eq!(ir(1706), 0);
+        assert_eq!(ir(1707), 500);
+    }
+
+    #[test]
+    fn gateway_aio_serials_populated() {
+        // AIO1 serial at IR 1831-1835 must decode to a non-blank string so the
+        // client's serial validity check passes. AIO2/AIO3 stay empty (zeros).
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        // Full 10-byte serial must round-trip exactly (guards against
+        // byte-pairing bugs that corrupt every register after the first).
+        let mut chars = Vec::new();
+        for addr in [1831, 1832, 1833, 1834, 1835] {
+            let v = ir(addr);
+            chars.push((v >> 8) as u8);
+            chars.push((v & 0xFF) as u8);
+        }
+        assert_eq!(&chars[..], b"SA24230001", "aio1 serial must round-trip");
+        // first_inverter_serial (1627-1631) mirrors aio1
+        let mut first = Vec::new();
+        for addr in [1627, 1628, 1629, 1630, 1631] {
+            let v = ir(addr);
+            first.push((v >> 8) as u8);
+            first.push((v & 0xFF) as u8);
+        }
+        assert_eq!(
+            &first[..],
+            b"SA24230001",
+            "first_inverter_serial must round-trip"
+        );
+        assert_eq!(ir(1838), 0, "aio2 serial empty for single-AIO");
+        assert_eq!(ir(1845), 0, "aio3 serial empty for single-AIO");
+    }
+
+    #[test]
+    fn gateway_identity_block_shows_zero_batteries() {
+        // A real Gateway has zero directly-attached batteries (batteries live
+        // in the child AIO). The identity block (IR/HR 0-119) must reflect this:
+        // battery SOC/voltage/current/power/temp/serial/BMS-fw all zero.
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        let hr = |a: u16| store.read_by_space(a, RegisterSpace::Holding).unwrap_or(0);
+
+        // Identity block battery registers must be zero:
+        assert_eq!(ir(50), 0, "gateway battery voltage must be 0");
+        assert_eq!(ir(51), 0, "gateway battery current must be 0");
+        assert_eq!(ir(52), 0, "gateway battery power must be 0");
+        assert_eq!(ir(56), 0, "gateway battery temp must be 0");
+        assert_eq!(ir(59), 0, "gateway battery SOC must be 0");
+        // Battery serial (HR 8-12) must be zeros
+        for a in 8..=12 {
+            assert_eq!(hr(a), 0, "gateway battery serial HR({a}) must be 0");
+        }
+        // Battery BMS firmware (HR 18) must be 0
+        assert_eq!(hr(18), 0, "gateway battery BMS fw must be 0");
+        // Battery module count (HR 214) must be 0
+        assert_eq!(
+            store.read(214).unwrap_or(0),
+            0,
+            "gateway battery_module_count must be 0"
+        );
+
+        // Meanwhile the aggregation bank still carries the AIO's battery data
+        assert_eq!(ir(1801), 65, "aio1_soc must still be in aggregation bank");
+    }
+
+    #[test]
+    fn non_gateway_identity_block_still_has_battery_data() {
+        // Non-gateway inverters must NOT be affected by the gateway battery
+        // zeroing — their identity block must still carry battery data.
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        s.batteries[0].soc_percent = 65.0;
+        s.batteries[0].power_kw = 1.0;
+        s.sync_battery_from_vec();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        let hr = |a: u16| store.read_by_space(a, RegisterSpace::Holding).unwrap_or(0);
+
+        // SOC should be 65% (not zeroed)
+        assert_eq!(ir(59), 65, "non-gateway battery SOC must be preserved");
+        // Battery serial must still be non-zero
+        assert_ne!(hr(8), 0, "non-gateway battery serial must be non-zero");
+        // BMS firmware must still be 100
+        assert_eq!(hr(18), 100, "non-gateway battery BMS fw must be preserved");
+        // Module count must be 1
+        assert_eq!(
+            store.read(214).unwrap_or(0),
+            1,
+            "non-gateway battery_module_count must be 1"
+        );
+    }
+
+    #[test]
+    fn gateway_control_writes_accepted() {
+        // Writes to gateway control registers must pass access control
+        // (same as any other inverter — the PlantState IS the child AIO).
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        // Key control registers all ReadWrite — writes must succeed.
+        assert!(
+            store.write(59, 1),
+            "HR 59 enable_discharge must accept write"
+        );
+        assert!(
+            store.write(94, 930),
+            "HR 94 charge_slot_1_start must accept"
+        );
+        assert!(store.write(95, 1630), "HR 95 charge_slot_1_end must accept");
+        assert!(store.write(96, 1), "HR 96 enable_charge must accept write");
+        assert!(store.write(110, 15), "HR 110 soc_reserve must accept write");
+        assert!(
+            store.write(111, 95),
+            "HR 111 charge_limit must accept write"
+        );
+        assert!(store.write(112, 80), "HR 112 discharge_limit must accept");
+        assert!(
+            store.write(116, 100),
+            "HR 116 charge_target_soc must accept"
+        );
+        assert!(
+            store.write(56, 800),
+            "HR 56 discharge_slot_1_start must accept"
+        );
+        assert!(
+            store.write(57, 2000),
+            "HR 57 discharge_slot_1_end must accept"
+        );
+
+        // Verify values persisted
+        assert_eq!(store.read(59), Some(1));
+        assert_eq!(store.read(94), Some(930));
+        assert_eq!(store.read(110), Some(15));
+        assert_eq!(store.read(116), Some(100));
+        assert_eq!(store.read(56), Some(800));
+        assert_eq!(store.read(57), Some(2000));
+
+        // System time registers (HR 35-40) must also accept writes
+        assert!(store.write(35, 2025), "HR 35 year must accept write");
+        assert!(store.write(36, 6), "HR 36 month must accept write");
+        assert_eq!(store.read(35), Some(2025));
+    }
+
+    #[test]
+    fn gateway_snapshot_includes_bank() {
+        // snapshot() length must equal catalogue length — proves every gateway
+        // value inserted by project_gateway_bank has a matching RegisterDef.
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(
+            store.snapshot().len(),
+            default_register_catalogue().len(),
+            "every projected gateway value must have a catalogue def"
+        );
+    }
+
+    /// Create a gateway state with V2 firmware (GA0000010).
+    fn gateway_v2_state() -> PlantState {
+        let mut s = gateway_state();
+        s.config.gateway_fw_version = 10;
+        s
+    }
+
+    #[test]
+    fn gateway_v2_version_selector() {
+        // V2: IR(1603) >= 10 selects V2 firmware variant.
+        let s = gateway_v2_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        assert_eq!(ir(1600), (b'G' as u16) << 8 | b'A' as u16);
+        assert_eq!(ir(1601), (b'0' as u16) << 8 | b'0' as u16);
+        assert_eq!(ir(1602), 0x0000);
+        assert_eq!(ir(1603), 10, "IR(1603) must be >= 10 for V2");
+        // Work mode still On Grid
+        assert_eq!(ir(1604), 2);
+    }
+
+    #[test]
+    fn gateway_v2_energy_totals_swapped_byte_order() {
+        // V2: uint32 energy totals are low-register-first (swapped vs V1).
+        // grid_import_kwh = 100 → raw = 1000 = 0x03E8
+        // V2: (lo=1000, hi=0) i.e. IR(1641)=1000, IR(1642)=0.
+        let s = gateway_v2_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        // Daily counters are unchanged in V2
+        assert_eq!(ir(1640), 1000, "e_grid_import_today = 100kWh * 10");
+        // V2: lo word first, then hi word (SWAPPED vs V1)
+        assert_eq!(ir(1641), 1000, "V2: e_grid_import_total_lo first");
+        assert_eq!(ir(1642), 0, "V2: e_grid_import_total_hi second");
+        // AIO1 charge total also swapped
+        assert_eq!(ir(1705), 500, "e_aio1_charge_today unchanged");
+        assert_eq!(ir(1706), 500, "V2: e_aio1_charge_total_lo first");
+        assert_eq!(ir(1707), 0, "V2: e_aio1_charge_total_hi second");
+        // Battery energy totals also swapped
+        assert_eq!(ir(1796), 500, "V2: e_battery_charge_total_lo first");
+        assert_eq!(ir(1797), 0, "V2: e_battery_charge_total_hi second");
+    }
+
+    #[test]
+    fn gateway_v1_energy_totals_unchanged_by_v2_code() {
+        // Regression: V1 byte order must still be hi-first (existing V1
+        // energy test passes, but this explicitly checks swapped pairs).
+        let s = gateway_state(); // V1 default (fw_version = 9)
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        // V1: hi word first, lo word second
+        assert_eq!(ir(1641), 0, "V1: e_grid_import_total_hi first");
+        assert_eq!(ir(1642), 1000, "V1: e_grid_import_total_lo second");
+        // AIO1 charge total V1 order
+        assert_eq!(ir(1706), 0, "V1: e_aio1_charge_total_hi first");
+        assert_eq!(ir(1707), 500, "V1: e_aio1_charge_total_lo second");
+        // Battery charge total V1 order
+        assert_eq!(ir(1796), 0, "V1: e_battery_charge_total_hi first");
+        assert_eq!(ir(1797), 500, "V1: e_battery_charge_total_lo second");
+    }
+
+    #[test]
+    fn gateway_v2_serial_at_v2_addresses() {
+        // V2: aio1 serial at IR 1841-1845 (not 1831-1835).
+        let s = gateway_v2_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0);
+        // V2 aio1 serial at 1841-1845
+        let mut chars = Vec::new();
+        for addr in [1841, 1842, 1843, 1844, 1845] {
+            let v = ir(addr);
+            chars.push((v >> 8) as u8);
+            chars.push((v & 0xFF) as u8);
+        }
+        assert_eq!(&chars[..], b"SA24230001", "V2 aio1 serial at 1841-1845");
+        // V1 address 1831-1835 must be zero
+        for addr in [1831, 1832, 1833, 1834, 1835] {
+            assert_eq!(ir(addr), 0, "V2: V1 serial addr {addr} must be zero");
+        }
+        // first_inverter_serial (1627-1631) mirrors aio1 regardless of variant
+        let mut first = Vec::new();
+        for addr in [1627, 1628, 1629, 1630, 1631] {
+            let v = ir(addr);
+            first.push((v >> 8) as u8);
+            first.push((v & 0xFF) as u8);
+        }
+        assert_eq!(
+            &first[..],
+            b"SA24230001",
+            "first_inverter_serial must round-trip (V2)"
+        );
+    }
+
+    #[test]
+    fn gateway_v2_snapshot_includes_bank() {
+        // Same snapshot length test for V2 variant.
+        let s = gateway_v2_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert_eq!(
+            store.snapshot().len(),
+            default_register_catalogue().len(),
+            "every projected V2 gateway value must have a catalogue def"
+        );
     }
 }

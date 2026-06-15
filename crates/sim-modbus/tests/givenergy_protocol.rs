@@ -159,6 +159,26 @@ async fn start_server_with_state(
                         } else {
                             RegisterSpace::Holding
                         };
+
+                        // Gateway aggregation bank (IR 1600-1859): reject
+                        // entirely unmapped sub-ranges with an error so
+                        // client bounds-checks distinguish "no gateway".
+                        if inner_func == FC_READ_INPUT
+                            && (1600..1860).contains(&start_addr)
+                            && !s.has_any_def_in_range(start_addr, count, space)
+                        {
+                            drop(s);
+                            let resp = build_error_response(
+                                &serial,
+                                slave,
+                                inner_func,
+                                EC_ILLEGAL_DATA_ADDRESS,
+                            );
+                            let _ = stream.write_all(&resp).await;
+                            pending.drain(..frame_len);
+                            continue;
+                        }
+
                         let mut reg_data = Vec::with_capacity(count as usize * 2);
                         for i in 0..count {
                             reg_data.extend_from_slice(
@@ -1107,6 +1127,58 @@ async fn read_large_register_range_with_gaps() {
     // Only reg 300 (pv_generation) is defined, rest should be 0
     assert_eq!(data[0], 4000, "Reg 300 = pv_generation = 4000W");
     assert_eq!(data[1], 3500, "Reg 301 = pv_voltage = 350.0V / 0.1 = 3500");
+}
+
+#[tokio::test]
+async fn gateway_bank_unmapped_range_rejected() {
+    // Reads to entirely unmapped sub-ranges of the gateway aggregation bank
+    // (IR 1600-1859) must return an error, not zeros, so client bounds-checks
+    // correctly distinguish "no gateway" from "all registers happen to be 0".
+    let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let mut state = sim_models::PlantState::new(ts);
+    state.config.inverter_type = "Gateway12kW".to_string();
+    state.batteries[0].soc_percent = 65.0;
+    state.batteries[0].power_kw = 2.0;
+    state.sync_battery_from_vec();
+
+    let (addr, _, _) = start_server_with_state(&state).await;
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+    // IR 1632-1639 is entirely unmapped in V1 — should get error
+    let resp = send_recv(&mut stream, &build_read_input_request(1632, 8)).await;
+    let (_, func, _) = decode_response(&resp);
+    assert_eq!(
+        func,
+        FC_READ_INPUT | 0x80,
+        "Unmapped gateway bank range must return error"
+    );
+
+    // IR 1600-1603 (version string) is valid — must return data
+    let resp = send_recv(&mut stream, &build_read_input_request(1600, 4)).await;
+    let (_, func, payload) = decode_response(&resp);
+    assert_eq!(func, FC_READ_INPUT, "Valid gateway range must succeed");
+    let (_, _, data) = parse_read_payload(&payload);
+    assert!(data.len() >= 4, "Version string data expected");
+    assert_eq!(data[0], (b'G' as u16) << 8 | b'A' as u16);
+
+    // IR 1658-1699 is entirely unmapped — should get error
+    let resp = send_recv(&mut stream, &build_read_input_request(1658, 42)).await;
+    let (_, func, _) = decode_response(&resp);
+    assert_eq!(
+        func,
+        FC_READ_INPUT | 0x80,
+        "Unmapped bank range 1658-1699 must return error"
+    );
+
+    // IR 1700-1704 (AIO summary) is valid — must succeed
+    let resp = send_recv(&mut stream, &build_read_input_request(1700, 5)).await;
+    let (_, func, payload) = decode_response(&resp);
+    assert_eq!(func, FC_READ_INPUT, "Valid AIO summary range must succeed");
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data[0], 1, "parallel_aio_num = 1");
 }
 
 #[tokio::test]

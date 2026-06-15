@@ -108,6 +108,47 @@ pub struct SimulationEngine {
     command_queue: Vec<Command>,
     /// Tick interval in seconds.
     pub tick_interval_secs: u64,
+    /// Optional wall-clock anchor. When `Some`, each tick derives
+    /// `state.timestamp` from `Local::now()` so the simulation clock tracks
+    /// the host wall clock exactly (no drift accumulation, survives NTP
+    /// corrections). When `None`, the clock advances by the fixed
+    /// `tick_interval_secs` per tick (deterministic, original behaviour —
+    /// used by scenario replays and fast-forward modes).
+    wall_clock_anchor: Option<WallClockAnchor>,
+}
+
+/// Real-time wall-clock anchoring configuration.
+///
+/// See [`SimulationEngine::anchor_to_wall_clock`].
+#[derive(Debug, Clone)]
+pub struct WallClockAnchor {
+    /// When `Some`, the sim clock shows this calendar date with the *real*
+    /// current time-of-day (used by `--date` to simulate a different day
+    /// while still advancing in real seconds). When `None`, the full real
+    /// wall-clock date+time is used verbatim.
+    pinned_date: Option<chrono::NaiveDate>,
+    /// Wall-clock timestamp captured at the previous tick, used to compute
+    /// the real elapsed `dt` for energy integration. Tracked separately from
+    /// `state.timestamp` so `dt` is immune to in-band timestamp mutations
+    /// (e.g. a client setting the clock via HR 35–40).
+    last_wall: chrono::NaiveDateTime,
+}
+
+impl WallClockAnchor {
+    /// Upper bound on a single tick's `dt` (seconds). Absorbs wall-clock jumps
+    /// (NTP corrections, laptop suspend/resume) so energy integration doesn't
+    /// spike. Generous enough that a normal real-time loop never hits it.
+    const MAX_DT_SECS: f64 = 300.0;
+
+    fn target_now(&self) -> chrono::NaiveDateTime {
+        let now = chrono::Local::now().naive_local();
+        match self.pinned_date {
+            Some(d) => d
+                .and_hms_opt(now.hour(), now.minute(), now.second())
+                .unwrap_or(now),
+            None => now,
+        }
+    }
 }
 
 impl SimulationEngine {
@@ -121,6 +162,7 @@ impl SimulationEngine {
             devices,
             command_queue: Vec::new(),
             tick_interval_secs,
+            wall_clock_anchor: None,
         }
     }
 
@@ -272,16 +314,65 @@ impl SimulationEngine {
         }
     }
 
+    /// Anchor the simulation clock to the host wall clock.
+    ///
+    /// After this call, each [`tick`](Self::tick) derives `state.timestamp`
+    /// from `Local::now()` instead of advancing by `tick_interval_secs`. The
+    /// simulation clock then tracks the host's real time exactly — eliminating
+    /// the drift that accumulates in fixed-step mode (where sleep jitter and
+    /// tick-work duration compound, and where a tight poll loop can run the
+    /// clock many× too fast).
+    ///
+    /// The current `state.timestamp` is preserved as the anchor's reference,
+    /// so a user-chosen start instant still applies; only the *advancement*
+    /// becomes wall-clock-driven. Pass `pinned_date = Some(d)` to project the
+    /// real time-of-day onto a different calendar date (e.g. simulating a
+    /// winter day at the current wall time).
+    ///
+    /// Use [`unanchor_wall_clock`](Self::unanchor_wall_clock) to revert to
+    /// fixed-step advancement.
+    pub fn anchor_to_wall_clock(&mut self, pinned_date: Option<chrono::NaiveDate>) {
+        let now = chrono::Local::now().naive_local();
+        self.wall_clock_anchor = Some(WallClockAnchor {
+            pinned_date,
+            last_wall: now,
+        });
+    }
+
+    /// Disable wall-clock anchoring, reverting to fixed-step advancement.
+    pub fn unanchor_wall_clock(&mut self) {
+        self.wall_clock_anchor = None;
+    }
+
+    /// Returns `true` while the clock is anchored to the host wall clock.
+    pub fn is_wall_clock_anchored(&self) -> bool {
+        self.wall_clock_anchor.is_some()
+    }
+
     /// Advance simulation by one tick.
     ///
     /// 1. Apply pending commands.
-    /// 2. Build tick context.
+    /// 2. Build tick context (dt from real elapsed wall time when anchored,
+    ///    else the fixed `tick_interval_secs`).
     /// 3. Call `update` on every device model in registration order.
-    /// 4. Advance the timestamp.
+    /// 4. Advance the timestamp (wall-clock-derived when anchored).
     pub fn tick(&mut self) {
         self.apply_commands();
 
-        let dt_hours = self.tick_interval_secs as f64 / 3600.0;
+        // Determine the dt for this tick and the new timestamp. In anchored
+        // (real-time) mode both come from the wall clock; in fixed-step mode
+        // dt is the configured interval and the timestamp advances by it.
+        let (dt_hours, new_timestamp) = match self.wall_clock_anchor.as_mut() {
+            Some(anchor) => {
+                let now_wall = chrono::Local::now().naive_local();
+                let dt_secs = ((now_wall - anchor.last_wall).num_milliseconds() as f64 / 1000.0)
+                    .clamp(0.0, WallClockAnchor::MAX_DT_SECS);
+                anchor.last_wall = now_wall;
+                let target = anchor.target_now();
+                (dt_secs / 3600.0, Some(target))
+            }
+            None => (self.tick_interval_secs as f64 / 3600.0, None),
+        };
         let ctx = TickContext {
             now: self.state.timestamp,
             dt_hours,
@@ -301,7 +392,12 @@ impl SimulationEngine {
         CalibrationEngine::check_stage_transitions(&ctx, &mut self.state);
 
         self.state.inverter.work_time_hours += dt_hours;
-        self.state.timestamp += chrono::TimeDelta::seconds(self.tick_interval_secs as i64);
+        match new_timestamp {
+            Some(ts) => self.state.timestamp = ts,
+            None => {
+                self.state.timestamp += chrono::TimeDelta::seconds(self.tick_interval_secs as i64);
+            }
+        }
     }
 
     /// Convenience: run `n` ticks.
@@ -1875,6 +1971,44 @@ mod tests {
         assert!(engine.state.enable_inverter_parallel_mode);
     }
 
+    #[test]
+    fn gateway_commands_route_to_state() {
+        // Control writes to a Gateway must reach the child AIO state.
+        // In the projection model, PlantState IS the child AIO, so
+        // the standard command pipeline should work for any inverter type.
+        let mut state = PlantState::new(ts(12));
+        state.config.inverter_type = "Gateway12kW".to_string();
+        state.config.max_ac_watts = 6000.0;
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+        ];
+        let mut engine = SimulationEngine::new(state, devices, 30);
+
+        // HR 110 → SetMinSoc
+        engine.enqueue(Command::SetMinSoc(15.0));
+        engine.apply_commands();
+        assert_eq!(engine.state.battery.min_soc, 15.0);
+        assert_eq!(engine.state.batteries[0].min_soc, 15.0);
+
+        // HR 111 → SetBatteryChargeLimit
+        engine.enqueue(Command::SetBatteryChargeLimit(80.0));
+        engine.apply_commands();
+        assert_eq!(engine.state.battery_charge_limit_percent, 80.0);
+
+        // HR 112 → SetBatteryDischargeLimit
+        engine.enqueue(Command::SetBatteryDischargeLimit(90.0));
+        engine.apply_commands();
+        assert_eq!(engine.state.battery_discharge_limit_percent, 90.0);
+
+        // SetSolarOverride works on Gateway too
+        engine.enqueue(Command::SetSolarOverride(Some(2000.0)));
+        engine.apply_commands();
+        assert_eq!(engine.state.solar_override, Some(2000.0));
+    }
+
     // --- SolarEngine ---
 
     #[test]
@@ -2338,6 +2472,77 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(12, 0, 30)
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn wall_clock_anchor_snaps_to_host_time() {
+        // When anchored, the sim clock should track the host wall clock, not
+        // advance by tick_interval_secs. After a tick the timestamp should be
+        // within a couple seconds of Local::now() (whatever wall elapsed).
+        let mut engine = SimulationEngine::new(PlantState::new(ts(12)), vec![], 30);
+        assert!(!engine.is_wall_clock_anchored());
+        engine.anchor_to_wall_clock(None);
+        assert!(engine.is_wall_clock_anchored());
+
+        engine.tick();
+        let now = chrono::Local::now().naive_local();
+        let diff = (engine.state.timestamp - now).num_seconds().abs();
+        assert!(
+            diff <= 2,
+            "anchored clock should match wall time within 2s, drifted {diff}s"
+        );
+    }
+
+    #[test]
+    fn wall_clock_anchor_pinned_date_uses_real_time_of_day() {
+        // pinned_date projects the real time-of-day onto a different calendar
+        // date. The result must carry today's H:M:S but the supplied date.
+        let winter = chrono::NaiveDate::from_ymd_opt(2024, 12, 21).unwrap();
+        let mut engine = SimulationEngine::new(PlantState::new(ts(12)), vec![], 30);
+        engine.anchor_to_wall_clock(Some(winter));
+        engine.tick();
+
+        assert_eq!(engine.state.timestamp.date(), winter);
+        let now = chrono::Local::now().naive_local();
+        assert_eq!(engine.state.timestamp.time().hour(), now.hour());
+    }
+
+    #[test]
+    fn unanchor_reverts_to_fixed_step() {
+        let mut engine = SimulationEngine::new(PlantState::new(ts(12)), vec![], 30);
+        engine.anchor_to_wall_clock(None);
+        engine.tick();
+        let anchored_ts = engine.state.timestamp;
+
+        engine.unanchor_wall_clock();
+        assert!(!engine.is_wall_clock_anchored());
+        engine.tick();
+        // Fixed-step resumes: exactly +30s from the last timestamp.
+        assert_eq!(
+            engine.state.timestamp,
+            anchored_ts + chrono::TimeDelta::seconds(30)
+        );
+    }
+
+    #[test]
+    fn wall_clock_anchor_dt_reflects_real_elapsed() {
+        // dt drives energy integration; in anchored mode it must equal the real
+        // wall time between ticks, not tick_interval_secs. Sleep briefly to make
+        // the elapsed measurable.
+        let mut engine = SimulationEngine::new(PlantState::new(ts(12)), vec![], 30);
+        engine.anchor_to_wall_clock(None);
+        engine.tick(); // establishes last_wall
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        // Capture the work_time delta around the second tick to infer dt.
+        let before = engine.state.inverter.work_time_hours;
+        engine.tick();
+        let dt_hours = engine.state.inverter.work_time_hours - before;
+        let dt_secs = dt_hours * 3600.0;
+        // ~1.2s elapsed; allow tolerance for scheduler jitter.
+        assert!(
+            dt_secs >= 1.0 && dt_secs <= 3.0,
+            "dt should reflect ~1.2s real elapsed, got {dt_secs:.2}s"
         );
     }
 

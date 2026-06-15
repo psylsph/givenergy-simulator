@@ -101,13 +101,17 @@ pub async fn create_plant(
         "ThreePhase8kW" => 8000.0,
         "ThreePhase10kW" => 10000.0,
         "ThreePhase11kW" => 11000.0,
+        // Gateway: aggregates an All-in-One (6kW continuous) behind it.
+        "Gateway12kW" => 6000.0,
         _ => 3600.0,
     };
     let max_batt_kw = max_batt_w / 1000.0;
 
     let now = chrono::Local::now().naive_local();
 
-    // Build battery modules from per-module config, or fall back to battery_count
+    // Build battery modules from per-module config, or fall back to battery_count.
+    // Gateway: batteries live in the child AIO, not the gateway itself.
+    // Default to a realistic 3 × GIV-BAT-3.4-HV stack (10.2 kWh) for the AIO.
     let mut plant_state = if let Some(modules) = params.battery_modules {
         let module_count = modules.len().clamp(1, 6);
         let per_module_max_kw = max_batt_kw / module_count as f64;
@@ -123,6 +127,28 @@ pub async fn create_plant(
                     capacity_kwh: effective_capacity,
                     nominal_capacity_kwh: capacity,
                     soh,
+                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
+                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
+                    ..BatteryState::default()
+                }
+            })
+            .collect();
+        let mut state = sim_models::PlantState::new(now);
+        state.batteries = batts;
+        state.sync_battery_from_vec();
+        state
+    } else if inv_type.starts_with("Gateway") {
+        // Gateway AIO defaults: 3 × GIV-BAT-3.4-HV modules (10.2 kWh stack)
+        let hv_capacity: f64 = 3.4;
+        let count = 3usize;
+        let per_module_max_kw = max_batt_kw / count as f64;
+        let batts: Vec<BatteryState> = (0..count)
+            .map(|_| {
+                let c_rate_kw = (hv_capacity * 0.7).min(10.0);
+                BatteryState {
+                    capacity_kwh: hv_capacity,
+                    nominal_capacity_kwh: hv_capacity,
+                    soh: 1.0,
                     max_charge_kw: c_rate_kw.min(per_module_max_kw),
                     max_discharge_kw: c_rate_kw.min(per_module_max_kw),
                     ..BatteryState::default()
@@ -181,6 +207,8 @@ pub async fn create_plant(
         "Gen1Hybrid" => 5000.0,
         "Gen2Hybrid" => 5000.0,
         "Gen3Hybrid" => 5000.0,
+        // Gateway: aggregates an All-in-One (6kW AC) behind it.
+        "Gateway12kW" => 6000.0,
         _ => 5000.0,
     };
     plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
@@ -469,6 +497,16 @@ pub async fn start_simulation(
 
     let speed = params.speed.unwrap_or(10.0);
     let tick_delay = std::time::Duration::from_millis((1000.0 / speed) as u64);
+
+    // At real-time speed (speed <= 1.0) lock the sim clock to the host wall
+    // clock so the served/displayed inverter time matches the computer's time
+    // (no drift). At higher speeds the user wants fast-forward, so keep the
+    // original fixed-step advancement.
+    if speed <= 1.0 {
+        if let Some(e) = state.engine.lock().await.as_mut() {
+            e.anchor_to_wall_clock(None);
+        }
+    }
 
     let engine = state.engine.clone();
     let register_store = state.register_store.clone();
@@ -1976,7 +2014,10 @@ pub async fn load_plant(
         ]
     };
 
-    let engine = SimulationEngine::new(plant_state, devices, tick_interval);
+    let mut engine = SimulationEngine::new(plant_state, devices, tick_interval);
+    // Loaded plants run live: lock the clock to the host wall clock so the
+    // served/displayed inverter time matches the computer's time (no drift).
+    engine.anchor_to_wall_clock(None);
 
     // Populate register store so Modbus clients see non-zero values immediately.
     {

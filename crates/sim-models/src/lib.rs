@@ -434,6 +434,12 @@ pub struct PlantConfig {
     /// IR 42-43 on the inverter slave (0x32/0x31).
     #[serde(default = "default_true")]
     pub ct_meter_installed: bool,
+    /// Gateway firmware version byte (IR 1603). Values < 10 select V1
+    /// (`GA000009`, high-register-first uint32, aio1 serial @ 1831-1835);
+    /// values >= 10 select V2 (`GA000010`, low-register-first uint32,
+    /// aio1 serial @ 1841-1845). Only meaningful for gateway inverters.
+    #[serde(default = "default_gateway_fw_version")]
+    pub gateway_fw_version: u16,
 }
 
 fn default_inverter_type() -> String {
@@ -454,6 +460,9 @@ fn default_disabled_hhmm() -> u16 {
 fn default_true() -> bool {
     true
 }
+fn default_gateway_fw_version() -> u16 {
+    9
+}
 
 impl Default for PlantConfig {
     fn default() -> Self {
@@ -465,6 +474,7 @@ impl Default for PlantConfig {
             max_ac_watts: default_max_ac_watts(),
             pv2_peak_watts: 0.0,
             ct_meter_installed: true,
+            gateway_fw_version: 9,
         }
     }
 }

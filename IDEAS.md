@@ -64,8 +64,24 @@ Three-phase inverters expose 145+ input registers for per-phase V/I/P, energy to
 ### 18. Hot water diverter / solar diverter simulation
 GivEnergy inverters can control a relay for diverting surplus solar to an immersion heater (HR 202-239, IR 23). Modelling this as a configurable load that activates when export exceeds a threshold would add realism for UK installations with diverter hardware.
 
-### 19. Gateway-mode simulation
-Gateway devices (DTC prefix "7") aggregate data from multiple All-in-One inverters. Simulating this requires parallel inverter state with a gateway-style register bank (IR 1600-1859). Useful for testing givenergy-modbus gateway detection paths.
+### 19. Gateway-mode simulation ✅ (v0.16.0, Phase 1)
+Gateway devices (DTC prefix `0x7xxx`) aggregate data from All-in-One inverters.
+**Implemented as a single-AIO projection model** (v0.16.0): when `inverter_type`
+starts with `Gateway`, the `PlantState` models the child AIO's physics and
+`project_gateway_bank()` derives the IR 1600–1859 aggregation bank + `GW` serial
+prefix from that state. Detection (`GW` serial), version/variant (V1
+`GA000009`), work mode, AIO summary, per-AIO power/SOC/serials, energy totals,
+and the EV-excluded `p_load` are all served. See
+`docs/gateway-register-reference.md` for the authoritative register map.
+
+**Remaining work (Phase 2+):**
+- Multi-AIO topology (2–3 AIOs) — currently single-AIO only.
+- Firmware variant **V2** (`GA000010+`): swapped `uint32` byte order + shifted
+  AIO serial addresses, gated by a config knob. Currently V1-only.
+- Control-write routing (charge/discharge enable, SOC target) currently behaves
+  like a normal inverter; gateway-as-authoritative-control-endpoint semantics
+  need explicit handling for parallel installs.
+- Error-respond to unmapped gateway sub-ranges (currently returns zeros).
 
 ### 20. Frequency/Watt and Volt/VAR grid support
 Modern inverters support grid support functions: frequency derating (curtail export when grid frequency > 50.2Hz) and Volt/VAR (absorb reactive power when voltage is high). Implementing these in the InverterEngine would make the simulator useful for grid-interconnection testing.

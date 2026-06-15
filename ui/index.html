@@ -402,6 +402,7 @@
           <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
           <option value="ThreePhase10kW">Three Phase 10kW (0x4003)</option>
           <option value="ThreePhase11kW">Three Phase 11kW (0x4004)</option>
+          <option value="Gateway12kW">Gateway 12kW (0x7001)</option>
           <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
           <option value="AllInOne">All-in-One (0x8002)</option>
           <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
@@ -412,16 +413,22 @@
           <option value="AIOHybrid10kW">AIO Hybrid 10kW (0x8203)</option>
         </select>
 
-        <label>Battery Modules</label>
-        <select id="battery-count">
-          <option value="1">1 Module</option>
-          <option value="2">2 Modules</option>
-          <option value="3">3 Modules</option>
-          <option value="4">4 Modules</option>
-          <option value="5">5 Modules</option>
-          <option value="6">6 Modules</option>
-        </select>
-        <div id="battery-modules-container"></div>
+        <div id="battery-config-section">
+          <label>Battery Modules</label>
+          <select id="battery-count">
+            <option value="1">1 Module</option>
+            <option value="2">2 Modules</option>
+            <option value="3">3 Modules</option>
+            <option value="4">4 Modules</option>
+            <option value="5">5 Modules</option>
+            <option value="6">6 Modules</option>
+          </select>
+          <div id="battery-modules-container"></div>
+        </div>
+        <div id="gateway-battery-info" style="display:none;margin-top:4px;padding:8px;background:var(--bg-raised);border-radius:6px;font-size:12px">
+          <div style="font-weight:600;margin-bottom:2px">AIO Battery Stack</div>
+          <div>3 × GIV-BAT-3.4-HV (10.2 kWh) — child AIO integrated</div>
+        </div>
 
         <label>PV1 Peak (W)</label>
         <input type="number" id="peak-watts" value="5000" min="0" step="500">
@@ -722,6 +729,7 @@
       ThreePhase8kW:    { dtc: 0x4002, label: 'Three Phase 8kW', maxBattW: 8000, nomV: 76.8 },
       ThreePhase10kW:   { dtc: 0x4003, label: 'Three Phase 10kW',maxBattW: 10000,nomV: 76.8 },
       ThreePhase11kW:   { dtc: 0x4004, label: 'Three Phase 11kW',maxBattW: 11000,nomV: 76.8 },
+      Gateway12kW:     { dtc: 0x7001, label: 'Gateway 12kW',    maxBattW: 6000, nomV: 307.0 },
       AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',  maxBattW: 6000, nomV: 307.0 },
       AllInOne:        { dtc: 0x8002, label: 'All-in-One',       maxBattW: 6000, nomV: 307.0 },
       AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',  maxBattW: 5000, nomV: 307.0 },
@@ -782,6 +790,15 @@
     updateBatteryModuleDropdowns();
     el('battery-count').addEventListener('change', updateBatteryModuleDropdowns);
     el('ct-meter-select').addEventListener('change', setCtMeter);
+
+    // ---- Gateway: hide battery config, show AIO-integrated info ----
+    function toggleGatewayBatteryUi() {
+      const isGateway = el('inverter-type').value === 'Gateway12kW';
+      el('battery-config-section').style.display = isGateway ? 'none' : '';
+      el('gateway-battery-info').style.display = isGateway ? '' : 'none';
+    }
+    el('inverter-type').addEventListener('change', toggleGatewayBatteryUi);
+    toggleGatewayBatteryUi();
 
     // ---- Update battery module display in main panel ----
     // Track slider interaction to avoid resetting slider mid-drag.
@@ -957,7 +974,10 @@
 
     function syncSidebarControls(s) {
       // Inverter type
-      if (s.inverter_type) el('inverter-type').value = s.inverter_type;
+      if (s.inverter_type) {
+        el('inverter-type').value = s.inverter_type;
+        toggleGatewayBatteryUi();
+      }
       // Battery module count + capacity dropdowns
       if (s.battery_module_count) {
         el('battery-count').value = String(s.battery_module_count);
@@ -1251,7 +1271,10 @@
 
       // Footer
       el('footer-info').textContent = `${s.inverter_mode} mode`;
-      el('footer-modules').textContent = `${s.battery_module_count} module(s)`;
+      const isGw = s.inverter_type?.startsWith('Gateway');
+      el('footer-modules').textContent = isGw
+        ? `${s.battery_module_count} module(s) via AIO`
+        : `${s.battery_module_count} module(s)`;
       el('footer-heaters').innerHTML = `
         <span class="heater-indicator ${s.battery_self_heating ? 'on' : 'off'}">
           🔆 Self-Heat ${s.battery_self_heating ? 'ON' : 'OFF'}
@@ -1341,18 +1364,30 @@
     // ---- Button Handlers ----
     el('btn-create').addEventListener('click', async () => {
       try {
-        const moduleSelects = document.querySelectorAll('.battery-size');
-        const sohSliders = document.querySelectorAll('.battery-soh');
-        const batteryModules = Array.from(moduleSelects).map((sel, i) => ({
-          capacity_kwh: parseFloat(sel.value),
-          soh: sohSliders[i] ? parseFloat(sohSliders[i].value) / 100.0 : 1.0,
-        }));
         const inverterType = el('inverter-type').value;
+        const isGateway = inverterType === 'Gateway12kW';
+
+        // Gateway hides battery config — batteries are AIO-integrated.
+        // Don't collect battery data from the hidden UI; the backend supplies defaults.
+        let batteryCount, batteryModules;
+        if (isGateway) {
+          batteryCount = undefined;
+          batteryModules = undefined;
+        } else {
+          batteryCount = parseInt(el('battery-count').value);
+          const moduleSelects = document.querySelectorAll('.battery-size');
+          const sohSliders = document.querySelectorAll('.battery-soh');
+          batteryModules = Array.from(moduleSelects).map((sel, i) => ({
+            capacity_kwh: parseFloat(sel.value),
+            soh: sohSliders[i] ? parseFloat(sohSliders[i].value) / 100.0 : 1.0,
+          }));
+          batteryModules = batteryModules.length > 0 ? batteryModules : undefined;
+        }
 
         const state = await invoke('create_plant', {
           params: {
-            battery_count: parseInt(el('battery-count').value),
-            battery_modules: batteryModules.length > 0 ? batteryModules : undefined,
+            battery_count: batteryCount,
+            battery_modules: batteryModules,
             peak_watts: parseFloat(el('peak-watts').value),
             pv2_peak_watts: (el('pv2-peak-watts') ? parseFloat(el('pv2-peak-watts').value) : 0) || 0,
             load_profile: el('load-profile').value,

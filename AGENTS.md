@@ -29,6 +29,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.16.0** — GivEnergy Gateway device simulation (single-AIO projection model: `GW` serial prefix, IR 1600–1859 aggregation bank, V1 firmware variant). See `docs/gateway-register-reference.md`.
+
 **0.15.0** — CT clamp meter toggle (dropdown in Plant Setup, gates IR 60-89 on slave 0x01).
 
 **0.14.4** — Three-phase force charge/discharge register fix + missing energy total registers.
@@ -191,7 +193,7 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 | EMS | 0x5001 | 5000W¹ | 3600W¹ | — |
 | EMSCommercial | 0x5101 | 5000W¹ | 3600W¹ | — |
 | ACThreePhase | 0x6001 | 5000W¹ | 3600W¹ | — |
-| Gateway12kW | 0x7001 | 5000W¹ | 3600W¹ | — |
+| Gateway12kW | 0x7001 | 6000W | 6000W | — |
 | AllInOne6 | 0x8001 | 6000W | 6000W | — |
 | AllInOne | 0x8002 | 6000W | 6000W | — |
 | AllInOne5 | 0x8003 | 5000W | 5000W | — |
@@ -253,6 +255,40 @@ Use `while (container.children.length > count)` with `removeChild` instead.
 Crate-level `#![allow(clippy::...)]` is used for non-fixable style issues.
 CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, scenario regression.
 
+### Gateway device simulation (single-AIO projection model)
+The GivEnergy **Gateway** (`Gateway12kW`, DTC `0x7001`) is an AC aggregation /
+backup-transfer hub, NOT an inverter — it sits in front of one or more
+All-in-One (AIO) units and is the system's measurement + control point. It is
+simulated as a **projection mode**, not a new plant model: when
+`config.inverter_type` starts with `Gateway`, the existing `PlantState` models
+the **child AIO's physics** and `RegisterStore::project_gateway_bank()` derives
+the gateway's aggregated view from that same state. No multi-inverter refactor.
+
+Detection keys off a **`GW`-prefixed serial** (HR 13-17, e.g. `GW2423G192`);
+the DTC family is `0x7xxx`. The gateway serves a dedicated **Input Register
+aggregation bank at IR 1600–1859** (version, work mode, V/I/P, AIO summary,
+per-AIO power/SOC/serials, energy totals, faults). For non-gateway inverters
+the bank stays at seeded zeros → the client's `is_valid()` check
+(non-empty version string on IR 1600–1603) fails → client correctly concludes
+"no gateway present". **Authoritative map: `docs/gateway-register-reference.md`.**
+
+Key invariants enforced by `project_gateway_bank`:
+- **Firmware variant V1** (`GA000009`) is hardwired: IR(1603)=9 (<10 selects V1),
+  `uint32` energy totals are high-register-first, AIO serials at IR 1831+.
+  V2 (swapped byte order + shifted serial addresses, selected by IR(1603)≥10)
+  is future work.
+- **`p_load` excludes the EV charger** — the defining gateway property.
+  `state.load.demand_w` is household-only; EVC draw is tracked separately.
+- **Battery power sign** follows GE wire convention (+ = discharging/out), the
+  *negation* of the internal `total_battery_power_kw()` (+ = charging).
+- Single-AIO topology: `parallel_aio_num = 1`, AIO1 carries all figures,
+  AIO2/AIO3 registers stay zero.
+
+The Modbus read path needs **no special handling** — it already serves arbitrary
+Input register addresses via `read_by_space`. Gateway `RegisterDef`s use category
+`RegisterCategory::Gateway`; values are written raw by the helper so catalogue
+scaling factors are informational only.
+
 ## GivEnergy Register Map
 
 ### Input Registers (fn 0x04, slave 0x32) — IR 0-59
@@ -309,6 +345,19 @@ CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, sc
 | 500-505 | Energy totals (import, export, charge, discharge, solar, consumption kWh) |
 | 600-602 | Config (battery_count, tick_interval, weather) |
 | 700-705 | Schedules (charge/discharge start/end, target SOCs) |
+
+### Gateway Aggregation Registers (fn 0x04, slave 0x32) — IR 1600-1859
+Served only when `inverter_type` is a Gateway (`Gateway12kW`). Full map in
+`docs/gateway-register-reference.md`; highlights:
+| Range | Category |
+|-------|----------|
+| 1600-1631 | Version (`GA000009`, V1 selector=IR1603<10), work mode, V/I/P, faults, first AIO serial |
+| 1640-1657 | Daily + lifetime energy (grid/pv/aio/load) — uint32 V1 = hi-reg-first |
+| 1700-1713 | AIO summary (num/online/power/state) + per-AIO charge |
+| 1750-1758 | Per-AIO discharge |
+| 1795-1803 | Battery aggregate energy + per-AIO SOC |
+| 1816-1818 | Per-AIO inverter power (signed: + = discharge) |
+| 1831-1849 | Per-AIO serial numbers (V1 addresses) |
 
 ## Running Tests
 
@@ -402,4 +451,7 @@ The `project_schedule_for` method writes to the correct address based on inverte
 - v0.14.4: 245
 - v0.14.5: 258
 - v0.15.0: 263
-- v0.16.0: 362
+- v0.16.0: 377
+- v0.16.1: 382
+- v0.16.2: 384
+- v0.16.3: 385
