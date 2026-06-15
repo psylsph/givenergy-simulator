@@ -139,7 +139,9 @@ pub async fn create_plant(
         state
     } else if inv_type.starts_with("Gateway") {
         // Gateway AIO defaults: 3 × GIV-BAT-3.4-HV modules (10.2 kWh stack)
+        // Each module is 16S LFP @ 3.2V nominal = 51.2V.
         let hv_capacity: f64 = 3.4;
+        let hv_voltage: f64 = 51.2;
         let count = 3usize;
         let per_module_max_kw = max_batt_kw / count as f64;
         let batts: Vec<BatteryState> = (0..count)
@@ -148,6 +150,7 @@ pub async fn create_plant(
                 BatteryState {
                     capacity_kwh: hv_capacity,
                     nominal_capacity_kwh: hv_capacity,
+                    voltage_v: hv_voltage,
                     soh: 1.0,
                     max_charge_kw: c_rate_kw.min(per_module_max_kw),
                     max_discharge_kw: c_rate_kw.min(per_module_max_kw),

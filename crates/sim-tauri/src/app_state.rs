@@ -590,4 +590,58 @@ mod tests {
         assert_eq!(dto.charge_power_limit_percent, 100.0);
         assert_eq!(dto.discharge_power_limit_percent, 100.0);
     }
+
+    #[test]
+    fn gateway_aio_battery_defaults() {
+        // Verify that the Gateway AIO battery stack matches the info card:
+        // 3 × GIV-BAT-3.4-HV (10.2 kWh, 51.2V nominal per module).
+        let hv_capacity: f64 = 3.4;
+        let count = 3usize;
+        let max_batt_kw = 6000.0;
+        let per_module_max_kw = max_batt_kw / count as f64;
+        let batts: Vec<sim_models::BatteryState> = (0..count)
+            .map(|_| {
+                let c_rate_kw = (hv_capacity * 0.7).min(10.0);
+                sim_models::BatteryState {
+                    capacity_kwh: hv_capacity,
+                    nominal_capacity_kwh: hv_capacity,
+                    voltage_v: 51.2, // GIV-BAT-3.4-HV: 16S LFP @ 3.2V nominal
+                    soh: 1.0,
+                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
+                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
+                    ..sim_models::BatteryState::default()
+                }
+            })
+            .collect();
+
+        assert_eq!(batts.len(), 3, "must create 3 HV modules");
+        for (i, b) in batts.iter().enumerate() {
+            assert_eq!(
+                b.capacity_kwh, 3.4,
+                "module {i}: capacity_kwh must be 3.4, got {}",
+                b.capacity_kwh
+            );
+            assert_eq!(
+                b.nominal_capacity_kwh, 3.4,
+                "module {i}: nominal_capacity_kwh must be 3.4, got {}",
+                b.nominal_capacity_kwh
+            );
+            assert_eq!(
+                b.voltage_v, 51.2,
+                "module {i}: voltage_v must be 51.2 (HV 16S), got {}",
+                b.voltage_v
+            );
+            assert!(
+                b.max_charge_kw > 0.0,
+                "module {i}: max_charge_kw must be positive"
+            );
+        }
+
+        // Total stack capacity = 3 × 3.4 = 10.2 kWh
+        let total_cap: f64 = batts.iter().map(|b| b.capacity_kwh).sum();
+        assert!(
+            (total_cap - 10.2).abs() < 0.01,
+            "total stack capacity must be 10.2 kWh, got {total_cap}"
+        );
+    }
 }
