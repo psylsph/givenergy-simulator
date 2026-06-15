@@ -109,10 +109,34 @@ pub async fn create_plant(
 
     let now = chrono::Local::now().naive_local();
 
-    // Build battery modules from per-module config, or fall back to battery_count.
     // Gateway: batteries live in the child AIO, not the gateway itself.
     // Default to a realistic 3 × GIV-BAT-3.4-HV stack (10.2 kWh) for the AIO.
-    let mut plant_state = if let Some(modules) = params.battery_modules {
+    // Check Gateway FIRST so it always wins regardless of battery_modules param.
+    let mut plant_state = if inv_type.starts_with("Gateway") {
+        // Each module is 16S LFP @ 3.2V nominal = 51.2V.
+        let hv_capacity: f64 = 3.4;
+        let hv_voltage: f64 = 51.2;
+        let count = 3usize;
+        let per_module_max_kw = max_batt_kw / count as f64;
+        let batts: Vec<BatteryState> = (0..count)
+            .map(|_| {
+                let c_rate_kw = (hv_capacity * 0.7).min(10.0);
+                BatteryState {
+                    capacity_kwh: hv_capacity,
+                    nominal_capacity_kwh: hv_capacity,
+                    voltage_v: hv_voltage,
+                    soh: 1.0,
+                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
+                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
+                    ..BatteryState::default()
+                }
+            })
+            .collect();
+        let mut state = sim_models::PlantState::new(now);
+        state.batteries = batts;
+        state.sync_battery_from_vec();
+        state
+    } else if let Some(modules) = params.battery_modules {
         let module_count = modules.len().clamp(1, 6);
         let per_module_max_kw = max_batt_kw / module_count as f64;
         let batts: Vec<BatteryState> = modules
@@ -127,31 +151,6 @@ pub async fn create_plant(
                     capacity_kwh: effective_capacity,
                     nominal_capacity_kwh: capacity,
                     soh,
-                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
-                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
-                    ..BatteryState::default()
-                }
-            })
-            .collect();
-        let mut state = sim_models::PlantState::new(now);
-        state.batteries = batts;
-        state.sync_battery_from_vec();
-        state
-    } else if inv_type.starts_with("Gateway") {
-        // Gateway AIO defaults: 3 × GIV-BAT-3.4-HV modules (10.2 kWh stack)
-        // Each module is 16S LFP @ 3.2V nominal = 51.2V.
-        let hv_capacity: f64 = 3.4;
-        let hv_voltage: f64 = 51.2;
-        let count = 3usize;
-        let per_module_max_kw = max_batt_kw / count as f64;
-        let batts: Vec<BatteryState> = (0..count)
-            .map(|_| {
-                let c_rate_kw = (hv_capacity * 0.7).min(10.0);
-                BatteryState {
-                    capacity_kwh: hv_capacity,
-                    nominal_capacity_kwh: hv_capacity,
-                    voltage_v: hv_voltage,
-                    soh: 1.0,
                     max_charge_kw: c_rate_kw.min(per_module_max_kw),
                     max_discharge_kw: c_rate_kw.min(per_module_max_kw),
                     ..BatteryState::default()
