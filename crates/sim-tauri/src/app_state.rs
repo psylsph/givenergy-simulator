@@ -643,5 +643,39 @@ mod tests {
             (total_cap - 10.2).abs() < 0.01,
             "total stack capacity must be 10.2 kWh, got {total_cap}"
         );
+
+        // Simulate the full PlantState::new + overwrite flow that create_plant uses
+        let now = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let mut state = sim_models::PlantState::new(now);
+        state.batteries = batts;
+        state.sync_battery_from_vec();
+
+        // Now verify the DTO that the UI would receive
+        let dto = PlantStateDto::from(&state);
+        assert_eq!(dto.battery_modules.len(), 3, "DTO must have 3 modules");
+        assert_eq!(
+            dto.battery_modules[0].capacity_kwh, 3.4,
+            "DTO module 0 capacity must be 3.4, got {}",
+            dto.battery_modules[0].capacity_kwh
+        );
+        assert_eq!(
+            dto.battery_modules[0].nominal_capacity_kwh, 3.4,
+            "DTO module 0 nominal capacity must be 3.4, got {}",
+            dto.battery_modules[0].nominal_capacity_kwh
+        );
+        assert_eq!(
+            dto.battery_modules[0].voltage_v, 51.2,
+            "DTO module 0 voltage must be 51.2, got {}",
+            dto.battery_modules[0].voltage_v
+        );
+        // Verify the UI display string: "3.4 / 3.4 kWh"
+        let display = format!(
+            "{:.1} / {:.1} kWh",
+            dto.battery_modules[0].capacity_kwh, dto.battery_modules[0].nominal_capacity_kwh
+        );
+        assert_eq!(display, "3.4 / 3.4 kWh", "UI display must match");
     }
 }
