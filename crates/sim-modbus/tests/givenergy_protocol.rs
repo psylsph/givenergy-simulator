@@ -1182,6 +1182,89 @@ async fn gateway_bank_unmapped_range_rejected() {
 }
 
 #[tokio::test]
+async fn gateway_multi_aio_serves_3_aio_registers() {
+    // Gateway with 3 modules = 3 AIOs, each getting 1/3 of power/energy/SOC.
+    let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let mut state = sim_models::PlantState::with_battery_count(ts, 3);
+    state.config.inverter_type = "Gateway12kW".to_string();
+    state.config.parallel_aio_num = 3;
+    for b in &mut state.batteries {
+        b.soc_percent = 65.0;
+        b.power_kw = 2.0;
+    }
+    state.sync_battery_from_vec();
+    state.energy_totals.battery_charge_kwh = 50.0;
+    state.energy_totals.battery_discharge_kwh = 30.0;
+
+    let (addr, _, _) = start_server_with_state(&state).await;
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+    // 1) Read parallel_aio_num
+    let resp = send_recv(&mut stream, &build_read_input_request(1700, 2)).await;
+    let (_, func, payload) = decode_response(&resp);
+    assert_eq!(func, FC_READ_INPUT);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data[0], 3, "parallel_aio_num = 3");
+    assert_eq!(data[1], 3, "parallel_aio_online_num = 3");
+
+    // 2) Read per-AIO SOC (1801-1803)
+    let resp = send_recv(&mut stream, &build_read_input_request(1801, 3)).await;
+    let (_, _, payload) = decode_response(&resp);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data[0], 65, "aio1_soc");
+    assert_eq!(data[1], 65, "aio2_soc");
+    assert_eq!(data[2], 65, "aio3_soc");
+
+    // 3) Read per-AIO inverter power (1816-1818)
+    // 3 modules × 2kW charging = 6kW total → -6000W on wire.
+    // Each AIO: -6000/3 = -2000W charging (negative on wire).
+    let resp = send_recv(&mut stream, &build_read_input_request(1816, 3)).await;
+    let (_, _, payload) = decode_response(&resp);
+    let (_, _, data) = parse_read_payload(&payload);
+    for (i, &v) in data.iter().enumerate() {
+        let signed = v as i16;
+        assert_eq!(signed, -2000, "AIO{} power must be -2000W", i + 1);
+    }
+
+    // 4) Read per-AIO charge today (1705, 1708, 1711)
+    // 50 kWh total / 3 = 16.667 kWh each → deci = 167
+    let resp = send_recv(&mut stream, &build_read_input_request(1705, 9)).await;
+    let (_, _, payload) = decode_response(&resp);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data[0], 167, "aio1_charge_today");
+    assert_eq!(data[3], 167, "aio2_charge_today");
+    assert_eq!(data[6], 167, "aio3_charge_today");
+
+    // 5) Read AIO serials (V1: 1831-1835, 1838-1842, 1845-1849)
+    // 3 AIOs × 5 regs with 3-reg gaps (1836-1837, 1843-1844) = 19 regs
+    let resp = send_recv(&mut stream, &build_read_input_request(1831, 19)).await;
+    let (_, _, payload) = decode_response(&resp);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(data.len(), 19);
+
+    let decode_serial = |start: usize| -> String {
+        let mut s = String::new();
+        for &v in data.iter().skip(start).take(5) {
+            s.push((v >> 8) as u8 as char);
+            s.push((v & 0xFF) as u8 as char);
+        }
+        s.trim().to_string()
+    };
+    assert_eq!(decode_serial(0), "SA24230001", "aio1 serial at 1831-1835");
+    // Gap at 1836-1837 (data[5..7])
+    assert_eq!(data[5], 0, "gap 1836");
+    assert_eq!(data[6], 0, "gap 1837");
+    assert_eq!(decode_serial(7), "SA24230002", "aio2 serial at 1838-1842");
+    // Gap at 1843-1844 (data[12..14])
+    assert_eq!(data[12], 0, "gap 1843");
+    assert_eq!(data[13], 0, "gap 1844");
+    assert_eq!(decode_serial(14), "SA24230003", "aio3 serial at 1845-1849");
+}
+
+#[tokio::test]
 async fn write_and_read_different_slave_addresses() {
     let (addr, _) = start_test_server().await;
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
