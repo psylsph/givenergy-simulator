@@ -236,20 +236,58 @@ impl RegisterStore {
             ((raw >> 16) as u16, (raw & 0xFFFF) as u16)
         };
         let clamp_i16_word = |watts: f64| -> u16 { watts.clamp(-32768.0, 32767.0) as i16 as u16 };
-        let fault_code = || -> u32 {
+        // Single-phase inverter fault bitmask for HR(223)-HR(224)
+        // (inverter_errors / inverter_fault_messages) — the authoritative
+        // named-fault register — and its raw hex mirror on IR(39)-IR(40).
+        // Bit positions match the GivEnergy `_inverter_fault_code` decoder used
+        // by BOTH givenergy-modbus (model/inverter.py) and giv_tcp
+        // (baseinverter.py): the uint32 is decoded MSB-first, so list-index `i`
+        // corresponds to bit `31-i`.
+        //   grid_loss         → bit 7  ("No Utility",         idx 24)
+        //   inverter_trip     → bit 23 ("Consistent Fault",   idx 8)
+        //   battery_over_temp → bit 0  ("Inverter NTC Fault", idx 31)
+        //     — the only thermal bit on the single-phase inverter fault word; real
+        //       battery thermal status lives in the BMS, so this is the closest
+        //       client-decodable thermal signal (also reflected on IR 0 status and
+        //       IR 57 charger_warning_code as auxiliary signals).
+        //   comm_timeout      → bit 24 ("ARM Comms Fault",    idx 7)
+        //   sensor_drift      → bit 30 (reserved idx 1 — non-zero word, no name)
+        let single_phase_fault_word = || -> u32 {
             let mut code = 0u32;
             for fault in &state.active_faults {
                 match fault.as_str() {
-                    // Align to common GivEnergy-style fault meanings where possible.
-                    "grid_loss" => code |= 1 << 8,     // No Utility
-                    "inverter_trip" => code |= 1 << 9, // relay/consistent inverter fault bucket
-                    "battery_over_temp" => code |= 1 << 1, // generic battery/charger warning bucket
-                    "comm_timeout" => code |= 1 << 25, // ARM/DSP comms bucket
-                    "sensor_drift" => code |= 1 << 0,
-                    _ => code |= 1,
+                    "grid_loss" => code |= 1 << 7,
+                    "inverter_trip" => code |= 1 << 23,
+                    "battery_over_temp" => code |= 1 << 0,
+                    "comm_timeout" => code |= 1 << 24,
+                    "sensor_drift" => code |= 1 << 30,
+                    _ => {}
                 }
             }
             code
+        };
+        // Three-phase inverter fault words for IR(1300)-IR(1307). Each word is a
+        // 16-bit MSB-first bitmask decoded by `_inverter_fault_code2`
+        // (givenergy-modbus model/inverter_threephase.py) / `inverter_fault_code2`
+        // (giv_tcp model/threephase.py): list-index `i` ↔ bit `15-i`.
+        //   grid_loss         → IR1301 bit 0  ("No Grid connection",       idx 15)
+        //   inverter_trip     → IR1305 bit 4  ("Relay fault",              idx 11)
+        //   battery_over_temp → IR1307 bit 9  ("Battery over temperature", idx 6)
+        //   comm_timeout      → IR1301 bit 15 ("Gateway Comm fault",       idx 0)
+        //   sensor_drift      → IR1305 bit 13 ("NTC open",                 idx 2)
+        let threephase_fault_words = || -> [u16; 8] {
+            let mut w = [0u16; 8];
+            for fault in &state.active_faults {
+                match fault.as_str() {
+                    "grid_loss" => w[1] |= 1 << 0,
+                    "inverter_trip" => w[5] |= 1 << 4,
+                    "battery_over_temp" => w[7] |= 1 << 9,
+                    "comm_timeout" => w[1] |= 1 << 15,
+                    "sensor_drift" => w[5] |= 1 << 13,
+                    _ => {}
+                }
+            }
+            w
         };
         // Three-phase / HV battery voltage: sum of per-module voltages from BatteryEngine.
         // BatteryEngine scales the LFP curve by 1.5× for ThreePhase (24S, 76.8V nominal).
@@ -271,9 +309,18 @@ impl RegisterStore {
                 // GivEnergy-native Input Registers (IR 0-59)
                 // ================================================================
 
-                // IR 0: Inverter status
+                // IR 0: Inverter status (givenergy-modbus `Status` enum:
+                // 0=Waiting, 1=Normal, 2=Warning, 3=Fault). HEM reads FAULT as
+                // its authoritative inverter-trip signal, so reflect it here.
                 "ge_ir_status" => {
-                    self.values.insert(key, 1); // always normal
+                    self.values.insert(
+                        key,
+                        if state.active_faults.iter().any(|f| f == "inverter_trip") {
+                            3
+                        } else {
+                            1
+                        },
+                    );
                     continue;
                 }
                 // IR 1: PV1 voltage (×0.1 V)
@@ -425,9 +472,16 @@ impl RegisterStore {
                 "ge_ir_today_discharge_energy" => Some(state.energy_totals.battery_discharge_kwh),
                 // IR 38: countdown
                 "ge_ir_countdown" => Some(0.0),
-                // IR 39-40: inverter fault bitmask (uint32)
+                // IR 39-40: raw fault_code (displayed as hex, no named decoder —
+                // giv_tcp does not decode it at all). Mirrors the HR(223-224)
+                // inverter fault word for single-phase units. Three-phase units
+                // surface named faults on IR(1300-1307) instead.
                 "ge_ir_fault_code_high" | "ge_ir_fault_code_low" => {
-                    let code = fault_code();
+                    let code = if is_three_phase {
+                        0
+                    } else {
+                        single_phase_fault_word()
+                    };
                     self.values.insert(
                         key,
                         if def.name.ends_with("_high") {
@@ -467,13 +521,17 @@ impl RegisterStore {
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
-                // IR 49: system/work mode (2=on-grid, 1=off-grid, 3=fault)
-                "ge_ir_system_mode" => Some(if !state.active_faults.is_empty() {
-                    3.0
-                } else if state.grid.connected {
-                    2.0
-                } else {
+                // IR 49: system/work mode (2=on-grid, 1=off-grid, 3=fault).
+                // Off-grid takes precedence: a grid_loss fault disconnects the
+                // grid (see sim-faults), so report OFF_GRID rather than a
+                // generic FAULT — this is the inverter's authoritative grid-loss
+                // signal consumed by HEM's decoder.
+                "ge_ir_system_mode" => Some(if !state.grid.connected {
                     1.0
+                } else if !state.active_faults.is_empty() {
+                    3.0
+                } else {
+                    2.0
                 }),
                 // IR 50: Battery voltage (×0.01 V)
                 "ge_ir_battery_voltage" => {
@@ -1336,28 +1394,46 @@ impl RegisterStore {
                     }
                     continue;
                 }
-                // HR 223-224: Inverter fault codes (uint32).
-                // GivTCP inverter.py reads inverter_errors from these two registers.
-                // Encode active faults as a bitmask; 0 = no fault.
+                // HR 223-224: inverter_errors / inverter_fault_messages (uint32,
+                // MSB-first) — THE authoritative named-fault register, decoded by
+                // `_inverter_fault_code` (givenergy-modbus) / `inverter_fault_code`
+                // (giv_tcp) into human-readable fault names. Three-phase units do
+                // NOT use this register for faults — they use IR(1300-1307).
                 "ge_hr_inverter_errors_high" | "ge_hr_inverter_errors_low" => {
-                    let fault_bits: u32 = if state.active_faults.is_empty() {
+                    let code = if is_three_phase {
                         0
                     } else {
-                        // Encode up to 32 faults as a bitmask from fault ID hashes
-                        let mut bits = 0u32;
-                        for (i, _) in state.active_faults.iter().take(32).enumerate() {
-                            bits |= 1u32 << i;
-                        }
-                        bits
+                        single_phase_fault_word()
                     };
                     self.values.insert(
                         key,
                         if def.name.ends_with("_high") {
-                            (fault_bits >> 16) as u16
+                            (code >> 16) as u16
                         } else {
-                            (fault_bits & 0xFFFF) as u16
+                            (code & 0xFFFF) as u16
                         },
                     );
+                    continue;
+                }
+                // IR 1300-1307: three-phase inverter fault words (16-bit each,
+                // MSB-first). Decoded by `_inverter_fault_code2` (givenergy-modbus
+                // threephase) / `inverter_fault_code2` (giv_tcp threephase). Zero
+                // for single-phase units, which use HR(223-224) instead.
+                "ge_ir_threephase_fault_0"
+                | "ge_ir_threephase_fault_1"
+                | "ge_ir_threephase_fault_2"
+                | "ge_ir_threephase_fault_3"
+                | "ge_ir_threephase_fault_4"
+                | "ge_ir_threephase_fault_5"
+                | "ge_ir_threephase_fault_6"
+                | "ge_ir_threephase_fault_7" => {
+                    let idx = (def.address - 1300) as usize;
+                    let words = if is_three_phase {
+                        threephase_fault_words()
+                    } else {
+                        [0u16; 8]
+                    };
+                    self.values.insert(key, words[idx]);
                     continue;
                 }
                 "pv_generation" => Some(state.solar.generation_w),
@@ -7474,6 +7550,21 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             space: Holding,
         },
         // ================================================================
+        // Three-phase inverter fault bank (Input Registers, IR 1300-1307)
+        // Populated only for three-phase inverters (ThreePhase*, ACThreePhase);
+        // single-phase units keep these at zero and use HR(223-224) instead.
+        // Each register is one 16-bit MSB-first fault word, decoded by the
+        // GivEnergy `_inverter_fault_code2` / `inverter_fault_code2` table.
+        // ================================================================
+        tph_fault_def(1300, "ge_ir_threephase_fault_0"),
+        tph_fault_def(1301, "ge_ir_threephase_fault_1"),
+        tph_fault_def(1302, "ge_ir_threephase_fault_2"),
+        tph_fault_def(1303, "ge_ir_threephase_fault_3"),
+        tph_fault_def(1304, "ge_ir_threephase_fault_4"),
+        tph_fault_def(1305, "ge_ir_threephase_fault_5"),
+        tph_fault_def(1306, "ge_ir_threephase_fault_6"),
+        tph_fault_def(1307, "ge_ir_threephase_fault_7"),
+        // ================================================================
         // GivEnergy Gateway aggregation bank (Input Registers, IR 1600-1859)
         // Read via fn 0x04 at the gateway slave. Populated only when the
         // inverter type is a Gateway (see project_gateway_bank). Values are
@@ -7602,6 +7693,21 @@ fn gw_ir_def(address: u16, name: &'static str, scaling: f64) -> RegisterDef {
         category: RegisterCategory::Gateway,
         typ: RegisterType::U16,
         scaling_factor: scaling,
+        access: Access::ReadOnly,
+        space: RegisterSpace::Input,
+    }
+}
+
+/// A three-phase inverter fault-word register (IR 1300-1307). Each register is
+/// one 16-bit MSB-first word from the `_inverter_fault_code2` /
+/// `inverter_fault_code2` decoder. See `project_from_state` for the bit map.
+fn tph_fault_def(address: u16, name: &'static str) -> RegisterDef {
+    RegisterDef {
+        address,
+        name: name.into(),
+        category: RegisterCategory::Inverter,
+        typ: RegisterType::U16,
+        scaling_factor: 1.0,
         access: Access::ReadOnly,
         space: RegisterSpace::Input,
     }
@@ -9546,5 +9652,273 @@ mod tests {
             default_register_catalogue().len(),
             "every projected V2 gateway value must have a catalogue def"
         );
+    }
+
+    // ================================================================
+    // Fault-bit correctness — verified against the GivEnergy reference
+    // decoders in givenergy-modbus (model/inverter.py,
+    // model/inverter_threephase.py) and giv_tcp (baseinverter.py,
+    // threephase.py, register.py).
+    // ================================================================
+
+    /// Full single-phase `_inverter_fault_code` table. Index `i` corresponds to
+    /// bit `31-i` of the uint32 (HR223 hi | HR224 lo), decoded MSB-first.
+    fn decode_single_phase_faults(val: u32) -> Vec<&'static str> {
+        const FAULTS: [Option<&str>; 32] = [
+            None,
+            None,
+            None,
+            Some("Backup Overload Fault"),
+            None,
+            None,
+            Some("Grid Monitor Comm Fault"),
+            Some("ARM Comms Fault"),
+            Some("Consistent Fault"),
+            Some("EEPROM Fault"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("Inverter Frequency Fault"),
+            Some("Relay Fault"),
+            Some("Inverter Voltage Fault"),
+            Some("GFCI Fault"),
+            Some("Hail Sensor Fault"),
+            Some("DSP Comms Fault"),
+            Some("Bus over voltage"),
+            Some("Inverter Current Fault"),
+            Some("No Utility"),
+            Some("PV Isolation Fault"),
+            Some("Current leak high"),
+            Some("DCI high"),
+            Some("PV Over voltage"),
+            Some("Grid voltage Fault"),
+            Some("Grid Frequency Fault"),
+            Some("Inverter NTC Fault"),
+        ];
+        let mut out = Vec::new();
+        for (i, name) in FAULTS.iter().enumerate() {
+            if val & (1 << (31 - i)) != 0
+                && let Some(n) = name
+            {
+                out.push(*n);
+            }
+        }
+        out
+    }
+
+    fn projected_fault_word(state: &PlantState) -> u32 {
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(state);
+        let hi = store.read_by_space(223, RegisterSpace::Holding).unwrap() as u32;
+        let lo = store.read_by_space(224, RegisterSpace::Holding).unwrap() as u32;
+        (hi << 16) | lo
+    }
+
+    #[test]
+    fn gen3_grid_loss_decodes_to_no_utility() {
+        // Default "Gen3" is a single-phase Gen3-style inverter. Grid loss MUST
+        // land on bit 7 = "No Utility" of the HR(223-224) inverter fault word.
+        let mut state = make_state();
+        state.active_faults = vec!["grid_loss".into()];
+        let word = projected_fault_word(&state);
+        assert_eq!(
+            decode_single_phase_faults(word),
+            vec!["No Utility"],
+            "grid_loss must decode to exactly [No Utility] (word={word:#010x})"
+        );
+        // Exact-bit check: bit 7 lives in the low word (HR224).
+        assert_eq!(store_hr224(&state), 0x0080);
+        assert_eq!(store_hr223(&state), 0);
+    }
+
+    #[test]
+    fn gen3_inverter_trip_decodes_to_consistent_fault() {
+        let mut state = make_state();
+        state.active_faults = vec!["inverter_trip".into()];
+        let word = projected_fault_word(&state);
+        assert_eq!(
+            decode_single_phase_faults(word),
+            vec!["Consistent Fault"],
+            "inverter_trip must decode to exactly [Consistent Fault] (word={word:#010x})"
+        );
+        // Bit 23 of the composite word lives in the high word (HR223) at bit 7.
+        assert_eq!(store_hr223(&state), 0x0080);
+        assert_eq!(store_hr224(&state), 0);
+        // Auxiliary signal: IR 0 status reflects FAULT (3).
+        assert_eq!(store_ir0(&state), 3);
+    }
+
+    #[test]
+    fn gen3_battery_over_temp_decodes_to_inverter_ntc_fault() {
+        // Single-phase inverters have no dedicated battery-over-temp bit on the
+        // inverter fault word; the closest client-decodable thermal bit is
+        // "Inverter NTC Fault" (idx 31 → bit 0).
+        let mut state = make_state();
+        state.active_faults = vec!["battery_over_temp".into()];
+        let word = projected_fault_word(&state);
+        assert_eq!(
+            decode_single_phase_faults(word),
+            vec!["Inverter NTC Fault"],
+            "battery_over_temp must decode to [Inverter NTC Fault] (word={word:#010x})"
+        );
+        assert_eq!(store_hr224(&state), 0x0001);
+        // Auxiliary signal: IR 57 charger_warning_code is non-zero.
+        assert_eq!(store_ir57(&state), 1);
+    }
+
+    #[test]
+    fn gen3_all_faults_combine_into_named_word() {
+        let mut state = make_state();
+        state.active_faults = vec![
+            "grid_loss".into(),
+            "inverter_trip".into(),
+            "battery_over_temp".into(),
+            "comm_timeout".into(),
+        ];
+        let word = projected_fault_word(&state);
+        let mut names = decode_single_phase_faults(word);
+        names.sort();
+        let mut expected = vec![
+            "No Utility",
+            "Consistent Fault",
+            "Inverter NTC Fault",
+            "ARM Comms Fault",
+        ];
+        expected.sort();
+        assert_eq!(names, expected, "combined faults (word={word:#010x})");
+    }
+
+    #[test]
+    fn ir_39_40_mirrors_hr_223_224_for_single_phase() {
+        let mut state = make_state();
+        state.active_faults = vec!["grid_loss".into(), "inverter_trip".into()];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        let ir39 = store.read_by_space(39, RegisterSpace::Input).unwrap() as u32;
+        let ir40 = store.read_by_space(40, RegisterSpace::Input).unwrap() as u32;
+        let ir_word = (ir39 << 16) | ir40;
+        let hr_word = projected_fault_word(&state);
+        assert_eq!(ir_word, hr_word, "IR 39-40 must mirror HR 223-224");
+    }
+
+    #[test]
+    fn single_phase_leaves_threephase_fault_words_zero() {
+        let mut state = make_state(); // Gen3 (single-phase)
+        state.active_faults = vec!["grid_loss".into(), "battery_over_temp".into()];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        for addr in 1300..=1307 {
+            assert_eq!(
+                store.read_by_space(addr, RegisterSpace::Input),
+                Some(0),
+                "single-phase must leave IR {addr} at zero"
+            );
+        }
+    }
+
+    #[test]
+    fn three_phase_grid_loss_uses_ir_1301_no_grid_connection() {
+        let mut state = make_state();
+        state.config.inverter_type = "ThreePhase".into();
+        state.active_faults = vec!["grid_loss".into()];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        // word 1 (IR1301) idx 15 → bit 0 = "No Grid connection"
+        assert_eq!(
+            store.read_by_space(1301, RegisterSpace::Input),
+            Some(0x0001)
+        );
+        // three-phase does not surface faults on HR 223-224
+        assert_eq!(store.read_by_space(223, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(224, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(39, RegisterSpace::Input), Some(0));
+    }
+
+    #[test]
+    fn three_phase_inverter_trip_uses_ir_1305_relay_fault() {
+        let mut state = make_state();
+        state.config.inverter_type = "ThreePhase10kW".into();
+        state.active_faults = vec!["inverter_trip".into()];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        // word 5 (IR1305) idx 11 → bit 4 = "Relay fault"
+        assert_eq!(
+            store.read_by_space(1305, RegisterSpace::Input),
+            Some(0x0010)
+        );
+    }
+
+    #[test]
+    fn three_phase_battery_over_temp_uses_ir_1307() {
+        // Three-phase has a REAL dedicated battery-over-temp bit, unlike
+        // single-phase. word 7 (IR1307) idx 6 → bit 9.
+        let mut state = make_state();
+        state.config.inverter_type = "ACThreePhase".into();
+        state.active_faults = vec!["battery_over_temp".into()];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        assert_eq!(
+            store.read_by_space(1307, RegisterSpace::Input),
+            Some(0x0200)
+        );
+    }
+
+    #[test]
+    fn three_phase_combined_fault_words() {
+        let mut state = make_state();
+        state.config.inverter_type = "ThreePhase".into();
+        state.active_faults = vec![
+            "grid_loss".into(),
+            "inverter_trip".into(),
+            "battery_over_temp".into(),
+            "comm_timeout".into(),
+            "sensor_drift".into(),
+        ];
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        // IR1301: grid_loss bit 0 ("No Grid connection") | comm_timeout bit 15 ("Gateway Comm fault")
+        assert_eq!(
+            store.read_by_space(1301, RegisterSpace::Input),
+            Some(0x8001)
+        );
+        // IR1305: inverter_trip bit 4 ("Relay fault") | sensor_drift bit 13 ("NTC open")
+        assert_eq!(
+            store.read_by_space(1305, RegisterSpace::Input),
+            Some(0x2010)
+        );
+        // IR1307: battery_over_temp bit 9 ("Battery over temperature")
+        assert_eq!(
+            store.read_by_space(1307, RegisterSpace::Input),
+            Some(0x0200)
+        );
+        // All other words stay zero.
+        for addr in [1300, 1302, 1303, 1304, 1306] {
+            assert_eq!(store.read_by_space(addr, RegisterSpace::Input), Some(0));
+        }
+    }
+
+    // Small read-back helpers (project a state and read one register).
+    fn store_hr223(state: &PlantState) -> u16 {
+        let mut s = RegisterStore::new(default_register_catalogue());
+        s.project_from_state(state);
+        s.read_by_space(223, RegisterSpace::Holding).unwrap()
+    }
+    fn store_hr224(state: &PlantState) -> u16 {
+        let mut s = RegisterStore::new(default_register_catalogue());
+        s.project_from_state(state);
+        s.read_by_space(224, RegisterSpace::Holding).unwrap()
+    }
+    fn store_ir0(state: &PlantState) -> u16 {
+        let mut s = RegisterStore::new(default_register_catalogue());
+        s.project_from_state(state);
+        s.read_by_space(0, RegisterSpace::Input).unwrap()
+    }
+    fn store_ir57(state: &PlantState) -> u16 {
+        let mut s = RegisterStore::new(default_register_catalogue());
+        s.project_from_state(state);
+        s.read_by_space(57, RegisterSpace::Input).unwrap()
     }
 }

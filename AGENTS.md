@@ -29,6 +29,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.16.4** — Inverter fault-bit correctness: named faults now project to the authoritative decoded register **HR(223)–HR(224)** (`inverter_errors`/`inverter_fault_messages`) with correct bits per the givenergy-modbus `_inverter_fault_code` / giv_tcp `inverter_fault_code` tables; three-phase inverters use **IR(1300)–IR(1307)** per-word layout. IR(39)–IR(40) now mirrors HR(223-224) (raw hex, no name decode).
+
 **0.16.0** — GivEnergy Gateway device simulation (single-AIO projection model: `GW` serial prefix, IR 1600–1859 aggregation bank, V1 firmware variant). See `docs/gateway-register-reference.md`.
 
 **0.15.0** — CT clamp meter toggle (dropdown in Plant Setup, gates IR 60-89 on slave 0x01).
@@ -359,6 +361,41 @@ Served only when `inverter_type` is a Gateway (`Gateway12kW`). Full map in
 | 1816-1818 | Per-AIO inverter power (signed: + = discharge) |
 | 1831-1849 | Per-AIO serial numbers (V1 addresses) |
 
+### Inverter fault registers (bit conventions)
+Named faults (`grid_loss`, `inverter_trip`, `battery_over_temp`, `comm_timeout`,
+`sensor_drift`) project to **different registers by inverter family**, using the
+exact bit tables from givenergy-modbus (`_inverter_fault_code` /
+`_inverter_fault_code2`) and giv_tcp (`inverter_fault_code` /
+`inverter_fault_code2`). Both uint32/uint16 words decode **MSB-first**, so
+list-index `i` ↔ bit `31-i` (32-bit) or `15-i` (16-bit).
+
+**Single-phase inverters** (Gen1/2/3 Hybrid, Polar, Gen3Plus, AC-coupled, PV,
+EMS, AIO/AllInOne, Gateway child — everything except `ThreePhase*` /
+`ACThreePhase`) — register **HR(223)–HR(224)** (`inverter_errors` /
+`inverter_fault_messages`, the authoritative named-fault word). IR(39)–IR(40)
+`fault_code` mirrors it as raw hex (no name decoder; giv_tcp doesn't decode it).
+| Fault | HR word bit | Decodes to |
+|-------|-------------|------------|
+| `grid_loss` | bit 7 | "No Utility" |
+| `inverter_trip` | bit 23 | "Consistent Fault" |
+| `battery_over_temp` | bit 0 | "Inverter NTC Fault" (only thermal bit; real battery thermal lives in BMS) |
+| `comm_timeout` | bit 24 | "ARM Comms Fault" |
+| `sensor_drift` | bit 30 | *(reserved — non-zero word, no name)* |
+Auxiliary signals: `inverter_trip` also sets **IR 0 status = 3 (Fault)**
+(givenergy-modbus `Status` enum); `grid_loss` sets **IR 49 system mode = 1
+(off-grid)**; `battery_over_temp` sets **IR 57 charger_warning_code = 1**.
+
+**Three-phase inverters** (`ThreePhase*`, `ACThreePhase`) — register **IR(1300)–
+IR(1307)**, eight 16-bit words (`inverter_fault_codes_0..7`). HR(223-224) stays 0
+for three-phase.
+| Fault | Word (IR) | bit | Decodes to |
+|-------|-----------|-----|------------|
+| `grid_loss` | IR 1301 | 0 | "No Grid connection" |
+| `inverter_trip` | IR 1305 | 4 | "Relay fault" |
+| `battery_over_temp` | IR 1307 | 9 | "Battery over temperature" (real dedicated bit) |
+| `comm_timeout` | IR 1301 | 15 | "Gateway Comm fault" |
+| `sensor_drift` | IR 1305 | 13 | "NTC open" |
+
 ## Running Tests
 
 ```bash
@@ -455,3 +492,4 @@ The `project_schedule_for` method writes to the correct address based on inverte
 - v0.16.1: 382
 - v0.16.2: 384
 - v0.16.3: 385
+- v0.16.4: 397
