@@ -1210,7 +1210,7 @@
       const isGen2 = s.inverter_type === 'Gen2Hybrid';
       const isSingleSlot = isGen2; // Gen2 has only 1 charge/discharge slot
       const hasExtendedSlots = !isGen2 && !isAcCoupled;
-      const acCols = isAcCoupled ? 2 : 6;
+      const acCols = isAcCoupled ? 3 : 6;
       const CHG_ACCENT = 'var(--green)';
       const DIS_ACCENT = 'var(--orange)';
       // Build the extended-slots block (used inline when supported,
@@ -1252,7 +1252,7 @@
         <div style="display:grid;grid-template-columns:repeat(${acCols},1fr);gap:8px;margin-top:6px">
           ${slotHtml('Charge Slot 1',    sch.charge_slot_1_start,    sch.charge_slot_1_end,    sch.enable_charge,    '→ ', sch.charge_target_soc,    'var(--green)')}
           ${isSingleSlot || isAcCoupled ? '' : slotHtml('Charge Slot 2',    sch.charge_slot_2_start,    sch.charge_slot_2_end,    false,                 '→ ', sch.charge_target_soc_2,  'var(--green)')}
-          ${isAcCoupled ? '' : slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc, 'var(--orange)')}
+          ${slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc, 'var(--orange)')}
           ${isSingleSlot || isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, false,                 '↓ ', sch.discharge_target_soc_2,'var(--orange)')}
           ${isAcCoupled ? '' : slotHtml('Pause Slot',       sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
@@ -1265,7 +1265,7 @@
             </div>
             <div style="font-size:10px;margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">
               <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_charge ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_charge ? 'var(--green)' : 'var(--text-muted)'}">⚡ Chg ${sch.enable_charge ? 'ON' : 'OFF'}</span>
-              ${isAcCoupled ? '' : `<span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>`}
+              <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Mode: ${s.battery_mode || '—'}</div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:4px;border-top:1px dashed var(--border);padding-top:3px">

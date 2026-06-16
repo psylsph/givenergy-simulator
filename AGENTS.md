@@ -29,6 +29,8 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.16.5** — AC-coupled schedule-slot correction: AC-coupled inverters are basic single-phase slot devices with charge slot 1 at HR 94-95 and discharge slot 1 at HR 56-57; slot 2/extended slots remain unsupported.
+
 **0.16.4** — Inverter fault-bit correctness: named faults now project to the authoritative decoded register **HR(223)–HR(224)** (`inverter_errors`/`inverter_fault_messages`) with correct bits per the givenergy-modbus `_inverter_fault_code` / giv_tcp `inverter_fault_code` tables; three-phase inverters use **IR(1300)–IR(1307)** per-word layout. IR(39)–IR(40) now mirrors HR(223-224) (raw hex, no name decode).
 
 **0.16.0** — GivEnergy Gateway device simulation (single-AIO projection model: `GW` serial prefix, IR 1600–1859 aggregation bank, V1 firmware variant). See `docs/gateway-register-reference.md`.
@@ -454,6 +456,7 @@ Set the port in the UI's EVC card, or set `GIVSIM_EVC_PORT=502` env var.
 | Inverter class | Charge slots (start,end) | Discharge slots (start,end) |
 |----------------|--------------------------|------------------------------|
 | GEN1/GEN2 (2-slot) | (94,95), (31,32) | (56,57), (44,45) |
+| AC-coupled (basic 1-slot) | (94,95) | (56,57) |
 | EXTENDED/Gen3 (10-slot) | (94,95), **(243,244)**, (246,247), (249,250), (252,253), (255,256), (258,259), (261,262), (264,265), (267,268) | (56,57), (44,45), (276,277), ..., (297,298) |
 | THREE_PHASE | (1113,1114), (1115,1116), (246,247), ..., (267,268) | (1118,1119), (1120,1121), (276,277), ..., (297,298) |
 | EMS | (2053,2054), (2056,2057), (2059,2060) | (2044,2045), (2047,2048), (2050,2051) |
@@ -493,3 +496,4 @@ The `project_schedule_for` method writes to the correct address based on inverte
 - v0.16.2: 384
 - v0.16.3: 385
 - v0.16.4: 397
+- v0.16.5: 399

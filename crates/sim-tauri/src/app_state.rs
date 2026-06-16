@@ -349,7 +349,6 @@ impl ScheduleDto {
             ),
         };
 
-        let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
         Self {
             enable_charge: cs > 0.0 && cs != ce
                 || cs2 > 0.0 && cs2 != ce2
@@ -361,21 +360,16 @@ impl ScheduleDto {
                 || cs8 > 0.0 && cs8 != ce8
                 || cs9 > 0.0 && cs9 != ce9
                 || cs10 > 0.0 && cs10 != ce10,
-            // AC-coupled inverters don't have timed discharge slots.
-            enable_discharge: if is_ac_coupled {
-                false
-            } else {
-                ds > 0.0 && ds != de
-                    || ds2 > 0.0 && ds2 != de2
-                    || ds3 > 0.0 && ds3 != de3
-                    || ds4 > 0.0 && ds4 != de4
-                    || ds5 > 0.0 && ds5 != de5
-                    || ds6 > 0.0 && ds6 != de6
-                    || ds7 > 0.0 && ds7 != de7
-                    || ds8 > 0.0 && ds8 != de8
-                    || ds9 > 0.0 && ds9 != de9
-                    || ds10 > 0.0 && ds10 != de10
-            },
+            enable_discharge: ds > 0.0 && ds != de
+                || ds2 > 0.0 && ds2 != de2
+                || ds3 > 0.0 && ds3 != de3
+                || ds4 > 0.0 && ds4 != de4
+                || ds5 > 0.0 && ds5 != de5
+                || ds6 > 0.0 && ds6 != de6
+                || ds7 > 0.0 && ds7 != de7
+                || ds8 > 0.0 && ds8 != de8
+                || ds9 > 0.0 && ds9 != de9
+                || ds10 > 0.0 && ds10 != de10,
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct1,
             charge_target_soc_2: ct2,
@@ -592,6 +586,25 @@ mod tests {
 
         assert_eq!(dto.charge_power_limit_percent, 100.0);
         assert_eq!(dto.discharge_power_limit_percent, 100.0);
+    }
+
+    #[test]
+    fn ac_coupled_schedule_dto_exposes_discharge_slot_1() {
+        let mut state = PlantState::new(ts());
+        state.config.inverter_type = "ACCoupled".to_string();
+        let sched = sim_core::Schedule {
+            discharge_start: 17.0,
+            discharge_end: 21.0,
+            discharge_target_soc: 25.0,
+            ..Default::default()
+        };
+
+        let dto = ScheduleDto::from_state(&state, Some(&sched));
+
+        assert!(dto.enable_discharge);
+        assert_eq!(dto.discharge_slot_1_start, 1700);
+        assert_eq!(dto.discharge_slot_1_end, 2100);
+        assert_eq!(dto.discharge_target_soc, 25.0);
     }
 
     #[test]

@@ -1745,71 +1745,70 @@ impl DeviceModel for ScheduleEngine {
             self.schedule.charge_target_soc_10
         );
 
-        // Skip discharge slots for AC-coupled inverters (DTC prefix "3")
-        let is_ac_coupled = state.config.inverter_type.starts_with("ACCoupled");
-        if !is_ac_coupled {
-            // Check all discharge slots (1-10)
-            macro_rules! check_discharge_slot {
-                ($start:expr, $end:expr, $target:expr) => {
-                    if $start != $end {
-                        if in_window($start, $end, hour) && soc > $target {
-                            state.scheduled_discharge = true;
-                            return;
-                        }
+        // Check all discharge slots (1-10). AC-coupled models are basic
+        // single-phase slot devices in the register map (slot 1 at HR 56-57);
+        // the UI/register projection expose only slot 1 for them, but the engine
+        // honours any schedule fields provided programmatically.
+        macro_rules! check_discharge_slot {
+            ($start:expr, $end:expr, $target:expr) => {
+                if $start != $end {
+                    if in_window($start, $end, hour) && soc > $target {
+                        state.scheduled_discharge = true;
+                        return;
                     }
-                };
-            }
-            check_discharge_slot!(
-                self.schedule.discharge_start,
-                self.schedule.discharge_end,
-                self.schedule.discharge_target_soc
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_2,
-                self.schedule.discharge_end_2,
-                self.schedule.discharge_target_soc_2
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_3,
-                self.schedule.discharge_end_3,
-                self.schedule.discharge_target_soc_3
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_4,
-                self.schedule.discharge_end_4,
-                self.schedule.discharge_target_soc_4
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_5,
-                self.schedule.discharge_end_5,
-                self.schedule.discharge_target_soc_5
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_6,
-                self.schedule.discharge_end_6,
-                self.schedule.discharge_target_soc_6
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_7,
-                self.schedule.discharge_end_7,
-                self.schedule.discharge_target_soc_7
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_8,
-                self.schedule.discharge_end_8,
-                self.schedule.discharge_target_soc_8
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_9,
-                self.schedule.discharge_end_9,
-                self.schedule.discharge_target_soc_9
-            );
-            check_discharge_slot!(
-                self.schedule.discharge_start_10,
-                self.schedule.discharge_end_10,
-                self.schedule.discharge_target_soc_10
-            );
+                }
+            };
         }
+        check_discharge_slot!(
+            self.schedule.discharge_start,
+            self.schedule.discharge_end,
+            self.schedule.discharge_target_soc
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_2,
+            self.schedule.discharge_end_2,
+            self.schedule.discharge_target_soc_2
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_3,
+            self.schedule.discharge_end_3,
+            self.schedule.discharge_target_soc_3
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_4,
+            self.schedule.discharge_end_4,
+            self.schedule.discharge_target_soc_4
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_5,
+            self.schedule.discharge_end_5,
+            self.schedule.discharge_target_soc_5
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_6,
+            self.schedule.discharge_end_6,
+            self.schedule.discharge_target_soc_6
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_7,
+            self.schedule.discharge_end_7,
+            self.schedule.discharge_target_soc_7
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_8,
+            self.schedule.discharge_end_8,
+            self.schedule.discharge_target_soc_8
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_9,
+            self.schedule.discharge_end_9,
+            self.schedule.discharge_target_soc_9
+        );
+        check_discharge_slot!(
+            self.schedule.discharge_start_10,
+            self.schedule.discharge_end_10,
+            self.schedule.discharge_target_soc_10
+        );
 
         // Export limit scheduling — 3 time windows
         if self.schedule.enable_export_schedule && self.schedule.export_power_limit_w > 0.0 {
@@ -2815,6 +2814,34 @@ mod tests {
             state.inverter.mode_state.effective,
             InverterMode::Normal,
             "Mode should stay unchanged"
+        );
+    }
+
+    #[test]
+    fn ac_coupled_schedule_forces_discharge_during_slot_1() {
+        let sched = Schedule {
+            discharge_start: 17.0,
+            discharge_end: 20.0,
+            discharge_target_soc: 20.0,
+            ..Default::default()
+        };
+
+        let mut engine = ScheduleEngine::new(sched);
+        let mut state = PlantState::new(ts(18)); // 18:00 — inside window
+        state.config.inverter_type = "ACCoupled".to_string();
+        state.inverter.mode_state.set_user(InverterMode::Normal);
+        state.batteries[0].soc_percent = 60.0;
+        state.sync_battery_from_vec();
+
+        let ctx = TickContext {
+            now: ts(18),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert!(
+            state.scheduled_discharge,
+            "AC-coupled slot 1 should trigger scheduled_discharge"
         );
     }
 

@@ -122,14 +122,14 @@ fn cell_voltage_factor(module_index: usize, cell_index: usize) -> f64 {
 /// Gen1 hybrids: charge slot 2 lives at classic HR 31-32.
 /// Three-phase models: slots 1-2 mirror to HR 1113-1116 (and HR 243-244 in the
 /// extended block), but never use HR 31-32 for scheduling.
-/// AC-coupled models: only 1 charge slot (HR 94-95), no slot 2 at all.
+/// AC-coupled models: only 1 basic charge/discharge slot (HR 94-95 / HR 56-57), no slot 2 at all.
 fn uses_gen3_extended_slots(inverter_type: &str) -> bool {
     match inverter_type {
         // Gen1 hybrids: 2-slot max, classic HR 31-32
         "Gen1Hybrid" => false,
         // Gen2 hybrids: 1 charge/discharge slot only (HR 94-95 / HR 56-57)
         "Gen2Hybrid" => false,
-        // AC-coupled: only 1 charge slot
+        // AC-coupled: only 1 basic charge/discharge slot
         "ACCoupled" | "ACCoupled2" => false,
         // Everything else is Gen3-era or later → HR 243-244
         _ => true,
@@ -137,7 +137,7 @@ fn uses_gen3_extended_slots(inverter_type: &str) -> bool {
 }
 
 /// Returns true for inverter types that support a second charge/discharge slot.
-/// Gen2 hybrids only have 1 programmable slot; AC-coupled also has 1 charge slot.
+/// Gen2 hybrids and AC-coupled models only have 1 programmable charge/discharge slot.
 fn has_slot_2(inverter_type: &str) -> bool {
     !matches!(inverter_type, "Gen2Hybrid" | "ACCoupled" | "ACCoupled2")
 }
@@ -2097,11 +2097,11 @@ impl RegisterStore {
     }
 
     /// Like `project_schedule` but accepts inverter type string.
-    /// AC-coupled inverters (prefix "ACCoupled") skip discharge slot projection.
+    /// AC-coupled inverters are basic single-phase slot devices: one charge slot
+    /// (HR 94-95) and one discharge slot (HR 56-57), no slot 2/extended slots.
     /// Gen3/AIO/HV-Gen3/Gen4 inverters write charge slot 2 to HR 243-244
     /// (not HR 31-32, which contains stale/garbage data on real Gen3 firmware).
     pub fn project_schedule_for(&mut self, schedule: &sim_models::Schedule, inverter_type: &str) {
-        let is_ac_coupled = inverter_type.starts_with("ACCoupled");
         // Gen3+ uses HR 243-244 for charge slot 2; Gen1 uses HR 31-32.
         // Gen2 and AC-coupled do not support slot 2.
         let gen3_ext = uses_gen3_extended_slots(inverter_type);
@@ -2168,11 +2168,7 @@ impl RegisterStore {
         self.write(267, cs10_s);
         self.write(268, cs10_e);
 
-        let (ds1_start, ds1_end) = if is_ac_coupled {
-            (60, 60)
-        } else {
-            slot_pair(schedule.discharge_start, schedule.discharge_end)
-        };
+        let (ds1_start, ds1_end) = slot_pair(schedule.discharge_start, schedule.discharge_end);
         self.write(56, ds1_start);
         self.write(57, ds1_end);
         let (ds2_start, ds2_end) = if !slot2 {
@@ -2182,7 +2178,7 @@ impl RegisterStore {
         };
         self.write(44, ds2_start);
         self.write(45, ds2_end);
-        let no_extended = is_ac_coupled || !slot2;
+        let no_extended = !slot2;
         let (ds3_s, ds3_e) = if no_extended {
             (60, 60)
         } else {
@@ -2253,18 +2249,17 @@ impl RegisterStore {
             || schedule.charge_start_10 != schedule.charge_end_10;
         self.write(96, if charge_enabled { 1 } else { 0 });
 
-        let discharge_enabled = !is_ac_coupled
-            && (schedule.enable_discharge
-                || schedule.discharge_start != schedule.discharge_end
-                || schedule.discharge_start_2 != schedule.discharge_end_2
-                || schedule.discharge_start_3 != schedule.discharge_end_3
-                || schedule.discharge_start_4 != schedule.discharge_end_4
-                || schedule.discharge_start_5 != schedule.discharge_end_5
-                || schedule.discharge_start_6 != schedule.discharge_end_6
-                || schedule.discharge_start_7 != schedule.discharge_end_7
-                || schedule.discharge_start_8 != schedule.discharge_end_8
-                || schedule.discharge_start_9 != schedule.discharge_end_9
-                || schedule.discharge_start_10 != schedule.discharge_end_10);
+        let discharge_enabled = schedule.enable_discharge
+            || schedule.discharge_start != schedule.discharge_end
+            || schedule.discharge_start_2 != schedule.discharge_end_2
+            || schedule.discharge_start_3 != schedule.discharge_end_3
+            || schedule.discharge_start_4 != schedule.discharge_end_4
+            || schedule.discharge_start_5 != schedule.discharge_end_5
+            || schedule.discharge_start_6 != schedule.discharge_end_6
+            || schedule.discharge_start_7 != schedule.discharge_end_7
+            || schedule.discharge_start_8 != schedule.discharge_end_8
+            || schedule.discharge_start_9 != schedule.discharge_end_9
+            || schedule.discharge_start_10 != schedule.discharge_end_10;
         self.write(59, if discharge_enabled { 1 } else { 0 });
 
         self.write(116, schedule.charge_target_soc as u16);
@@ -2281,25 +2276,18 @@ impl RegisterStore {
         self.write(1111, schedule.charge_target_soc as u16);
         self.write(1109, 4);
         self.write(1112, if charge_enabled { 1 } else { 0 });
-        self.write(
-            272,
-            if is_ac_coupled {
-                0
-            } else {
-                schedule.discharge_target_soc as u16
-            },
-        );
+        self.write(272, schedule.discharge_target_soc as u16);
         self.write(
             275,
-            if is_ac_coupled {
-                0
-            } else {
+            if slot2 {
                 schedule.discharge_target_soc_2 as u16
+            } else {
+                0
             },
         );
         self.write(
             278,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_3 as u16
@@ -2307,7 +2295,7 @@ impl RegisterStore {
         );
         self.write(
             281,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_4 as u16
@@ -2315,7 +2303,7 @@ impl RegisterStore {
         );
         self.write(
             284,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_5 as u16
@@ -2323,7 +2311,7 @@ impl RegisterStore {
         );
         self.write(
             287,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_6 as u16
@@ -2331,7 +2319,7 @@ impl RegisterStore {
         );
         self.write(
             290,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_7 as u16
@@ -2339,7 +2327,7 @@ impl RegisterStore {
         );
         self.write(
             293,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_8 as u16
@@ -2347,7 +2335,7 @@ impl RegisterStore {
         );
         self.write(
             296,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_9 as u16
@@ -2355,7 +2343,7 @@ impl RegisterStore {
         );
         self.write(
             299,
-            if is_ac_coupled {
+            if no_extended {
                 0
             } else {
                 schedule.discharge_target_soc_10 as u16
@@ -8995,26 +8983,43 @@ mod tests {
     }
 
     #[test]
-    fn ac_coupled_has_no_charge_slot_2() {
-        // AC-coupled inverters only support 1 charge slot (HR 94-95).
-        // Neither HR 31-32 nor HR 243-244 should be written.
+    fn ac_coupled_has_basic_charge_and_discharge_slot_1_only() {
+        // AC-coupled inverters use the basic single-phase slot map:
+        // charge slot 1 at HR 94-95 and discharge slot 1 at HR 56-57.
+        // Slot 2 / extended slots are not supported.
         let mut store = RegisterStore::new(default_register_catalogue());
         let sched = sim_models::Schedule {
             charge_start: 1.0,
             charge_end: 5.0,
             charge_start_2: 10.0,
             charge_end_2: 14.0,
+            discharge_start: 17.0,
+            discharge_end: 21.0,
+            discharge_start_2: 10.0,
+            discharge_end_2: 14.0,
+            discharge_target_soc: 25.0,
+            discharge_target_soc_2: 30.0,
             ..Default::default()
         };
         store.project_schedule_for(&sched, "ACCoupled");
 
         assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(100));
         assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(500));
+        assert_eq!(store.read_by_space(56, RegisterSpace::Holding), Some(1700));
+        assert_eq!(store.read_by_space(57, RegisterSpace::Holding), Some(2100));
+        assert_eq!(store.read_by_space(59, RegisterSpace::Holding), Some(1));
+        assert_eq!(store.read_by_space(272, RegisterSpace::Holding), Some(25));
         // No slot 2 at any address
         assert_eq!(store.read_by_space(31, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(32, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(44, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(45, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(275, RegisterSpace::Holding), Some(0));
+        // Extended discharge slots disabled
+        assert_eq!(store.read_by_space(276, RegisterSpace::Holding), Some(60));
+        assert_eq!(store.read_by_space(277, RegisterSpace::Holding), Some(60));
     }
 
     #[test]
