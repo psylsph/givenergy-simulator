@@ -516,7 +516,8 @@
         <h3>Faults</h3>
         <button id="btn-grid-loss" class="btn-mini full-width" style="margin-bottom:4px">⚡ Grid Loss</button>
         <button id="btn-inverter-trip" class="btn-mini full-width" style="margin-bottom:4px">🔌 Inverter Trip</button>
-        <button id="btn-battery-temp" class="btn-mini full-width">🌡️ Battery Over Temp</button>
+        <button id="btn-battery-temp" class="btn-mini full-width" style="margin-bottom:4px">🌡️ Battery Over Temp</button>
+        <button id="btn-cold-battery" class="btn-mini full-width">❄️ Cold Battery</button>
       </div>
 
       <div class="sidebar-section">
@@ -1601,6 +1602,7 @@
       { id: 'btn-grid-loss', fault: 'grid_loss', label: '⚡ Grid Loss' },
       { id: 'btn-inverter-trip', fault: 'inverter_trip', label: '🔌 Inverter Trip' },
       { id: 'btn-battery-temp', fault: 'battery_over_temp', label: '🌡️ Battery Over Temp' },
+      { id: 'btn-cold-battery', fault: 'cold_battery', label: '❄️ Cold Battery' },
     ];
 
     // Track active fault state per button

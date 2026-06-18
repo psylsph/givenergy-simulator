@@ -58,6 +58,7 @@ pub mod well_known {
     pub const INVERTER_TRIP: &str = "inverter_trip";
     pub const COMM_TIMEOUT: &str = "comm_timeout";
     pub const SENSOR_DRIFT: &str = "sensor_drift";
+    pub const COLD_BATTERY: &str = "cold_battery";
 }
 
 /// Return the default catalogue of known faults.
@@ -99,6 +100,13 @@ pub fn default_fault_catalogue() -> Vec<FaultDef> {
             category: C::Sensor,
             trigger: T::Manual,
             description: "Sensor reading drift detected".into(),
+            probability: 0.0,
+        },
+        FaultDef {
+            id: well_known::COLD_BATTERY.to_string(),
+            category: C::Battery,
+            trigger: T::Manual,
+            description: "Battery temperature forced to 0 °C — reduced performance".into(),
             probability: 0.0,
         },
     ]
@@ -149,6 +157,13 @@ impl sim_models::DeviceModel for FaultEngine {
                     well_known::INVERTER_TRIP | well_known::BATTERY_OVER_TEMP => {
                         // Inverter/battery will naturally resume on next tick
                     }
+                    well_known::COLD_BATTERY => {
+                        // Restore battery temperature to a normal operating value
+                        for b in &mut state.batteries {
+                            b.temperature_celsius = 37.0;
+                        }
+                        state.sync_battery_from_vec();
+                    }
                     _ => {}
                 }
             }
@@ -174,6 +189,13 @@ impl sim_models::DeviceModel for FaultEngine {
                         if b.power_kw > 0.0 {
                             b.power_kw = 0.0;
                         }
+                    }
+                    state.sync_battery_from_vec();
+                }
+                well_known::COLD_BATTERY => {
+                    // Force all battery modules to 0 °C
+                    for b in &mut state.batteries {
+                        b.temperature_celsius = 0.0;
                     }
                     state.sync_battery_from_vec();
                 }
@@ -304,5 +326,91 @@ mod tests {
         state.active_faults.clear();
         engine.update(&ctx, &mut state);
         assert!(state.grid.connected);
+    }
+
+    #[test]
+    fn cold_battery_forces_temp_to_zero() {
+        let mut state = PlantState::new(ts(12));
+        // Set initial temps above 0
+        state.batteries[0].temperature_celsius = 30.0;
+        state.batteries[0].power_kw = 0.0;
+        state.sync_battery_from_vec();
+        state
+            .active_faults
+            .push(well_known::COLD_BATTERY.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert_eq!(
+            state.batteries[0].temperature_celsius, 0.0,
+            "Cold battery should force temp to 0"
+        );
+    }
+
+    #[test]
+    fn cold_battery_affects_all_modules() {
+        let mut state = PlantState::new(ts(12));
+        // Add a second battery
+        state.batteries.push(sim_models::BatteryState {
+            temperature_celsius: 28.0,
+            ..Default::default()
+        });
+        state.sync_battery_from_vec();
+
+        state.batteries[0].temperature_celsius = 30.0;
+        state.batteries[1].temperature_celsius = 28.0;
+        state.sync_battery_from_vec();
+
+        state
+            .active_faults
+            .push(well_known::COLD_BATTERY.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        engine.update(&ctx, &mut state);
+
+        assert_eq!(state.batteries[0].temperature_celsius, 0.0);
+        assert_eq!(state.batteries[1].temperature_celsius, 0.0);
+        assert_eq!(state.battery_temperature_celsius(), 0.0);
+    }
+
+    #[test]
+    fn cold_battery_cleared_restores_naturally() {
+        let mut state = PlantState::new(ts(12));
+        state.batteries[0].temperature_celsius = 30.0;
+        state.sync_battery_from_vec();
+        state
+            .active_faults
+            .push(well_known::COLD_BATTERY.to_string());
+
+        let mut engine = FaultEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+
+        // Tick 1: fault active, temp forced to 0
+        engine.update(&ctx, &mut state);
+        assert_eq!(state.batteries[0].temperature_celsius, 0.0);
+
+        // Tick 2: fault cleared — engine restores temp to 37 °C.
+        state.active_faults.clear();
+        engine.update(&ctx, &mut state);
+        assert_eq!(state.batteries[0].temperature_celsius, 37.0);
+    }
+
+    #[test]
+    fn catalogue_includes_cold_battery() {
+        let cat = default_fault_catalogue();
+        let ids: Vec<&str> = cat.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&well_known::COLD_BATTERY));
     }
 }

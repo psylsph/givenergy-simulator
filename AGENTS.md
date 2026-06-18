@@ -8,7 +8,7 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 - `cargo fmt --all -- --check` — must be clean (no diff).
 - `cargo clippy --all-targets` — must produce **zero** warnings.
-- `cargo test` — must be green. The suite is fast (~3s, 250 tests). Don't move on without green tests.
+- `cargo test` — must be green. The suite is fast (~3s, 399 tests). Don't move on without green tests.
 
 ## Workspace
 
@@ -29,21 +29,7 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.16.5** — AC-coupled schedule-slot correction: AC-coupled inverters are basic single-phase slot devices with charge slot 1 at HR 94-95 and discharge slot 1 at HR 56-57; slot 2/extended slots remain unsupported.
-
-**0.16.4** — Inverter fault-bit correctness: named faults now project to the authoritative decoded register **HR(223)–HR(224)** (`inverter_errors`/`inverter_fault_messages`) with correct bits per the givenergy-modbus `_inverter_fault_code` / giv_tcp `inverter_fault_code` tables; three-phase inverters use **IR(1300)–IR(1307)** per-word layout. IR(39)–IR(40) now mirrors HR(223-224) (raw hex, no name decode).
-
-**0.16.0** — GivEnergy Gateway device simulation (single-AIO projection model: `GW` serial prefix, IR 1600–1859 aggregation bank, V1 firmware variant). See `docs/gateway-register-reference.md`.
-
-**0.15.0** — CT clamp meter toggle (dropdown in Plant Setup, gates IR 60-89 on slave 0x01).
-
-**0.14.4** — Three-phase force charge/discharge register fix + missing energy total registers.
-
-**0.14.3** — Battery C-rate raised from 0.3C to 0.7C.
-
-**0.14.2** — Non-zero starter energy totals for testing.
-
-**0.14.1** — ACThreePhase voltage/ARM firmware guard fixes.
+**0.16.5** — AC-coupled schedule-slot correction. See commit log for older changelogs.
 
 ## Common Gotchas
 
@@ -169,50 +155,49 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 | Gen1Hybrid | 0x2001 | 5000W | 2500W | 252 |
 | Gen2Hybrid | 0x2001 | 5000W | 3600W | 852 |
 | Gen3Hybrid | 0x2001 | 5000W | 3600W | 318 |
-| Hybrid4600 | 0x2002 | 5000W¹ | 3600W¹ | — |
-| Hybrid3600 | 0x2003 | 5000W¹ | 3600W¹ | — |
-| Polar5kW | 0x2101 | 5000W¹ | 3600W¹ | — |
+| Hybrid4600 | 0x2002 | default¹ | default¹ | — |
+| Hybrid3600 | 0x2003 | default¹ | default¹ | — |
+| Polar5kW | 0x2101 | default¹ | default¹ | — |
 | Polar4600 / Gen3Hybrid10kW² | 0x2102 | 10000W | 10000W | — |
-| Polar3600 | 0x2103 | 5000W¹ | 3600W¹ | — |
-| Polar6kW | 0x2104 | 5000W¹ | 3600W¹ | — |
-| Polar7kW | 0x2105 | 5000W¹ | 3600W¹ | — |
+| Polar3600 | 0x2103 | default¹ | default¹ | — |
+| Polar6kW | 0x2104 | default¹ | default¹ | — |
+| Polar7kW | 0x2105 | default¹ | default¹ | — |
 | Gen3Hybrid8kW / Polar8kW² | 0x2106 | 8000W | 8000W | — |
 | Gen3Plus6kW | 0x2201 | 5000W | 2600W | 452 |
 | Gen3Plus4600 | 0x2202 | 4600W | 2600W | 452 |
 | Gen3Plus3600 | 0x2203 | 3600W | 2600W | 452 |
 | Gen3Plus6kW2 | 0x2204 | 6000W | 2600W | 452 |
-| Gen3Plus7kW | 0x2205 | 5000W¹ | 2600W¹ | — |
-| Gen3Plus8kW | 0x2206 | 8000W¹ | 2600W¹ | — |
-| PVInverter5kW | 0x2301 | 5000W¹ | N/A (no battery) | — |
-| PVInverter4600 | 0x2302 | 5000W¹ | N/A (no battery) | — |
-| PVInverter3600 | 0x2303 | 5000W¹ | N/A (no battery) | — |
-| PVInverter6kW | 0x2304 | 5000W¹ | N/A (no battery) | — |
+| Gen3Plus7kW | 0x2205 | default¹ | default¹ | — |
+| Gen3Plus8kW | 0x2206 | default¹ | default¹ | — |
+| PVInverter5kW | 0x2301 | default¹ | N/A | — |
+| PVInverter4600 | 0x2302 | default¹ | N/A | — |
+| PVInverter3600 | 0x2303 | default¹ | N/A | — |
+| PVInverter6kW | 0x2304 | default¹ | N/A | — |
 | ACCoupled | 0x3001 | 3000W | 3000W | — |
 | ACCoupled2 | 0x3002 | 3000W | 3000W | — |
 | ThreePhase | 0x4001 | 6000W | 6000W | — |
 | ThreePhase8kW | 0x4002 | 8000W | 8000W | — |
 | ThreePhase10kW | 0x4003 | 10000W | 10000W | — |
 | ThreePhase11kW | 0x4004 | 11000W | 11000W | — |
-| AIOCommercial | 0x4101 | 5000W¹ | 3600W¹ | — |
-| EMS | 0x5001 | 5000W¹ | 3600W¹ | — |
-| EMSCommercial | 0x5101 | 5000W¹ | 3600W¹ | — |
-| ACThreePhase | 0x6001 | 5000W¹ | 3600W¹ | — |
+| AIOCommercial | 0x4101 | default¹ | default¹ | — |
+| EMS | 0x5001 | default¹ | default¹ | — |
+| EMSCommercial | 0x5101 | default¹ | default¹ | — |
+| ACThreePhase | 0x6001 | default¹ | default¹ | — |
 | Gateway12kW | 0x7001 | 6000W | 6000W | — |
 | AllInOne6 | 0x8001 | 6000W | 6000W | — |
 | AllInOne | 0x8002 | 6000W | 6000W | — |
 | AllInOne5 | 0x8003 | 5000W | 5000W | — |
-| AIO6kW | 0x8101 | 6000W¹ | 6000W¹ | — |
+| AIO6kW | 0x8101 | default¹ | default¹ | — |
 | AIO8kW | 0x8102 | 8000W | 8000W | — |
 | AIO10kW | 0x8103 | 10000W | 10000W | — |
 | AIOHybrid6kW | 0x8201 | 6000W | 6000W | — |
 | AIOHybrid8kW | 0x8202 | 8000W | 8000W | — |
 | AIOHybrid10kW | 0x8203 | 10000W | 10000W | — |
-| AIOHybrid12kW | 0x8204 | 5000W¹ | 3600W¹ | — |
-| Gen4Hybrid6kW | 0x8304 | 5000W¹ | 3600W¹ | — |
+| AIOHybrid12kW | 0x8204 | default¹ | default¹ | — |
+| Gen4Hybrid6kW | 0x8304 | default¹ | default¹ | — |
 
-¹ Falls back to the `_ =>` default (5000W AC, 3600W battery).
-² The GUI uses the DTC value as the sort key. Where two names share a DTC the
-  dropdown lists only one entry with that DTC. The register projection accepts both.
+¹ Falls back to `_ =>` default: 5000W AC, 3600W battery.
+² Shared DTC — GUI lists one entry, register projection accepts both.
 
 Dropdown and INVERTER_PRESETS are ordered by DTC hex value ascending.
 
@@ -254,154 +239,59 @@ Tests accessing snapshot must use `10000u32 + address` for holding registers.
 Never use `querySelectorAll` in a loop that modifies the DOM — it's not live.
 Use `while (container.children.length > count)` with `removeChild` instead.
 
-### Clippy and CI
-`cargo clippy --all-targets` must produce zero warnings.
-Crate-level `#![allow(clippy::...)]` is used for non-fixable style issues.
-CI pipeline: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, scenario regression.
-
 ### Gateway device simulation (single-AIO projection model)
-The GivEnergy **Gateway** (`Gateway12kW`, DTC `0x7001`) is an AC aggregation /
-backup-transfer hub, NOT an inverter — it sits in front of one or more
-All-in-One (AIO) units and is the system's measurement + control point. It is
-simulated as a **projection mode**, not a new plant model: when
-`config.inverter_type` starts with `Gateway`, the existing `PlantState` models
-the **child AIO's physics** and `RegisterStore::project_gateway_bank()` derives
-the gateway's aggregated view from that same state. No multi-inverter refactor.
+The Gateway (`Gateway12kW`, DTC `0x7001`) is an AC aggregation / backup-transfer hub,
+NOT an inverter. It is simulated as a **projection mode**: the existing `PlantState`
+models the child AIO's physics and `RegisterStore::project_gateway_bank()` derives
+gateway registers from the same state. Detection: `GW`-prefixed serial (HR 13-17).
+Serves IR 1600–1859 aggregation bank (V1 firmware variant `GA000009`). Key invariants:
+- **Firmware variant V1**: IR(1603)=9, uint32 totals hi-reg-first, AIO serials at IR 1831+.
+- **`p_load` excludes EV charger** — household-only, EVC tracked separately.
+- **Battery power sign** follows GE wire convention (+ = discharging).
+- Single-AIO topology: `parallel_aio_num = 1`, AIO2/AIO3 stay zero.
 
-Detection keys off a **`GW`-prefixed serial** (HR 13-17, e.g. `GW2423G192`);
-the DTC family is `0x7xxx`. The gateway serves a dedicated **Input Register
-aggregation bank at IR 1600–1859** (version, work mode, V/I/P, AIO summary,
-per-AIO power/SOC/serials, energy totals, faults). For non-gateway inverters
-the bank stays at seeded zeros → the client's `is_valid()` check
-(non-empty version string on IR 1600–1603) fails → client correctly concludes
-"no gateway present". **Authoritative map: `docs/gateway-register-reference.md`.**
+Full authoritative map at `docs/gateway-register-reference.md`.
 
-Key invariants enforced by `project_gateway_bank`:
-- **Firmware variant V1** (`GA000009`) is hardwired: IR(1603)=9 (<10 selects V1),
-  `uint32` energy totals are high-register-first, AIO serials at IR 1831+.
-  V2 (swapped byte order + shifted serial addresses, selected by IR(1603)≥10)
-  is future work.
-- **`p_load` excludes the EV charger** — the defining gateway property.
-  `state.load.demand_w` is household-only; EVC draw is tracked separately.
-- **Battery power sign** follows GE wire convention (+ = discharging/out), the
-  *negation* of the internal `total_battery_power_kw()` (+ = charging).
-- Single-AIO topology: `parallel_aio_num = 1`, AIO1 carries all figures,
-  AIO2/AIO3 registers stay zero.
-
-The Modbus read path needs **no special handling** — it already serves arbitrary
-Input register addresses via `read_by_space`. Gateway `RegisterDef`s use category
-`RegisterCategory::Gateway`; values are written raw by the helper so catalogue
-scaling factors are informational only.
-
-## GivEnergy Register Map
-
-### Input Registers (fn 0x04, slave 0x32) — IR 0-59
-| Reg | Name | Scaling | Source |
-|-----|------|---------|--------|
-| 0 | Status | 1 | Always 1 (normal) |
-| 1, 2 | PV1/PV2 voltage | ×0.1 V | 350V if generating |
-| 5 | Grid voltage | ×0.1 V | Fixed 240V |
-| 8, 9 | PV1/PV2 current | ×0.1 A | generation / 7000 |
-| 13 | Grid frequency | ×0.01 Hz | Fixed 50Hz |
-| 17, 19 | PV1/PV2 energy today | ×0.1 kWh | solar_kwh / 2 |
-| 18, 20 | PV1/PV2 power | W | pv1_w / pv2_w |
-| 25, 26 | Export/import today | ×0.1 kWh | energy_totals |
-| 30 | Grid power | signed W | grid.power_w |
-| 35 | Consumption today | ×0.1 kWh | load_consumption_kwh |
-| 36, 37 | Battery charge/discharge today | ×0.1 kWh | energy_totals |
-| 41 | Inverter temperature | ×0.1 °C | inverter temp |
-| 50 | Battery voltage | ×0.01 V | 44 + SOC×0.08 |
-| 51 | Battery current | signed ×0.01 A | **negated** (GE convention) |
-| 52 | Battery power | signed W | **negated** (raw+ = discharge) |
-| 56 | Battery temperature | ×0.1 °C | battery temp |
-| 59 | Battery SOC | % | aggregate_soc() |
-
-### Holding Registers (fn 0x03, slave 0x32) — HR 0-320
-| Reg | Name | Access | Source |
-|-----|------|--------|--------|
-| 0 | Device type | RO | Per inverter DTC |
-| 20 | Enable charge target | RW | 0 |
-| 27 | Battery power mode | RW | 0=export, 1=eco |
-| 29 | Calibration stage | RW | 0 (off) |
-| 31-32 | Charge slot 2 start/end (Gen1/Gen2 only) | RW (HHMM) | 60 (disabled) |
-| 35-40 | System time year/sec | RW | From timestamp |
-| 44-45 | Discharge slot 2 start/end | RW (HHMM) | 60 (disabled) |
-| 50 | Active power rate | RW | 100% |
-| 56-57 | Discharge slot 1 start/end | RW (HHMM) | 60 (disabled) |
-| 59 | Enable discharge | RW | bool |
-| 94-95 | Charge slot 1 start/end | RW (HHMM) | 60 (disabled) |
-| 96 | Enable charge | RW | bool |
-| 110 | Battery SOC reserve | RW | min_aggregate_soc |
-| 111 | Battery charge limit | RW | 100% |
-| 112 | Battery discharge limit | RW | 100% |
-| 116 | Charge target SOC | RW | 100% |
-| 163 | Inverter reboot | RW | 0 (write 100 to reboot) |
-| 318 | Battery pause mode | RW | 0 |
-| 319-320 | Pause slot 1 start/end | RW (HHMM) | 60 (disabled) |
-
-### Simulator-Internal Registers (HR 100-705)
-| Range | Category |
-|-------|----------|
-| 100-104 | Inverter (mode, ac_power, export_limit, temp, firmware) |
-| 200-214 | Battery (SOC×3, power, voltage, current, temp, capacity, limits, efficiency, count) |
-| 300-304 | PV (generation, voltage, current, energy_today, peak) |
-| 400-404 | Grid (power, voltage, frequency, connected, load) |
-| 500-505 | Energy totals (import, export, charge, discharge, solar, consumption kWh) |
-| 600-602 | Config (battery_count, tick_interval, weather) |
-| 700-705 | Schedules (charge/discharge start/end, target SOCs) |
-
-### Gateway Aggregation Registers (fn 0x04, slave 0x32) — IR 1600-1859
-Served only when `inverter_type` is a Gateway (`Gateway12kW`). Full map in
-`docs/gateway-register-reference.md`; highlights:
-| Range | Category |
-|-------|----------|
-| 1600-1631 | Version (`GA000009`, V1 selector=IR1603<10), work mode, V/I/P, faults, first AIO serial |
-| 1640-1657 | Daily + lifetime energy (grid/pv/aio/load) — uint32 V1 = hi-reg-first |
-| 1700-1713 | AIO summary (num/online/power/state) + per-AIO charge |
-| 1750-1758 | Per-AIO discharge |
-| 1795-1803 | Battery aggregate energy + per-AIO SOC |
-| 1816-1818 | Per-AIO inverter power (signed: + = discharge) |
-| 1831-1849 | Per-AIO serial numbers (V1 addresses) |
+### Register map
+Input (IR 0-59) and Holding (HR 0-320) register definitions are in the source:
+`crates/sim-registers/src/register_defs.rs`. Key points:
+- IR 52 (battery power) and IR 51 (battery current) are **negated** per GE convention.
+- HR 0 holds device type (DTC). HR 35-40 = system time. HR 56-57 = discharge slot 1, HR 94-95 = charge slot 1 (all HHMM, 60 = disabled).
+- Gateway aggregation at IR 1600–1859 (served only for Gateway12kW).
+- Simulator-internal registers at HR 100-705 (inverter, battery, PV, grid, energy, config, schedules).
 
 ### Inverter fault registers (bit conventions)
-Named faults (`grid_loss`, `inverter_trip`, `battery_over_temp`, `comm_timeout`,
-`sensor_drift`) project to **different registers by inverter family**, using the
-exact bit tables from givenergy-modbus (`_inverter_fault_code` /
-`_inverter_fault_code2`) and giv_tcp (`inverter_fault_code` /
-`inverter_fault_code2`). Both uint32/uint16 words decode **MSB-first**, so
-list-index `i` ↔ bit `31-i` (32-bit) or `15-i` (16-bit).
+Named faults project to different registers by inverter family, using bit tables from
+givenergy-modbus (`_inverter_fault_code` / `_inverter_fault_code2`) and giv_tcp.
 
-**Single-phase inverters** (Gen1/2/3 Hybrid, Polar, Gen3Plus, AC-coupled, PV,
-EMS, AIO/AllInOne, Gateway child — everything except `ThreePhase*` /
-`ACThreePhase`) — register **HR(223)–HR(224)** (`inverter_errors` /
-`inverter_fault_messages`, the authoritative named-fault word). IR(39)–IR(40)
-`fault_code` mirrors it as raw hex (no name decoder; giv_tcp doesn't decode it).
+**Single-phase** (Gen1/2/3 Hybrid, Polar, Gen3Plus, AC-coupled, PV, EMS, AIO, Gateway child):
+register **HR(223)–HR(224)** (`inverter_errors`/`inverter_fault_messages`). IR(39)–IR(40)
+mirrors as raw hex (no name decoder). Key fault bits:
 | Fault | HR word bit | Decodes to |
 |-------|-------------|------------|
-| `grid_loss` | bit 7 | "No Utility" |
-| `inverter_trip` | bit 23 | "Consistent Fault" |
-| `battery_over_temp` | bit 0 | "Inverter NTC Fault" (only thermal bit; real battery thermal lives in BMS) |
-| `comm_timeout` | bit 24 | "ARM Comms Fault" |
-| `sensor_drift` | bit 30 | *(reserved — non-zero word, no name)* |
-Auxiliary signals: `inverter_trip` also sets **IR 0 status = 3 (Fault)**
-(givenergy-modbus `Status` enum); `grid_loss` sets **IR 49 system mode = 1
-(off-grid)**; `battery_over_temp` sets **IR 57 charger_warning_code = 1**.
+| `grid_loss` | 7 | "No Utility" |
+| `inverter_trip` | 23 | "Consistent Fault" |
+| `battery_over_temp` | 0 | "Inverter NTC Fault" |
+| `comm_timeout` | 24 | "ARM Comms Fault" |
+| `sensor_drift` | 30 | *(reserved — non-zero, no name)* |
 
-**Three-phase inverters** (`ThreePhase*`, `ACThreePhase`) — register **IR(1300)–
-IR(1307)**, eight 16-bit words (`inverter_fault_codes_0..7`). HR(223-224) stays 0
-for three-phase.
+Auxiliary: inverter_trip → IR 0 status = 3 (Fault); grid_loss → IR 49 system mode = 1 (off-grid);
+battery_over_temp → IR 57 charger_warning_code = 1.
+
+**Three-phase** (`ThreePhase*`, `ACThreePhase`): **IR(1300)–IR(1307)**, eight 16-bit words.
+HR(223-224) stays 0. Key bits:
 | Fault | Word (IR) | bit | Decodes to |
 |-------|-----------|-----|------------|
-| `grid_loss` | IR 1301 | 0 | "No Grid connection" |
-| `inverter_trip` | IR 1305 | 4 | "Relay fault" |
-| `battery_over_temp` | IR 1307 | 9 | "Battery over temperature" (real dedicated bit) |
-| `comm_timeout` | IR 1301 | 15 | "Gateway Comm fault" |
-| `sensor_drift` | IR 1305 | 13 | "NTC open" |
+| `grid_loss` | 1301 | 0 | "No Grid connection" |
+| `inverter_trip` | 1305 | 4 | "Relay fault" |
+| `battery_over_temp` | 1307 | 9 | "Battery over temperature" |
+| `comm_timeout` | 1301 | 15 | "Gateway Comm fault" |
+| `sensor_drift` | 1305 | 13 | "NTC open" |
 
 ## Running Tests
 
 ```bash
-# Full suite (250 tests)
+# Full suite (399 tests)
 cargo test
 
 # Single crate
@@ -433,7 +323,7 @@ cargo build && cargo test    # should complete in ~5s total
 ## Persistence
 Save path: `~/.local/share/com.givenergy.simulator/plant_state.json`
 Format: `{ "plant": PlantState, "schedule": Option<Schedule> }`
-Battery sizes: `BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4]` (nearest-value matching). Up to 6 battery modules supported (LV packs at slave 0x32–0x37, or HV stacks).
+Battery sizes: `BATTERY_SIZES = [2.6, 2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4]` (nearest-value matching). Up to 6 battery modules supported (LV packs at slave 0x32–0x37, or HV stacks).
 
 ## Network ports
 | Port | Protocol | Purpose |
@@ -468,32 +358,10 @@ HR 31-32 on Gen3 contains stale/garbage data. The `uses_gen3_extended_slots()` h
 gates this: Gen1Hybrid/Gen2Hybrid → HR 31-32; all others → HR 243-244.
 The `project_schedule_for` method writes to the correct address based on inverter type.
 
-## Test count tracking
-- v0.3.0: 37
-- v0.3.1: 49
-- v0.4.0: 54
-- v0.5.0: 59
-- v0.6.0: 82
-- v0.7.0: 165
-- v0.7.1: 216
-- v0.8.0: 216
-- v0.9.0: 217
-- v0.10.0: 217
-- v0.11.0: 219
-- v0.11.1: 220
-- v0.11.2: 223
-- v0.12.0: 223
-- v0.13.0: 235
-- v0.14.0: 243
-- v0.14.1: 244
-- v0.14.2: 245
-- v0.14.3: 245
-- v0.14.4: 245
-- v0.14.5: 258
-- v0.15.0: 263
-- v0.16.0: 377
-- v0.16.1: 382
-- v0.16.2: 384
-- v0.16.3: 385
-- v0.16.4: 397
-- v0.16.5: 399
+## Battery control logic (from `giv_tcp` reference)
+Charge/discharge is gated by slot enable registers (HR 96 for charge, HR 59 for discharge)
+and the slot timer registers (start/end in HHMM, 60=disabled). `giv_tcp`'s `setChargeSlot`
+and `setDischargeSlot` write the start/end pair together in one function. `setEnableCharge`
+writes 0 (AC coupling) or 1 (normal) — the actual semantics depend on inverter wiring mode.
+Force charge is enabled by writing `battery_force_discharge_enable` / `battery_charge_enable`
+in baseinverter.py.
