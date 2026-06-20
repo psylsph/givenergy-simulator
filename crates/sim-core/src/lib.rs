@@ -1371,12 +1371,24 @@ impl DeviceModel for BatteryEngine {
 
 /// Device model that accumulates energy totals each tick.
 /// Must be registered **last** (after BatteryEngine) so power values are final.
+///
+/// The totals are treated as *daily* ("today") registers: at the first tick of
+/// each new calendar day every bucket is reset to zero, so IR/HR energy-today
+/// values are a faithful integral of power over the current day rather than a
+/// cumulative-since-startup figure.
 #[derive(Debug, Clone)]
-pub struct EnergyTracker;
+pub struct EnergyTracker {
+    /// Calendar date of the most recent midnight reset. `None` until the first
+    /// tick; the first tick records the date **without** resetting so that a
+    /// freshly-loaded plant keeps its existing totals.
+    last_reset_date: Option<chrono::NaiveDate>,
+}
 
 impl EnergyTracker {
     pub fn new() -> Self {
-        Self
+        Self {
+            last_reset_date: None,
+        }
     }
 }
 
@@ -1388,6 +1400,19 @@ impl Default for EnergyTracker {
 
 impl DeviceModel for EnergyTracker {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
+        // Midnight rollover: zero the daily energy buckets at the start of a
+        // new calendar day. On the very first tick we only record the date so
+        // a plant restored from disk keeps its accumulated totals.
+        let today = ctx.now.date();
+        match self.last_reset_date {
+            None => self.last_reset_date = Some(today),
+            Some(prev) if prev != today => {
+                state.energy_totals = sim_models::EnergyTotals::default();
+                self.last_reset_date = Some(today);
+            }
+            _ => {}
+        }
+
         let dt_hours = ctx.dt_hours;
 
         // Read values first to avoid borrow conflicts
@@ -2677,6 +2702,65 @@ mod tests {
 
         assert!((state.energy_totals.grid_import_kwh - 1.0).abs() < 0.01);
         assert!((state.energy_totals.grid_export_kwh).abs() < 0.01);
+    }
+
+    #[test]
+    fn energy_tracker_resets_daily_totals_at_midnight() {
+        // A full day of solar generation accumulates into today's totals...
+        let mut state = PlantState::new(ts(12));
+        state.solar.generation_w = 5000.0;
+        let mut tracker = EnergyTracker::new();
+        // First tick records the date without resetting.
+        tracker.update(
+            &TickContext {
+                now: ts(12),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert!((state.energy_totals.solar_generation_kwh - 5.0).abs() < 0.01);
+
+        // ...same calendar day keeps accumulating, no reset.
+        tracker.update(
+            &TickContext {
+                now: ts(13),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert!((state.energy_totals.solar_generation_kwh - 10.0).abs() < 0.01);
+
+        // Crossing into the next calendar day zeros the daily buckets so
+        // energy-today registers track the new day's power, not yesterday's.
+        let next_day = NaiveDate::from_ymd_opt(2025, 6, 22)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        tracker.update(
+            &TickContext {
+                now: next_day,
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert_eq!(state.energy_totals.solar_generation_kwh, 5.0); // only this tick's 5kW·h
+    }
+
+    #[test]
+    fn energy_tracker_first_tick_preserves_loaded_totals() {
+        // A plant restored from disk with existing totals must NOT be zeroed on
+        // the first tick (no spurious reset before the date is recorded).
+        let mut state = PlantState::new(ts(12));
+        state.energy_totals.solar_generation_kwh = 42.0;
+        let mut tracker = EnergyTracker::new();
+        tracker.update(
+            &TickContext {
+                now: ts(12),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert_eq!(state.energy_totals.solar_generation_kwh, 42.0);
     }
 
     // --- Thermal Model ---

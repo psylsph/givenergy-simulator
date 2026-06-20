@@ -8,7 +8,7 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 - `cargo fmt --all -- --check` — must be clean (no diff).
 - `cargo clippy --all-targets` — must produce **zero** warnings.
-- `cargo test` — must be green. The suite is fast (~3s, 399 tests). Don't move on without green tests.
+- `cargo test` — must be green. The suite is fast (~3s, 405 tests). Don't move on without green tests.
 
 ## Workspace
 
@@ -112,6 +112,25 @@ If battery data comes back empty for an HV inverter, the cluster path (not the L
 `PlantState.battery` (singular) is a convenience field for `batteries[0]`.
 Setting `state.battery` directly requires calling `state.sync_vec_from_battery()`.
 Setting `state.batteries[i]` directly requires calling `state.sync_battery_from_vec()`.
+
+### Energy totals are DAILY (midnight reset), never seeded
+`PlantState.energy_totals` buckets (solar/import/export/charge/discharge/load/ac_charge)
+are treated as **today** registers. `EnergyTracker` (last device in the update
+order) accumulates `power × dt` each tick and **zeros every bucket at the first
+tick of a new calendar day**, tracking `last_reset_date`. The first tick after
+construction only records the date (no reset) so a plant restored from disk
+keeps its totals.
+
+Do NOT inject synthetic energy values at runtime: there is no
+`seed_for_testing_if_zero()` call in the Tauri/CLI runpaths, and
+`RegisterStore::project_from_state()` projects energy registers straight from
+the live totals — an all-zero plant legitimately reads `0` on every daily
+energy register and climbs smoothly with power. `EnergyTotals::non_zero_test_fixture()`
+/ `seed_for_testing_if_zero()` are **test-only** helpers.
+
+Note: the `IR 21-22`/`IR 29` "total"/"year" projections and gateway lifetime
+banks reuse these same daily buckets (the sim has no separate lifetime
+tracking), so they also follow the midnight reset.
 
 ### Device update order (critical)
 ```

@@ -353,10 +353,15 @@ pub struct EnergyTotals {
 }
 
 impl EnergyTotals {
-    /// Small non-zero starter totals used by simulator frontends/register projection.
+    /// Small non-zero starter totals used **only by tests** that want to assert
+    /// non-zero energy registers without running a full day of simulation.
     ///
-    /// Keeping core defaults at zero preserves deterministic physics tests, while
-    /// seeding UI/API simulations with this fixture makes all common energy
+    /// This is deliberately NOT used at runtime or in register projection: daily
+    /// energy registers (PV energy today, import/export today, etc.) are a true
+    /// power-integral accumulated by `EnergyTracker` and reset at midnight, so a
+    /// fresh / early-morning plant legitimately reads zero and climbs smoothly
+    /// with power. Injecting this fixture caused daily registers to jump to a
+    /// fixed non-zero value the instant a client polled.
     /// registers immediately testable before a full day of simulation has run.
     pub fn non_zero_test_fixture() -> Self {
         Self {
@@ -383,6 +388,7 @@ impl EnergyTotals {
     }
 
     /// Replace an all-zero total set with the non-zero testing fixture.
+    /// Test-only — never call from runtime/projection code.
     pub fn seed_for_testing_if_zero(&mut self) {
         if self.is_all_zero() {
             *self = Self::non_zero_test_fixture();
