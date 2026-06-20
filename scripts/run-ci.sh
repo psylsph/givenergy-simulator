@@ -25,18 +25,20 @@ echo ""
 PASS=0
 FAIL=0
 TOTAL=0
+FAILED_NAMES=()
 
 for scenario in "$SCENARIOS_DIR"/*.yaml; do
     name=$(basename "$scenario" .yaml)
     TOTAL=$((TOTAL + 1))
     echo "--- Running: $name ---"
-    
+
     if cargo run --release --bin sim-api -- run "$scenario" --output "$OUTPUT_DIR/$name" 2>&1; then
         echo "  ✓ $name PASSED"
         PASS=$((PASS + 1))
     else
         echo "  ✗ $name FAILED"
         FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("$name")
     fi
 done
 
@@ -47,11 +49,8 @@ echo "Total: $TOTAL  Passed: $PASS  Failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then
     echo ""
     echo "FAILED scenarios:"
-    for scenario in "$SCENARIOS_DIR"/*.yaml; do
-        name=$(basename "$scenario" .yaml)
-        if [ -f "$OUTPUT_DIR/$name/${name}.xml" ]; then
-            echo "  - $name (see $OUTPUT_DIR/$name/${name}.xml)"
-        fi
+    for name in "${FAILED_NAMES[@]}"; do
+        echo "  - $name (see $OUTPUT_DIR/$name/${name}.xml)"
     done
 fi
 

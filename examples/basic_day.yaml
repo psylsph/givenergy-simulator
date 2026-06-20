@@ -17,7 +17,11 @@
 19:00:
   load: 3000
   expect:
-    soc_gt: 75
+    # v0.16.7: plants ship with a 3-year-old battery (SOH≈0.80, 7.6 kWh
+    # usable) instead of a brand-new 9.5 kWh pack. The same evening
+    # drain now lands us at ~74% rather than ~79%; keep a comfortable
+    # margin above the observed value.
+    soc_gt: 70
 22:00:
   load: 800
   expect:
