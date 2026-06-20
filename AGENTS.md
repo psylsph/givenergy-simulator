@@ -29,7 +29,11 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.16.5** — AC-coupled schedule-slot correction. See commit log for older changelogs.
+**0.16.6** — IR 11-12 / IR 1374-1375 are now true lifetime registers
+(projected from `solar_lifetime_kwh`, seeded to a 12,345 kWh baseline at
+plant creation, never reset by the midnight rollover). Previously these
+registers re-projected the daily `solar_generation_kwh` bucket and zeroed
+alongside it. See commit log for older changelogs.
 
 ## Common Gotchas
 
@@ -143,9 +147,14 @@ Do **not** seed at any other call site: `run_scenario`, `replay_recording`,
 `EnergyTotals::non_zero_test_fixture()` / `seed_for_testing_if_zero()` are
 **test-only** helpers and must never be called from runtime paths.
 
-Note: the `IR 21-22`/`IR 29` "total"/"year" projections and gateway lifetime
-banks reuse these same daily buckets (the sim has no separate lifetime
-tracking), so they also follow the midnight reset.
+Note: `IR 11-12` (single-phase `ge_ir_pv_total`) and `IR 1374-1375`
+(three-phase `tph_ir_e_pv_total`) are **lifetime** solar registers. They
+read from `energy_totals.solar_lifetime_kwh`, which is **never** reset at
+midnight and is seeded to `SOLAR_LIFETIME_BASELINE_KWH` (12,345 kWh) at
+plant creation. Other "total"/"lifetime"-suffixed registers (`IR 21-22`,
+`IR 29`, the gateway aggregation bank `IR 1641-1655`) still reuse the daily
+buckets and follow the midnight reset — converting those to true lifetime
+is a follow-up change.
 
 ### Device update order (critical)
 ```

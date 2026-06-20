@@ -25,6 +25,17 @@ pub use sim_models::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Baseline value (kWh) that `solar_lifetime_kwh` is seeded to when a fresh
+/// plant is created. Added to the day's integrated solar so the IR 11-12 /
+/// IR 1374-1375 "PV lifetime total" registers read plausibly non-zero from the
+/// moment a plant is built rather than starting at zero and counting up from
+/// today.
+pub const SOLAR_LIFETIME_BASELINE_KWH: f64 = 12_345.0;
+
+// ---------------------------------------------------------------------------
 // Commands — external writes become these, applied between ticks
 // ---------------------------------------------------------------------------
 
@@ -1409,14 +1420,19 @@ impl Default for EnergyTracker {
 
 impl DeviceModel for EnergyTracker {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
-        // Midnight rollover: zero the daily energy buckets at the start of a
-        // new calendar day. On the very first tick we only record the date so
-        // a plant restored from disk keeps its accumulated totals.
+        // Midnight rollover: zero the *daily* energy buckets at the start of
+        // a new calendar day, but preserve the *lifetime* bucket (e.g.
+        // `solar_lifetime_kwh`) which projects to IR 11-12 / IR 1374-1375 as
+        // the "PV total" registers and must never reset.
         let today = ctx.now.date();
         match self.last_reset_date {
             None => self.last_reset_date = Some(today),
             Some(prev) if prev != today => {
-                state.energy_totals = sim_models::EnergyTotals::default();
+                let preserved_lifetime = state.energy_totals.solar_lifetime_kwh;
+                state.energy_totals = sim_models::EnergyTotals {
+                    solar_lifetime_kwh: preserved_lifetime,
+                    ..sim_models::EnergyTotals::default()
+                };
                 self.last_reset_date = Some(today);
             }
             _ => {}
@@ -1452,6 +1468,10 @@ impl DeviceModel for EnergyTracker {
 
         // Solar generation
         totals.solar_generation_kwh += solar_w / 1000.0 * dt_hours;
+
+        // Lifetime solar (never reset by the midnight rollover, projected to
+        // IR 11-12 / IR 1374-1375 as the "PV lifetime total" registers).
+        totals.solar_lifetime_kwh += solar_w / 1000.0 * dt_hours;
 
         // Inverter AC output energy (distinct from solar — includes battery
         // discharge contribution to AC for hybrid inverters).
@@ -1603,7 +1623,14 @@ pub fn seed_energy_totals_for_time_of_day(
     let mut soc_percent = starting_soc;
 
     let start_of_day = now.date().and_hms_opt(0, 0, 0).unwrap_or(now);
-    let mut totals = EnergyTotals::default();
+    let mut totals = EnergyTotals {
+        // Lifetime baseline: PV lifetime total starts at 12,345 kWh on plant
+        // creation so the IR 11-12 / IR 1374-1375 registers read plausibly
+        // non-zero from the moment a plant is built. Today's solar (seeded
+        // below) is added on top of this baseline.
+        solar_lifetime_kwh: SOLAR_LIFETIME_BASELINE_KWH,
+        ..EnergyTotals::default()
+    };
 
     // Overnight pre-charge from the grid: assume the battery was at `min_soc`
     // at 00:00 and was topped up to `starting_soc` (50%) by an off-peak /
@@ -1687,6 +1714,7 @@ pub fn seed_energy_totals_for_time_of_day(
 
         // Accumulate energy (kWh = W × hours).
         totals.solar_generation_kwh += solar_w / 1000.0 * minute_frac;
+        totals.solar_lifetime_kwh += solar_w / 1000.0 * minute_frac;
         totals.load_consumption_kwh += load_w / 1000.0 * minute_frac;
         totals.inverter_output_kwh += ac_out_w.max(0.0) / 1000.0 * minute_frac;
         if to_battery_w > 0.0 {
@@ -3019,6 +3047,45 @@ mod tests {
     }
 
     #[test]
+    fn energy_tracker_lifetime_solar_is_never_reset() {
+        // The lifetime bucket (projected to IR 11-12 / IR 1374-1375 as the
+        // "PV total" registers) must keep climbing across midnight rollovers,
+        // unlike the daily bucket which resets at the day boundary.
+        let mut state = PlantState::new(ts(12));
+        state.solar.generation_w = 5000.0;
+        let mut tracker = EnergyTracker::new();
+        // First tick: solar_generation_kwh = 5.0, solar_lifetime_kwh = 5.0
+        tracker.update(
+            &TickContext {
+                now: ts(12),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert!((state.energy_totals.solar_generation_kwh - 5.0).abs() < 0.01);
+        assert!((state.energy_totals.solar_lifetime_kwh - 5.0).abs() < 0.01);
+
+        // Cross into next day: daily bucket resets, lifetime keeps climbing.
+        let next_day = NaiveDate::from_ymd_opt(2025, 6, 22)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        tracker.update(
+            &TickContext {
+                now: next_day,
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert_eq!(state.energy_totals.solar_generation_kwh, 5.0);
+        assert!(
+            (state.energy_totals.solar_lifetime_kwh - 10.0).abs() < 0.01,
+            "lifetime must continue across midnight, got {}",
+            state.energy_totals.solar_lifetime_kwh
+        );
+    }
+
+    #[test]
     fn energy_tracker_first_tick_preserves_loaded_totals() {
         // A plant restored from disk with existing totals must NOT be zeroed on
         // the first tick (no spurious reset before the date is recorded).
@@ -3188,6 +3255,43 @@ mod tests {
         assert!(
             clear_t.solar_generation_kwh > 2.0 * overcast_t.solar_generation_kwh,
             "expected at least 2x reduction under overcast"
+        );
+    }
+
+    #[test]
+    fn seed_lifetime_bucket_starts_at_baseline_plus_today() {
+        // The seeder sets solar_lifetime_kwh to SOLAR_LIFETIME_BASELINE_KWH
+        // (12,345 kWh) plus any solar integrated during today's elapsed
+        // window. At exactly 00:00 no time has elapsed, so lifetime == baseline.
+        // At 13:00 in summer at 51.5°N the seeder integrates ~14 kWh of
+        // solar, so lifetime should be baseline + ~14 kWh.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+
+        let at_midnight = seed_energy_totals_for_time_of_day(ts(0), LoadProfile::Family, &params);
+        assert!(
+            (at_midnight.solar_lifetime_kwh - SOLAR_LIFETIME_BASELINE_KWH).abs() < 0.001,
+            "midnight lifetime should equal the baseline exactly, got {}",
+            at_midnight.solar_lifetime_kwh
+        );
+
+        let at_midday = seed_energy_totals_for_time_of_day(ts(13), LoadProfile::Family, &params);
+        let expected = SOLAR_LIFETIME_BASELINE_KWH + at_midday.solar_generation_kwh;
+        assert!(
+            (at_midday.solar_lifetime_kwh - expected).abs() < 0.001,
+            "midday lifetime should equal baseline + today's solar, got {} vs expected {}",
+            at_midday.solar_lifetime_kwh,
+            expected
+        );
+        // Sanity: today's solar so far should be a substantial fraction of
+        // what we'd expect for ~8.5 hours of daylight at 5kW peak on a clear
+        // summer day (10–30 kWh range — generous upper bound because the
+        // sinusoidal model integrated over the full elapsed window can
+        // produce more than the naive "peak × daylight-hours × 0.5" estimate).
+        assert!(
+            at_midday.solar_generation_kwh > 10.0 && at_midday.solar_generation_kwh < 30.0,
+            "today's solar should be ~10–30 kWh by 13:00, got {}",
+            at_midday.solar_generation_kwh
         );
     }
 

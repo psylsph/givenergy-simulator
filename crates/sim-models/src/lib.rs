@@ -350,6 +350,14 @@ pub struct EnergyTotals {
     /// for hybrid inverters this includes battery-discharge contribution to AC.
     #[serde(default)]
     pub inverter_output_kwh: f64,
+    /// **Lifetime** solar generation in kWh — never reset by `EnergyTracker`,
+    /// never zeroed at midnight. Projected to the IR 11-12 / IR 1374-1375
+    /// "PV lifetime total" registers so clients see a stable lifetime figure
+    /// rather than a daily bucket re-zeroed every night. Plant creation seeds
+    /// this to a baseline so the registers read plausibly non-zero from the
+    /// moment a plant is built.
+    #[serde(default)]
+    pub solar_lifetime_kwh: f64,
 }
 
 impl EnergyTotals {
@@ -373,6 +381,7 @@ impl EnergyTotals {
             load_consumption_kwh: 6.5,
             ac_charge_kwh: 0.7,
             inverter_output_kwh: 8.0,
+            solar_lifetime_kwh: 0.0,
         }
     }
 
@@ -407,6 +416,7 @@ impl Default for EnergyTotals {
             load_consumption_kwh: 0.0,
             ac_charge_kwh: 0.0,
             inverter_output_kwh: 0.0,
+            solar_lifetime_kwh: 0.0,
         }
     }
 }

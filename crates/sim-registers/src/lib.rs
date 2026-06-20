@@ -362,8 +362,10 @@ impl RegisterStore {
                 // IR 10: AC current phase 1 (×0.1 A)
                 "ge_ir_ac_current" => Some(state.inverter.ac_power_w.abs() / 240.0),
                 // IR 11-12: PV total lifetime (uint32, ×0.1 kWh)
+                // Projected from the lifetime bucket (never reset at midnight)
+                // so clients see a stable "lifetime to date" figure.
                 "ge_ir_pv_total_high" | "ge_ir_pv_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
+                    let (hi, lo) = u32_words(state.energy_totals.solar_lifetime_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -1732,7 +1734,7 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_e_pv_total_high" | "tph_ir_e_pv_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.solar_generation_kwh, 0.1);
+                    let (hi, lo) = u32_words(state.energy_totals.solar_lifetime_kwh, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -7948,6 +7950,10 @@ mod tests {
     fn ge_input_reference_energy_registers_project() {
         let mut state = PlantState::new(test_ts());
         state.energy_totals.solar_generation_kwh = 12.5;
+        // Lifetime starts equal to today's solar so the IR 11-12 "total"
+        // assertion below remains consistent with the daily-bucket projection
+        // it replaced.
+        state.energy_totals.solar_lifetime_kwh = 12.5;
         state.energy_totals.inverter_output_kwh = 12.5;
         state.energy_totals.grid_export_kwh = 3.0;
         state.energy_totals.grid_import_kwh = 1.5;
@@ -7970,6 +7976,53 @@ mod tests {
         assert_eq!(store.read_by_space(44, RegisterSpace::Input), Some(125));
         assert_eq!(store.read_by_space(45, RegisterSpace::Input), Some(0));
         assert_eq!(store.read_by_space(46, RegisterSpace::Input), Some(125));
+    }
+
+    #[test]
+    fn ir_11_12_pv_total_reads_lifetime_not_daily() {
+        // The GE "PV total lifetime" pair (IR 11 high / IR 12 low) must read
+        // from `solar_lifetime_kwh` (cumulative, never reset at midnight), not
+        // from the daily `solar_generation_kwh` bucket. After a day rollover
+        // the daily bucket is zeroed but the lifetime bucket keeps climbing.
+        let mut state = PlantState::new(test_ts());
+        state.energy_totals.solar_generation_kwh = 0.0; // today is empty
+        state.energy_totals.solar_lifetime_kwh = 12345.0; // baseline + prior days
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        let raw = (12345.0_f64 * 10.0).round() as u32; // ×0.1 kWh scaling
+        assert_eq!(
+            store.read_by_space(11, RegisterSpace::Input),
+            Some((raw >> 16) as u16)
+        );
+        assert_eq!(
+            store.read_by_space(12, RegisterSpace::Input),
+            Some((raw & 0xFFFF) as u16)
+        );
+    }
+
+    #[test]
+    fn ir_1374_1375_tph_pv_total_reads_lifetime_not_daily() {
+        // Same projection contract for the ThreePhase register pair: lifetime
+        // bucket, not daily bucket.
+        let mut state = PlantState::new(test_ts());
+        state.config.inverter_type = "ThreePhase11kW".to_string();
+        state.energy_totals.solar_generation_kwh = 0.0;
+        state.energy_totals.solar_lifetime_kwh = 12345.0;
+
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        let raw = (12345.0_f64 * 10.0).round() as u32;
+        assert_eq!(
+            store.read_by_space(1374, RegisterSpace::Input),
+            Some((raw >> 16) as u16)
+        );
+        assert_eq!(
+            store.read_by_space(1375, RegisterSpace::Input),
+            Some((raw & 0xFFFF) as u16)
+        );
     }
 
     #[test]
@@ -8709,6 +8762,9 @@ mod tests {
         s.inverter.dsp_firmware_version = 612;
         s.inverter.arm_firmware_version = 318;
         s.energy_totals.solar_generation_kwh = 12.0;
+        // Lifetime bucket starts equal to today's solar so the "total" assertion
+        // below remains consistent with the previous (daily-bucket) projection.
+        s.energy_totals.solar_lifetime_kwh = 12.0;
         s.energy_totals.grid_import_kwh = 3.0;
         s.energy_totals.grid_export_kwh = 4.0;
         s.energy_totals.battery_charge_kwh = 5.0;
