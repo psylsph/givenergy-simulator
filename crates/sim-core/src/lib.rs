@@ -1390,6 +1390,15 @@ impl EnergyTracker {
             last_reset_date: None,
         }
     }
+
+    /// Builder: preset the rollover date so the first tick after plant creation
+    /// takes the same-day `noop` arm instead of the first-tick record arm.
+    /// Used by `seed_energy_totals_for_time_of_day` so the seed isn't clobbered
+    /// by the engine's midnight-rollover logic.
+    pub fn with_last_reset_date(mut self, date: chrono::NaiveDate) -> Self {
+        self.last_reset_date = Some(date);
+        self
+    }
 }
 
 impl Default for EnergyTracker {
@@ -1451,6 +1460,269 @@ impl DeviceModel for EnergyTracker {
         // Load consumption
         totals.load_consumption_kwh += load_w / 1000.0 * dt_hours;
     }
+}
+
+// ---------------------------------------------------------------------------
+// seed_energy_totals_for_time_of_day — bootstrap daily totals at plant creation
+// ---------------------------------------------------------------------------
+
+/// Closed-form solar irradiance (watts) for a given instant. Mirrors the
+/// formula in `SolarEngine::update` so the seeder integrates the exact same
+/// curve the engine integrates per tick.
+fn solar_power_w_at(
+    peak_w: f64,
+    pv2_peak_w: f64,
+    latitude: f64,
+    weather: WeatherCondition,
+    day_of_year: u32,
+    decimal_hour: f64,
+) -> f64 {
+    let lat_rad = latitude.to_radians();
+    let declination = 23.45_f64.to_radians()
+        * (2.0_f64 * std::f64::consts::PI * (day_of_year as f64 + 284.0) / 365.0).sin();
+    let cos_hour_angle = (-lat_rad.tan() * declination.tan()).min(1.0).max(-1.0);
+    let sunrise = 12.0 - cos_hour_angle.acos().to_degrees() / 15.0;
+    let sunset = 24.0 - sunrise;
+    let day_length = sunset - sunrise;
+    if day_length <= 0.0 || decimal_hour <= sunrise || decimal_hour >= sunset {
+        return 0.0;
+    }
+    let noon_elevation = (std::f64::consts::FRAC_PI_2 - (lat_rad - declination).abs()).max(0.0);
+    let elevation_factor = noon_elevation.sin();
+    let t = (decimal_hour - sunrise) / day_length;
+    let irradiance = (std::f64::consts::PI * t).sin();
+    let total_peak = peak_w + pv2_peak_w;
+    let total_w = total_peak * irradiance * elevation_factor * weather.irradiance_factor();
+    total_w.min(total_peak).max(0.0)
+}
+
+/// Inputs for `seed_energy_totals_for_time_of_day` that aren't derived from
+/// `now` or `profile`. Bundled to keep the call-site readable.
+#[derive(Debug, Clone)]
+pub struct EnergySeedParams<'a> {
+    /// PV1 peak capacity (W).
+    pub peak_w: f64,
+    /// PV2 peak capacity (W). 0.0 if no second array.
+    pub pv2_peak_w: f64,
+    /// Site latitude (degrees, +N).
+    pub latitude: f64,
+    /// Display string matching `parse_weather_from_str`'s accepted forms.
+    pub weather_str: &'a str,
+    /// Battery bank (used for capacity, charge/discharge limits, efficiencies).
+    pub batteries: &'a [sim_models::BatteryState],
+    /// Inverter AC throughput cap (W). Mirrors `config.max_ac_watts`.
+    pub max_ac_watts: f64,
+    /// HR 111 charge limit (0–100%).
+    pub battery_charge_limit_percent: f64,
+    /// HR 112 discharge limit (0–100%).
+    pub battery_discharge_limit_percent: f64,
+}
+
+/// Seed the daily energy totals to realistic values for the elapsed portion
+/// of today, so a freshly-created plant doesn't show zeros on every
+/// "energy today" register (IR 21 / IR 22 / `pv_energy_today` / etc.) until
+/// the engine has been running long enough to climb from zero.
+///
+/// **Scope of the seed (intentional)**:
+/// - `solar_generation_kwh`: analytically integrated closed-form solar model
+///   from sunrise to `now`.
+/// - `load_consumption_kwh`: integrated piecewise-linear load profile from
+///   00:00 to `now`.
+/// - `grid_import_kwh`, `grid_export_kwh`, `battery_charge_kwh`,
+///   `battery_discharge_kwh`, `ac_charge_kwh`, `inverter_output_kwh`:
+///   integrated from the same solar/load curves by replaying the inverter
+///   `normal_priority` rules per minute, starting from a neutral SoC (50%).
+///
+/// **Overnight pre-charge**: a bookkeeping entry is added at the start of the
+/// seed window representing the grid import that brought the battery bank
+/// from `min_soc` up to the starting 50% SoC. Without this, a fresh plant
+/// whose battery is half full would show zero grid import — implausible.
+/// The entry is added to both `grid_import_kwh` and `battery_charge_kwh`
+/// (gross energy from the grid, before charge-efficiency losses). At exactly
+/// 00:00 the pre-charge is omitted, so a plant created at midnight legitimately
+/// reads zero on every daily register.
+///
+/// **Assumptions**:
+/// - Inverter mode = Normal (no schedule, no force-charge, no export limit).
+/// - Grid connected.
+/// - Battery starts at 50% SoC (mid-pack, the most defensible neutral).
+/// - Charge/discharge efficiency 95% per pass (matches `BatteryState::default`).
+/// - Weather string is one of `parse_weather_from_str`'s accepted forms
+///   (`"Clear"`, `"PartlyCloudy"`, `"Partly-Cloudy"`, `"Overcast"`, `"Storm"`,
+///   or the canonical `"partly_cloudy"`).
+///
+/// **Interaction with the engine**: callers that use this seed must construct
+/// the `EnergyTracker` with `EnergyTracker::with_last_reset_date(now.date())`
+/// so the first tick takes the same-day no-op arm and doesn't clobber the
+/// seed. The midnight rollover continues to work normally thereafter.
+pub fn seed_energy_totals_for_time_of_day(
+    now: NaiveDateTime,
+    profile: LoadProfile,
+    params: &EnergySeedParams<'_>,
+) -> sim_models::EnergyTotals {
+    use sim_models::EnergyTotals;
+
+    let weather = parse_weather_from_str(params.weather_str);
+    let load_engine = LoadEngine::new(profile);
+    let day_of_year = now.ordinal();
+
+    let batteries = params.batteries;
+    let total_capacity_kwh: f64 = batteries.iter().map(|b| b.capacity_kwh).sum();
+    let max_charge_kw: f64 = batteries.iter().map(|b| b.max_charge_kw).sum();
+    let max_discharge_kw: f64 = batteries.iter().map(|b| b.max_discharge_kw).sum();
+    let charge_eff = batteries
+        .first()
+        .map(|b| b.charge_efficiency)
+        .unwrap_or(0.95);
+    let discharge_eff = batteries
+        .first()
+        .map(|b| b.discharge_efficiency)
+        .unwrap_or(0.95);
+
+    // Effective limits after HR 111 / HR 112 percentage scaling.
+    let eff_max_charge_w =
+        max_charge_kw * 1000.0 * (params.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
+    let eff_max_discharge_w = max_discharge_kw
+        * 1000.0
+        * (params.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
+
+    // Aggregate battery min/max SOC for clamping.
+    let max_soc = batteries
+        .iter()
+        .map(|b| b.max_soc)
+        .fold(f64::INFINITY, f64::min)
+        .min(100.0);
+    let min_soc = batteries
+        .iter()
+        .map(|b| b.min_soc)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0);
+
+    // Neutral starting SoC: 50% of usable range.
+    let starting_soc = ((max_soc + min_soc) * 0.5).clamp(min_soc, max_soc);
+    let mut soc_percent = starting_soc;
+
+    let start_of_day = now.date().and_hms_opt(0, 0, 0).unwrap_or(now);
+    let mut totals = EnergyTotals::default();
+
+    // Overnight pre-charge from the grid: assume the battery was at `min_soc`
+    // at 00:00 and was topped up to `starting_soc` (50%) by an off-peak /
+    // scheduled charge before the seed window. Without this bookkeeping entry
+    // a fresh plant would show zero grid import even on a system whose battery
+    // bank is half full — which is implausible. We add the *gross* energy
+    // pulled from the grid to both `grid_import_kwh` and `battery_charge_kwh`,
+    // matching the convention used by the runtime `EnergyTracker`.
+    //
+    // Skipped at exactly 00:00: nothing has happened yet today, so the daily
+    // registers must start at zero (matches `seed_zero_at_midnight_returns_zeros`).
+    if now > start_of_day {
+        let soc_delta_pct = (starting_soc - min_soc).max(0.0);
+        let stored_kwh = (soc_delta_pct / 100.0) * total_capacity_kwh;
+        // Energy drawn from the grid to deliver `stored_kwh` to the battery,
+        // accounting for round-trip charging losses (charge_efficiency < 1.0).
+        let grid_import_kwh = stored_kwh / charge_eff.max(0.01);
+        totals.grid_import_kwh += grid_import_kwh;
+        totals.battery_charge_kwh += grid_import_kwh;
+    }
+
+    // Walk minute-by-minute from 00:00 to `now`. Per-minute is plenty fine
+    // for the smooth solar sinusoid and matches the linear load interpolation.
+    let mut t = start_of_day;
+    // Cap iteration count at a full day for safety.
+    let max_iters = 24 * 60 + 1;
+    let mut iter = 0;
+    while t < now && iter < max_iters {
+        iter += 1;
+        let decimal_hour = t.time().num_seconds_from_midnight() as f64 / 3600.0;
+        let minute_frac = 1.0_f64 / 60.0; // one minute in hours
+
+        // Solar at start of this minute (constant across the minute, good
+        // enough at 1-minute granularity given the smooth sinusoid).
+        let solar_w = solar_power_w_at(
+            params.peak_w,
+            params.pv2_peak_w,
+            params.latitude,
+            weather,
+            day_of_year,
+            decimal_hour,
+        );
+
+        // Load via the same piecewise-linear interpolation the engine uses.
+        let floor_hour = t.time().hour();
+        let ceil_hour = (floor_hour + 1) % 24;
+        let frac = t.time().minute() as f64 / 60.0;
+        let low = load_engine.hourly_demand(floor_hour);
+        let high = load_engine.hourly_demand(ceil_hour);
+        let load_w = low + (high - low) * frac;
+
+        // Inverter normal priority (mirrors `InverterEngine::normal_priority`).
+        let net = solar_w - load_w;
+        let inv_max_w = params.max_ac_watts;
+        let mut to_battery_w = 0.0_f64;
+        let mut from_battery_w = 0.0_f64;
+        let mut to_grid_w = 0.0_f64;
+        let mut from_grid_w = 0.0_f64;
+        let ac_out_w: f64;
+        if net >= 0.0 {
+            let excess = net;
+            let soc_headroom = ((max_soc - soc_percent) / 100.0) * total_capacity_kwh * 1000.0;
+            let charge_limit = eff_max_charge_w.min(soc_headroom.max(0.0)).min(inv_max_w);
+            let to_battery = excess.min(charge_limit);
+            let to_grid = excess - to_battery;
+            to_battery_w = to_battery;
+            to_grid_w = to_grid;
+            ac_out_w = solar_w;
+        } else {
+            let deficit = -net;
+            let soc_available = ((soc_percent - min_soc) / 100.0) * total_capacity_kwh * 1000.0;
+            let discharge_limit = eff_max_discharge_w
+                .min(soc_available.max(0.0))
+                .min(inv_max_w);
+            let from_battery = deficit.min(discharge_limit);
+            let from_grid = deficit - from_battery;
+            from_battery_w = from_battery;
+            from_grid_w = from_grid;
+            ac_out_w = solar_w + from_battery;
+        }
+
+        // Accumulate energy (kWh = W × hours).
+        totals.solar_generation_kwh += solar_w / 1000.0 * minute_frac;
+        totals.load_consumption_kwh += load_w / 1000.0 * minute_frac;
+        totals.inverter_output_kwh += ac_out_w.max(0.0) / 1000.0 * minute_frac;
+        if to_battery_w > 0.0 {
+            totals.battery_charge_kwh += to_battery_w / 1000.0 * minute_frac;
+        }
+        if from_battery_w > 0.0 {
+            totals.battery_discharge_kwh += from_battery_w / 1000.0 * minute_frac;
+        }
+        if from_grid_w > 0.0 {
+            totals.grid_import_kwh += from_grid_w / 1000.0 * minute_frac;
+        }
+        if to_grid_w > 0.0 {
+            totals.grid_export_kwh += to_grid_w / 1000.0 * minute_frac;
+        }
+
+        // Advance SoC using the same per-pass efficiencies as BatteryEngine.
+        // Charging: stored = electrical × charge_eff (losses reduce stored).
+        // Discharging: stored = electrical / discharge_eff (losses reduce delivered).
+        if to_battery_w > 0.0 {
+            let delta_soc = (to_battery_w / 1000.0 * charge_eff * minute_frac)
+                / total_capacity_kwh.max(0.001)
+                * 100.0;
+            soc_percent = (soc_percent + delta_soc).clamp(min_soc, max_soc);
+        } else if from_battery_w > 0.0 {
+            let delta_soc = (from_battery_w / 1000.0 / discharge_eff.max(0.01) * minute_frac)
+                / total_capacity_kwh.max(0.001)
+                * 100.0;
+            soc_percent = (soc_percent - delta_soc).clamp(min_soc, max_soc);
+        }
+
+        t += chrono::Duration::minutes(1);
+    }
+
+    // ac_charge_kwh: only meaningful under ForceCharge mode, which the seed
+    // doesn't simulate (we're modelling the Normal mode default). Leave at 0.
+    totals
 }
 
 // ---------------------------------------------------------------------------
@@ -2761,6 +3033,222 @@ mod tests {
             &mut state,
         );
         assert_eq!(state.energy_totals.solar_generation_kwh, 42.0);
+    }
+
+    // --- seed_energy_totals_for_time_of_day ---
+
+    fn seed_params_for_test<'a>(
+        peak_w: f64,
+        latitude: f64,
+        _profile: LoadProfile,
+        bank: &'a [sim_models::BatteryState],
+    ) -> EnergySeedParams<'a> {
+        EnergySeedParams {
+            peak_w,
+            pv2_peak_w: 0.0,
+            latitude,
+            weather_str: "Clear",
+            batteries: bank,
+            max_ac_watts: 5000.0,
+            battery_charge_limit_percent: 100.0,
+            battery_discharge_limit_percent: 100.0,
+        }
+    }
+
+    fn test_bank() -> Vec<sim_models::BatteryState> {
+        let mut b = sim_models::BatteryState::default();
+        b.capacity_kwh = 10.0;
+        b.nominal_capacity_kwh = 10.0;
+        b.max_charge_kw = 3.6;
+        b.max_discharge_kw = 3.6;
+        b.charge_efficiency = 0.95;
+        b.discharge_efficiency = 0.95;
+        b.soc_percent = 50.0;
+        b.min_soc = 10.0;
+        b.max_soc = 100.0;
+        vec![b]
+    }
+
+    #[test]
+    fn seed_zero_at_midnight_returns_zeros() {
+        // At 00:00 the elapsed day is empty — all buckets must be exactly 0.0.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        let t = seed_energy_totals_for_time_of_day(ts(0), LoadProfile::Family, &params);
+        assert_eq!(t.solar_generation_kwh, 0.0);
+        assert_eq!(t.load_consumption_kwh, 0.0);
+        assert_eq!(t.grid_import_kwh, 0.0);
+        assert_eq!(t.grid_export_kwh, 0.0);
+        assert_eq!(t.battery_charge_kwh, 0.0);
+        assert_eq!(t.battery_discharge_kwh, 0.0);
+        assert_eq!(t.inverter_output_kwh, 0.0);
+    }
+
+    #[test]
+    fn seed_pre_sunrise_has_load_but_no_solar() {
+        // 03:00 in summer at 51.5°N is well before sunrise (~03:48 on Jun 21),
+        // so solar must be exactly 0 even with 5kW of panels installed.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        let t = seed_energy_totals_for_time_of_day(ts(3), LoadProfile::Family, &params);
+        assert_eq!(
+            t.solar_generation_kwh, 0.0,
+            "solar must be zero before sunrise"
+        );
+        // Family load 00-05 = 250W constant = 0.75 kWh by 03:00.
+        assert!(
+            t.load_consumption_kwh > 0.6 && t.load_consumption_kwh < 0.9,
+            "load_consumption_kwh should be ~0.75 kWh at 03:00 Family, got {}",
+            t.load_consumption_kwh
+        );
+        // The overnight pre-charge bookkeeping entry adds ~4.74 kWh of grid
+        // import (10kWh bank × 40% SoC delta / 0.95 charge eff). That's the
+        // *only* grid import; the 0.75 kWh pre-dawn load is fully covered
+        // by the battery that pre-charge filled.
+        assert!(
+            t.grid_import_kwh > 4.0 && t.grid_import_kwh < 5.5,
+            "expected ~4.74 kWh of grid import (overnight pre-charge), got {}",
+            t.grid_import_kwh
+        );
+        assert!(
+            t.battery_discharge_kwh > 0.0,
+            "battery should be supplying the pre-dawn load"
+        );
+    }
+
+    #[test]
+    fn seed_midday_has_high_solar_and_export() {
+        // 13:00 should have substantial solar generation. Family midday load
+        // (~500W at 13:00) is dwarfed by 5kW of solar, so surplus should charge
+        // the battery up to limit and export the rest. Grid import today
+        // should consist solely of the overnight pre-charge bookkeeping entry
+        // (~4.74 kWh) — the daytime surplus flows to battery then export.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        let t = seed_energy_totals_for_time_of_day(ts(13), LoadProfile::Family, &params);
+        assert!(
+            t.solar_generation_kwh > 10.0,
+            "solar at 13:00 should be > 10 kWh by now, got {}",
+            t.solar_generation_kwh
+        );
+        assert!(
+            t.grid_export_kwh > 0.0,
+            "expected grid export during midday surplus, got {}",
+            t.grid_export_kwh
+        );
+        assert!(
+            t.grid_import_kwh > 4.0 && t.grid_import_kwh < 5.5,
+            "midday grid import should be only the overnight pre-charge (~4.74 kWh), got {}",
+            t.grid_import_kwh
+        );
+    }
+
+    #[test]
+    fn seed_ev_profile_loads_overnight() {
+        // EV profile: 4500W from 00:00–05:00 means the seeder must record
+        // significant overnight load consumption and grid import.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::EV, &bank);
+        let t = seed_energy_totals_for_time_of_day(ts(6), LoadProfile::EV, &params);
+        // 6 hours × 4.5kW = 27 kWh of load. Allow some tolerance for the
+        // bucket-interpolated linear ramp at the boundaries.
+        assert!(
+            t.load_consumption_kwh > 24.0,
+            "EV load by 06:00 should be > 24 kWh, got {}",
+            t.load_consumption_kwh
+        );
+        // Most of this should come from the grid (battery can't sustain 4.5kW
+        // for 6 hours continuously with a 10kWh / 3.6kW battery).
+        assert!(
+            t.grid_import_kwh > 10.0,
+            "EV overnight should pull heavily from grid, got {}",
+            t.grid_import_kwh
+        );
+    }
+
+    #[test]
+    fn seed_with_overcast_reduces_solar() {
+        // Same time of day, but overcast → significantly less solar energy.
+        let bank = test_bank();
+        let mut overcast = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        overcast.weather_str = "Overcast";
+        let overcast_t = seed_energy_totals_for_time_of_day(ts(13), LoadProfile::Family, &overcast);
+
+        let mut clear = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        clear.weather_str = "Clear";
+        let clear_t = seed_energy_totals_for_time_of_day(ts(13), LoadProfile::Family, &clear);
+
+        assert!(
+            overcast_t.solar_generation_kwh < clear_t.solar_generation_kwh,
+            "overcast solar ({}) should be less than clear ({})",
+            overcast_t.solar_generation_kwh,
+            clear_t.solar_generation_kwh
+        );
+        // Overcast is 0.3x clear, so at least 2x reduction.
+        assert!(
+            clear_t.solar_generation_kwh > 2.0 * overcast_t.solar_generation_kwh,
+            "expected at least 2x reduction under overcast"
+        );
+    }
+
+    #[test]
+    fn seed_includes_overnight_pre_charge() {
+        // The seeder assumes the battery bank was topped up from `min_soc` to
+        // 50% via off-peak / scheduled charging before today's window. This
+        // bookkeeping entry shows up as grid import + battery charge energy,
+        // regardless of how the day has progressed so far.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        // 06:00 with Family load and 5kW PV: ~1.5 kWh load, ~0 solar.
+        let t = seed_energy_totals_for_time_of_day(ts(6), LoadProfile::Family, &params);
+        // 10 kWh bank × 40% SoC delta / 0.95 eff = 4.21 kWh import (pre-charge)
+        // plus any grid import from today's morning ramp. Allow a wide band.
+        assert!(
+            t.grid_import_kwh > 4.0,
+            "overnight pre-charge should contribute > 4 kWh to grid import, got {}",
+            t.grid_import_kwh
+        );
+        assert!(
+            t.battery_charge_kwh > 4.0,
+            "overnight pre-charge should contribute > 4 kWh to battery charge, got {}",
+            t.battery_charge_kwh
+        );
+        // Battery charge should be at least the pre-charge amount (it might
+        // be more if the day so far has had any solar surplus).
+        assert!(
+            t.battery_charge_kwh >= t.grid_import_kwh - 0.01,
+            "battery_charge_kwh should be >= grid_import_kwh minus solar exports"
+        );
+    }
+
+    #[test]
+    fn energy_tracker_with_last_reset_date_does_not_clobber_seed() {
+        // Regression: callers that seed totals must construct the tracker
+        // with `with_last_reset_date(today)` so the first tick takes the
+        // same-day no-op arm. Without it, the first tick would record the
+        // date but not reset; with it, the seed survives indefinitely until
+        // the engine crosses midnight.
+        let bank = test_bank();
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        let seed = seed_energy_totals_for_time_of_day(ts(13), LoadProfile::Family, &params);
+        let initial_solar = seed.solar_generation_kwh;
+        assert!(initial_solar > 0.0);
+
+        let mut state = PlantState::new(ts(13));
+        state.energy_totals = seed;
+        let mut tracker = EnergyTracker::new().with_last_reset_date(ts(13).date());
+        // First tick: no-op (same-day arm). Seed must be preserved exactly.
+        tracker.update(
+            &TickContext {
+                now: ts(13),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+        assert_eq!(
+            state.energy_totals.solar_generation_kwh, initial_solar,
+            "first tick on the same day must not clobber the seed"
+        );
     }
 
     // --- Thermal Model ---

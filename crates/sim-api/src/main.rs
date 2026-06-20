@@ -688,6 +688,28 @@ async fn simulate(
     }
 
     let load_profile = parse_profile(load_profile);
+
+    // Seed daily energy totals from 00:00 → `now` so daily registers read
+    // realistic values immediately rather than climbing from zero. Stamps
+    // `last_reset_date = now.date()` on the EnergyTracker so the engine doesn't
+    // clobber the seed on its first tick.
+    let seed_params = sim_core::EnergySeedParams {
+        peak_w: solar_peak,
+        pv2_peak_w: pv2_peak,
+        latitude,
+        weather_str: &state.weather,
+        batteries: &state.batteries,
+        max_ac_watts: state.config.max_ac_watts,
+        battery_charge_limit_percent: state.battery_charge_limit_percent,
+        battery_discharge_limit_percent: state.battery_discharge_limit_percent,
+    };
+    state.energy_totals = sim_core::seed_energy_totals_for_time_of_day(
+        state.timestamp,
+        load_profile.clone(),
+        &seed_params,
+    );
+    let seed_date = state.timestamp.date();
+
     let initial_schedule = sim_models::Schedule::default();
     let devices: Vec<Box<dyn DeviceModel>> = vec![
         Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
@@ -697,7 +719,7 @@ async fn simulate(
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
         Box::new(sim_core::EvcEngine::new()),
-        Box::new(sim_core::EnergyTracker::new()),
+        Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
     ];
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
     // By default lock the sim clock to the host wall clock so the served

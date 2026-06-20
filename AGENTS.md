@@ -113,7 +113,7 @@ If battery data comes back empty for an HV inverter, the cluster path (not the L
 Setting `state.battery` directly requires calling `state.sync_vec_from_battery()`.
 Setting `state.batteries[i]` directly requires calling `state.sync_battery_from_vec()`.
 
-### Energy totals are DAILY (midnight reset), never seeded
+### Energy totals are DAILY (midnight reset)
 `PlantState.energy_totals` buckets (solar/import/export/charge/discharge/load/ac_charge)
 are treated as **today** registers. `EnergyTracker` (last device in the update
 order) accumulates `power × dt` each tick and **zeros every bucket at the first
@@ -121,12 +121,27 @@ tick of a new calendar day**, tracking `last_reset_date`. The first tick after
 construction only records the date (no reset) so a plant restored from disk
 keeps its totals.
 
-Do NOT inject synthetic energy values at runtime: there is no
-`seed_for_testing_if_zero()` call in the Tauri/CLI runpaths, and
-`RegisterStore::project_from_state()` projects energy registers straight from
-the live totals — an all-zero plant legitimately reads `0` on every daily
-energy register and climbs smoothly with power. `EnergyTotals::non_zero_test_fixture()`
-/ `seed_for_testing_if_zero()` are **test-only** helpers.
+**Plant-creation seed**: `create_plant` (Tauri) and `simulate` (CLI) call
+`sim_core::seed_energy_totals_for_time_of_day(now, …)` at the moment a brand-new
+plant is built, populating `energy_totals` with realistic values for the elapsed
+portion of today so the IR/HR "energy today" registers don't read zero until
+the engine has run long enough to climb from zero. The seeder:
+
+- integrates the closed-form solar model from sunrise to `now`,
+- integrates the piecewise-linear load profile from 00:00 to `now`,
+- replays the inverter `normal_priority` rules per minute from a neutral 50% SoC,
+- adds a single bookkeeping entry for the overnight grid-import that brought
+  the bank from `min_soc` to 50% (omitted at exactly 00:00).
+
+Callers must construct the `EnergyTracker` with
+`EnergyTracker::new().with_last_reset_date(now.date())` so the engine doesn't
+clobber the seed on its first tick (it takes the same-day no-op arm instead
+of the first-tick record arm). The midnight rollover continues to work normally.
+
+Do **not** seed at any other call site: `run_scenario`, `replay_recording`,
+`serve_config`, and `EnergyTracker::update` itself must leave totals alone.
+`EnergyTotals::non_zero_test_fixture()` / `seed_for_testing_if_zero()` are
+**test-only** helpers and must never be called from runtime paths.
 
 Note: the `IR 21-22`/`IR 29` "total"/"year" projections and gateway lifetime
 banks reuse these same daily buckets (the sim has no separate lifetime

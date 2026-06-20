@@ -221,6 +221,35 @@ pub async fn create_plant(
     };
     plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
 
+    // Seed daily energy totals from 00:00 → now so the IR/HR "today" registers
+    // (pv_energy_today, grid import/export today, etc.) read realistic values
+    // immediately instead of climbing from zero over the first few minutes.
+    // The `EnergyTracker` below is constructed with `with_last_reset_date(now.date())`
+    // so the engine doesn't clobber the seed on its first tick.
+    {
+        let pv2_peak_w = plant_state.config.pv2_peak_watts;
+        let weather_str = plant_state.weather.clone();
+        let batteries = plant_state.batteries.clone();
+        let max_ac_watts = plant_state.config.max_ac_watts;
+        let charge_lim_pct = plant_state.battery_charge_limit_percent;
+        let discharge_lim_pct = plant_state.battery_discharge_limit_percent;
+        let seed_params = sim_core::EnergySeedParams {
+            peak_w: peak_watts,
+            pv2_peak_w,
+            latitude,
+            weather_str: &weather_str,
+            batteries: &batteries,
+            max_ac_watts,
+            battery_charge_limit_percent: charge_lim_pct,
+            battery_discharge_limit_percent: discharge_lim_pct,
+        };
+        plant_state.energy_totals = sim_core::seed_energy_totals_for_time_of_day(
+            plant_state.timestamp,
+            profile.clone(),
+            &seed_params,
+        );
+    }
+
     // Reset schedule to default — a new plant shouldn't inherit old schedule settings
     {
         let mut sched = state.schedule.lock().await;
@@ -234,6 +263,10 @@ pub async fn create_plant(
         }
     }
     let schedule_opt = state.schedule.lock().await.clone();
+    // `last_reset_date = now.date()` so the engine doesn't zero the seeded
+    // totals on its first tick (the first-tick record arm would clobber the
+    // seed; the same-day no-op arm preserves it).
+    let seed_date = plant_state.timestamp.date();
     let devices: Vec<Box<dyn DeviceModel>> = if let Some(ref sched) = schedule_opt {
         vec![
             Box::new(ScheduleEngine::new(sched.clone())),
@@ -242,7 +275,7 @@ pub async fn create_plant(
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
-            Box::new(EnergyTracker::new()),
+            Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
             Box::new(sim_core::EvcEngine::new()),
         ]
     } else {
@@ -252,7 +285,7 @@ pub async fn create_plant(
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
-            Box::new(EnergyTracker::new()),
+            Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
             Box::new(sim_core::EvcEngine::new()),
         ]
     };
