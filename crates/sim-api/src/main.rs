@@ -672,6 +672,12 @@ async fn simulate(
         b.max_charge_kw = module_max_kw;
         b.max_discharge_kw = module_max_kw;
     }
+    // Re-seed throughput + SOH for the actual capacity. `with_battery_count`
+    // already ran the seed against the placeholder 9.5 kWh default; once the
+    // user-specified size is in, recompute so the throughput register is
+    // proportional to the real pack size.
+    sim_models::seed_batteries_for_age(&mut state.batteries, sim_models::BATTERY_DEFAULT_AGE_YEARS);
+    state.sync_battery_from_vec();
     state.sync_battery_from_vec();
 
     // Configure inverter

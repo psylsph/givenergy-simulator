@@ -194,7 +194,7 @@ fn default_dsp_firmware() -> u16 {
 
 impl Default for InverterState {
     fn default() -> Self {
-        Self {
+        let mut s = Self {
             mode_state: ModeState::default(),
             ac_power_w: 0.0,
             export_limit_w: 3600.0,
@@ -204,7 +204,12 @@ impl Default for InverterState {
             work_time_hours: 0.0,
             battery_self_heating: false,
             manual_battery_heater: false,
-        }
+        };
+        // Seed work_time_hours to a 3-year-old baseline so IR(47-48) reads
+        // a plausible mid-life runtime from the moment a plant is built,
+        // matching the battery throughput/SOH seed pattern.
+        seed_inverter_for_age(&mut s, INVERTER_DEFAULT_AGE_YEARS);
+        s
     }
 }
 
@@ -247,6 +252,117 @@ pub struct BatteryState {
     /// Terminal current in amps (signed: positive = charging).
     #[serde(default)]
     pub current_a: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Battery age / throughput seed constants and helpers.
+//
+// Used by `PlantState::with_battery_count` and the GUI create-plant path so a
+// fresh plant ships with `throughput_kwh` already at a realistic mid-life
+// value (and `soh` consistent with it), instead of zero. IR(6-7) therefore
+// reads as a believable 3-year-old pack from the moment a plant is built,
+// and the BatteryEngine accumulates further throughput from there.
+//
+// The three constants below MUST stay in sync with the runtime degradation
+// model in `sim_core::BatteryEngine`:
+//   `degradation_per_cycle` (default 0.0002 → 0.02%/cycle)
+//   `min_soh` (default 0.5)
+// so a seeded plant never reports a (throughput, soh) pair that the engine
+// would immediately contradict on its first aging tick.
+// ---------------------------------------------------------------------------
+
+/// Baseline battery age (years) used when a fresh plant is created without
+/// any user-supplied SOH or age. Three years is the canonical "mid-life"
+/// reference: ~1000 cycles, around 80% of the design-cycle envelope.
+pub const BATTERY_DEFAULT_AGE_YEARS: f64 = 3.0;
+
+/// Equivalent full charge/discharge cycles per year for a typical residential
+/// LFP battery bank. Used to convert age in years → cumulative cycles.
+pub const BATTERY_CYCLES_PER_YEAR: f64 = 330.0;
+
+/// Per-cycle capacity loss (fraction). Must match
+/// `sim_core::BatteryEngine::degradation_per_cycle` (default 0.0002 = 0.02%).
+pub const BATTERY_DEGRADATION_PER_CYCLE: f64 = 0.0002;
+
+/// Derive a realistic `throughput_kwh` seed for a battery module of the given
+/// age, in internal agreement with the degradation model. The runtime
+/// `BatteryEngine` accumulates further throughput tick by tick; IR(6-7)
+/// therefore climbs naturally from this baseline.
+///
+/// `nominal_capacity_kwh` is clamped to >= 0.1 to keep the math well-defined
+/// for the empty / placeholder packs some tests construct.
+pub fn seed_battery_throughput_for_age(years: f64, nominal_capacity_kwh: f64) -> f64 {
+    let cycles = (years.max(0.0) * BATTERY_CYCLES_PER_YEAR).max(0.0);
+    cycles * nominal_capacity_kwh.max(0.1)
+}
+
+/// Companion to [`seed_battery_throughput_for_age`]: derive the SOH that
+/// matches a `throughput_kwh` value computed for the given age, clamped to
+/// the `[MIN_SOH, 1.0]` band the runtime degradation uses.
+pub fn seed_battery_soh_for_age(years: f64) -> f64 {
+    let cycles = (years.max(0.0) * BATTERY_CYCLES_PER_YEAR).max(0.0);
+    let soh = 1.0 - cycles * BATTERY_DEGRADATION_PER_CYCLE;
+    soh.clamp(BATTERY_MIN_SOH, 1.0)
+}
+
+/// Lower bound for SOH used when seeding a freshly-created plant. Matches
+/// `sim_core::BatteryEngine::min_soh` (default 0.5) so the runtime
+/// degradation never immediately contradicts the seed.
+pub const BATTERY_MIN_SOH: f64 = 0.5;
+
+/// Apply the throughput + SOH seed to every module in `batteries` so they
+/// look like a `years`-old pack at construction time. Convenience wrapper for
+/// the two `PlantState` constructors and the GUI create-plant path; mutates
+/// `throughput_kwh` and `soh` in place.
+pub fn seed_batteries_for_age(batteries: &mut [BatteryState], years: f64) {
+    let throughput = seed_battery_throughput_for_age(years, 1.0);
+    // Per-module throughput scales with capacity; SOH is uniform.
+    let soh = seed_battery_soh_for_age(years);
+    for b in batteries.iter_mut() {
+        b.throughput_kwh = throughput * b.nominal_capacity_kwh.max(0.1);
+        b.soh = soh;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inverter age / work-time seed.
+//
+// The inverter's `work_time_hours` field projects to IR(47-48) — the
+// powered-on runtime hours the GivEnergy portal shows as the device's
+// lifetime operational counter. A brand-new plant constructed via
+// `PlantState::new` / `with_battery_count` would otherwise read `0` on
+// day one, which is implausible for any real installation and shows up
+// immediately when a client connects.
+//
+// Seed it to a 3-year-old continuous-runtime baseline so the register
+// reads as a believable mid-life unit from the moment the plant is built,
+// and `SimulationEngine::tick` accumulates further runtime from there.
+// ---------------------------------------------------------------------------
+
+/// Baseline inverter age (years) used when a fresh plant is created without
+/// any user-supplied runtime override. Mirrors `BATTERY_DEFAULT_AGE_YEARS`
+/// so a default plant looks like a coherent 3-year-old installation.
+pub const INVERTER_DEFAULT_AGE_YEARS: f64 = 3.0;
+
+/// Powered-on hours per calendar year. Real residential inverters sit at
+/// standby for parts of the day, so a true installation would accrue
+/// fewer than this; we use the continuous figure as a clean upper-bound
+/// baseline that lines up with `INVERTER_DEFAULT_AGE_YEARS × HOURS_PER_YEAR
+/// = 26_280` (a recognisable "3 calendar years" total).
+pub const INVERTER_HOURS_PER_YEAR: f64 = 8760.0;
+
+/// Derive the inverter's seeded `work_time_hours` for the given age. Mirrors
+/// `seed_battery_throughput_for_age`: a realistic mid-life runtime figure so
+/// IR(47-48) doesn't read `0` on a freshly-built plant.
+pub fn seed_inverter_work_time_for_age(years: f64) -> f64 {
+    (years.max(0.0) * INVERTER_HOURS_PER_YEAR).max(0.0)
+}
+
+/// Apply the work-time seed to `state.inverter.work_time_hours`. Mutates in
+/// place; `SimulationEngine::tick` continues to accumulate `dt_hours` from
+/// the seeded baseline.
+pub fn seed_inverter_for_age(inverter: &mut InverterState, years: f64) {
+    inverter.work_time_hours = seed_inverter_work_time_for_age(years);
 }
 
 impl Default for BatteryState {
@@ -609,8 +725,15 @@ pub struct PlantState {
 
 impl PlantState {
     /// Create a default state at the given timestamp.
+    /// The single battery is seeded as a `BATTERY_DEFAULT_AGE_YEARS`
+    /// (3-year-old) pack so IR(6-7) reads a realistic value on day one and
+    /// the runtime `BatteryEngine` continues to accumulate from there.
     pub fn new(timestamp: NaiveDateTime) -> Self {
-        let default_battery = BatteryState::default();
+        let mut default_battery = BatteryState::default();
+        seed_batteries_for_age(
+            std::slice::from_mut(&mut default_battery),
+            BATTERY_DEFAULT_AGE_YEARS,
+        );
         Self {
             timestamp,
             inverter: InverterState::default(),
@@ -647,9 +770,15 @@ impl PlantState {
     }
 
     /// Create a state with the given number of battery modules (1–6).
+    /// Each module is seeded as a `BATTERY_DEFAULT_AGE_YEARS` (3-year-old)
+    /// pack: `throughput_kwh` and `soh` are pre-populated from the
+    /// degradation model so IR(6-7) and the GUI's battery-card read
+    /// realistic values immediately instead of `0` / `1.0`. Runtime
+    /// `BatteryEngine` accumulates further throughput from that baseline.
     pub fn with_battery_count(timestamp: NaiveDateTime, count: usize) -> Self {
         let count = count.clamp(1, 6);
-        let batts: Vec<BatteryState> = (0..count).map(|_| BatteryState::default()).collect();
+        let mut batts: Vec<BatteryState> = (0..count).map(|_| BatteryState::default()).collect();
+        seed_batteries_for_age(&mut batts, BATTERY_DEFAULT_AGE_YEARS);
         Self {
             timestamp,
             inverter: InverterState::default(),

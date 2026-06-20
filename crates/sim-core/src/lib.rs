@@ -35,6 +35,20 @@ pub use sim_models::{
 /// today.
 pub const SOLAR_LIFETIME_BASELINE_KWH: f64 = 12_345.0;
 
+// `BATTERY_DEFAULT_AGE_YEARS`, `BATTERY_CYCLES_PER_YEAR`,
+// `BATTERY_DEGRADATION_PER_CYCLE`, `seed_battery_throughput_for_age`,
+// `seed_battery_soh_for_age`, the inverter-side equivalents
+// (`INVERTER_DEFAULT_AGE_YEARS`, `INVERTER_HOURS_PER_YEAR`,
+// `seed_inverter_for_age`, `seed_inverter_work_time_for_age`) live in
+// `sim_models` (alongside the state types they parameterise). Re-exported
+// here so existing callers in `sim-tauri` / `sim-api` can keep importing
+// them from `sim_core`.
+pub use sim_models::{
+    BATTERY_CYCLES_PER_YEAR, BATTERY_DEFAULT_AGE_YEARS, BATTERY_DEGRADATION_PER_CYCLE,
+    BATTERY_MIN_SOH, INVERTER_DEFAULT_AGE_YEARS, INVERTER_HOURS_PER_YEAR, seed_battery_soh_for_age,
+    seed_battery_throughput_for_age, seed_inverter_for_age, seed_inverter_work_time_for_age,
+};
+
 // ---------------------------------------------------------------------------
 // Commands — external writes become these, applied between ticks
 // ---------------------------------------------------------------------------
@@ -2282,9 +2296,17 @@ mod tests {
     #[test]
     fn tick_increments_inverter_work_time_hours() {
         let mut engine = test_engine();
+        // Capture the seed baseline so the assertion is independent of the
+        // current `INVERTER_DEFAULT_AGE_YEARS` value (which seeds a 3y
+        // runtime on plant creation).
+        let baseline = engine.state.inverter.work_time_hours;
         engine.tick_interval_secs = 1800;
         engine.tick();
-        assert!((engine.state.inverter.work_time_hours - 0.5).abs() < 0.0001);
+        assert!(
+            (engine.state.inverter.work_time_hours - baseline - 0.5).abs() < 0.0001,
+            "expected work_time_hours to climb by 0.5 h (1800s tick), got delta {}",
+            engine.state.inverter.work_time_hours - baseline,
+        );
     }
 
     #[test]
@@ -3724,6 +3746,9 @@ mod tests {
     #[test]
     fn aging_tracks_throughput() {
         let mut state = PlantState::new(ts(12));
+        // Capture the seed-time baseline so the assertion is correct regardless
+        // of what `BATTERY_DEFAULT_AGE_YEARS` is at the moment the test runs.
+        let baseline = state.batteries[0].throughput_kwh;
         state.batteries[0].power_kw = 3.0;
         state.batteries[0].capacity_kwh = 10.0;
         state.batteries[0].nominal_capacity_kwh = 10.0;
@@ -3736,8 +3761,12 @@ mod tests {
         };
         bat.update(&ctx, &mut state);
 
-        // 3kW charging for 1h → 3 kWh throughput
-        assert!((state.batteries[0].throughput_kwh - 3.0).abs() < 0.01);
+        // 3kW charging for 1h → 3 kWh throughput added to the baseline.
+        assert!(
+            (state.batteries[0].throughput_kwh - baseline - 3.0).abs() < 0.01,
+            "expected throughput to climb by ~3 kWh, got delta {}",
+            state.batteries[0].throughput_kwh - baseline,
+        );
     }
 
     #[test]
@@ -3746,6 +3775,8 @@ mod tests {
         state.batteries[0].power_kw = 5.0;
         state.batteries[0].capacity_kwh = 10.0;
         state.batteries[0].nominal_capacity_kwh = 10.0;
+        // Force SOH to 1.0 explicitly so the assertion below is about the
+        // engine's degradation behaviour, not the seeded 3-year-old baseline.
         state.batteries[0].soh = 1.0;
         state.sync_battery_from_vec();
 
@@ -3771,6 +3802,103 @@ mod tests {
             "Expected SOH ~0.99, got {}",
             state.batteries[0].soh
         );
+    }
+
+    // --- Plant-creation battery throughput seed ---
+
+    #[test]
+    fn fresh_plant_seeds_throughput_as_three_year_old_pack() {
+        // IR(6-7) must read a realistic value the moment a plant is built so
+        // the GUI doesn't show "0 cycles" on day one. The seed is
+        // BATTERY_DEFAULT_AGE_YEARS (3 years) × BATTERY_CYCLES_PER_YEAR
+        // (330 cycles/yr) × nominal_capacity_kwh.
+        let state = PlantState::new(ts(12));
+        let nominal = state.batteries[0].nominal_capacity_kwh;
+        let expected_cycles = BATTERY_DEFAULT_AGE_YEARS * BATTERY_CYCLES_PER_YEAR;
+        let expected_throughput = expected_cycles * nominal;
+        assert!(
+            (state.batteries[0].throughput_kwh - expected_throughput).abs() < 0.01,
+            "expected ~{expected_throughput} kWh seed, got {}",
+            state.batteries[0].throughput_kwh,
+        );
+        // SOH must be consistent with the same cycle count.
+        let expected_soh = 1.0 - expected_cycles * BATTERY_DEGRADATION_PER_CYCLE;
+        assert!(
+            (state.batteries[0].soh - expected_soh).abs() < 0.001,
+            "expected ~{expected_soh} SOH seed, got {}",
+            state.batteries[0].soh,
+        );
+    }
+
+    #[test]
+    fn with_battery_count_seeds_every_module() {
+        let state = PlantState::with_battery_count(ts(12), 3);
+        assert_eq!(state.batteries.len(), 3);
+        for (i, b) in state.batteries.iter().enumerate() {
+            assert!(
+                b.throughput_kwh > 0.0,
+                "module {i} throughput_kwh not seeded: {}",
+                b.throughput_kwh,
+            );
+            assert!(
+                b.soh > 0.0 && b.soh < 1.0,
+                "module {i} soh not seeded to mid-life: {}",
+                b.soh,
+            );
+        }
+    }
+
+    #[test]
+    fn throughput_seed_does_not_exceed_min_soh_floor() {
+        // 100 years × 330 cycles/yr × 0.0002 = 6.6 loss > 1.0, which would
+        // give a negative SOH without the clamp. The seed must clamp to
+        // BATTERY_MIN_SOH (= BatteryEngine::min_soh default) so the runtime
+        // engine never sees a contradictory (throughput, soh) pair.
+        let soh = seed_battery_soh_for_age(100.0);
+        assert!(
+            soh >= BATTERY_MIN_SOH,
+            "100-year seed must clamp to >= {BATTERY_MIN_SOH}, got {soh}",
+        );
+    }
+
+    #[test]
+    fn throughput_seed_clamps_negative_years_to_zero() {
+        // A negative or NaN-ish age must not produce a negative throughput.
+        let t_neg = seed_battery_throughput_for_age(-5.0, 9.5);
+        let t_zero = seed_battery_throughput_for_age(0.0, 9.5);
+        assert_eq!(t_neg, 0.0);
+        assert_eq!(t_zero, 0.0);
+    }
+
+    // --- Plant-creation inverter work-time seed ---
+
+    #[test]
+    fn fresh_plant_seeds_work_time_as_three_year_old_inverter() {
+        // IR(47-48) must read a realistic value the moment a plant is built
+        // so the GUI doesn't show "0 hours" on day one. The seed is
+        // `INVERTER_DEFAULT_AGE_YEARS` (3 years) × `INVERTER_HOURS_PER_YEAR`
+        // (8760 h/yr) = 26_280 hours.
+        let state = PlantState::new(ts(12));
+        let expected = INVERTER_DEFAULT_AGE_YEARS * INVERTER_HOURS_PER_YEAR;
+        assert!(
+            (state.inverter.work_time_hours - expected).abs() < 0.01,
+            "expected ~{expected} h seed, got {}",
+            state.inverter.work_time_hours,
+        );
+    }
+
+    #[test]
+    fn inverter_work_time_seed_clamps_negative_years_to_zero() {
+        // A negative or NaN-ish age must not produce a negative runtime.
+        assert_eq!(seed_inverter_work_time_for_age(-5.0), 0.0);
+        assert_eq!(seed_inverter_work_time_for_age(0.0), 0.0);
+    }
+
+    #[test]
+    fn inverter_work_time_scales_linearly_with_age() {
+        // 1y × 8760 = 8760; 6y × 8760 = 52560.
+        assert!((seed_inverter_work_time_for_age(1.0) - 8760.0).abs() < 0.01);
+        assert!((seed_inverter_work_time_for_age(6.0) - 52560.0).abs() < 0.01);
     }
 
     // --- Cell Balancing ---

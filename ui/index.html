@@ -334,6 +334,7 @@
     .status-dot.paused { background: var(--yellow); }
 
     /* Fault indicators */
+    /* Fault indicators */
     .faults { margin-top: 4px; }
 
     .fault-badge {
@@ -1267,6 +1268,7 @@
             <div style="font-size:10px;margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">
               <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_charge ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_charge ? 'var(--green)' : 'var(--text-muted)'}">⚡ Chg ${sch.enable_charge ? 'ON' : 'OFF'}</span>
               <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${sch.enable_discharge ? 'rgba(249,115,22,0.18)' : 'rgba(148,163,184,0.12)'};color:${sch.enable_discharge ? 'var(--orange)' : 'var(--text-muted)'}">⚡ Dis ${sch.enable_discharge ? 'ON' : 'OFF'}</span>
+              <span style="padding:1px 5px;border-radius:3px;font-size:9px;background:${s.enable_eps ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)'};color:${s.enable_eps ? 'var(--green)' : 'var(--text-muted)'}">⚡ EPS ${s.enable_eps ? 'ON' : 'OFF'}</span>
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Mode: ${s.battery_mode || '—'}</div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:4px;border-top:1px dashed var(--border);padding-top:3px">

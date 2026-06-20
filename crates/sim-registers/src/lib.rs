@@ -447,9 +447,21 @@ impl RegisterStore {
                     self.values.insert(key, clamp_i16_word(-state.grid.power_w));
                     continue;
                 }
-                // IR 31: EPS backup power
+                // IR 31: EPS backup power (W). Reported when EPS is engaged —
+                // either by user HR(317)=1, or actively running during grid-loss
+                // island mode. When grid is healthy but EPS is just armed, EPS
+                // is not flowing any power so this reads 0. During grid-loss
+                // the inverter island-mode supplies the house from the battery;
+                // report that discharge power in GE-wire convention
+                // (positive = power supplied to the load).
                 "ge_ir_eps_backup_power" => Some(if state.enable_eps {
-                    state.load.demand_w
+                    if state.active_faults.iter().any(|f| f == "grid_loss") {
+                        // internal positive = charging → flip to GE wire
+                        // (positive = discharging into the backup load).
+                        (-state.total_battery_power_kw() * 1000.0).max(0.0)
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 }),
@@ -602,10 +614,21 @@ impl RegisterStore {
                     }
                 }
                 // IR 180-183: model-dependent battery energy alt sources
+                // alt1 counters use lifetime throughput to match IR 6-7
                 "ge_ir_battery_discharge_total_alt1" => {
-                    Some(state.energy_totals.battery_discharge_kwh)
+                    // For alt1, use half of throughput (approximating discharge portion)
+                    // In real systems this would track discharge separately, but for sim
+                    // we split throughput evenly between charge and discharge
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    Some(total_throughput / 2.0)
                 }
-                "ge_ir_battery_charge_total_alt1" => Some(state.energy_totals.battery_charge_kwh),
+                "ge_ir_battery_charge_total_alt1" => {
+                    // For alt1, use half of throughput (approximating charge portion)
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    Some(total_throughput / 2.0)
+                }
                 "ge_ir_battery_discharge_today_alt2" => {
                     Some(state.energy_totals.battery_discharge_kwh)
                 }
@@ -1272,13 +1295,19 @@ impl RegisterStore {
                 }
                 "ge_hr_battery_discharge_total_alt2_high"
                 | "ge_hr_battery_discharge_total_alt2_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.battery_discharge_kwh, 0.1);
+                    // Use lifetime throughput to match IR 6-7 (split evenly for discharge)
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    let (hi, lo) = u32_words(total_throughput / 2.0, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "ge_hr_battery_charge_total_alt2_high" | "ge_hr_battery_charge_total_alt2_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.battery_charge_kwh, 0.1);
+                    // Use lifetime throughput to match IR 6-7 (split evenly for charge)
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    let (hi, lo) = u32_words(total_throughput / 2.0, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -1770,13 +1799,19 @@ impl RegisterStore {
                 }
                 "tph_ir_e_battery_discharge_total_high"
                 | "tph_ir_e_battery_discharge_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.battery_discharge_kwh, 0.1);
+                    // Use lifetime throughput to match IR 6-7 (split evenly for discharge)
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    let (hi, lo) = u32_words(total_throughput / 2.0, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
                 }
                 "tph_ir_e_battery_charge_total_high" | "tph_ir_e_battery_charge_total_low" => {
-                    let (hi, lo) = u32_words(state.energy_totals.battery_charge_kwh, 0.1);
+                    // Use lifetime throughput to match IR 6-7 (split evenly for charge)
+                    let total_throughput: f64 =
+                        state.batteries.iter().map(|b| b.throughput_kwh).sum();
+                    let (hi, lo) = u32_words(total_throughput / 2.0, 0.1);
                     self.values
                         .insert(key, if def.name.ends_with("_high") { hi } else { lo });
                     continue;
@@ -7705,6 +7740,7 @@ fn tph_fault_def(address: u16, name: &'static str) -> RegisterDef {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use sim_models::INVERTER_HOURS_PER_YEAR;
     use sim_models::PlantState;
 
     fn test_ts() -> chrono::NaiveDateTime {
@@ -8332,8 +8368,22 @@ mod tests {
         assert_eq!(store.read_by_space(43, RegisterSpace::Input), Some(3200));
         assert_eq!(store.read_by_space(47, RegisterSpace::Input), Some(0));
         assert_eq!(store.read_by_space(48, RegisterSpace::Input), Some(1234));
-        assert_eq!(store.read_by_space(180, RegisterSpace::Input), Some(44));
-        assert_eq!(store.read_by_space(181, RegisterSpace::Input), Some(55));
+        // IR 180-181 (alt1 lifetime battery energy totals) project from the
+        // seeded per-module `throughput_kwh` (3 yr × 330 cycles/yr × 9.5 kWh
+        // = 9405 kWh, halved per the alt1 split). The seed happens in
+        // `PlantState::new` before this test mutates state, so we assert the
+        // seeded lifetime value rather than the daily kWh bucket.
+        let seeded_throughput_kwh = state.batteries[0].throughput_kwh;
+        let alt1_raw = (seeded_throughput_kwh / 2.0 * 10.0).round() as u16;
+        assert_eq!(
+            store.read_by_space(180, RegisterSpace::Input),
+            Some(alt1_raw)
+        );
+        assert_eq!(
+            store.read_by_space(181, RegisterSpace::Input),
+            Some(alt1_raw)
+        );
+        // IR 182-183 still mirror the daily energy totals (alt2 split).
         assert_eq!(store.read_by_space(182, RegisterSpace::Input), Some(44));
         assert_eq!(store.read_by_space(183, RegisterSpace::Input), Some(55));
         assert_eq!(store.read_by_space(247, RegisterSpace::Input), Some(0));
@@ -8369,10 +8419,24 @@ mod tests {
             store.read_by_space(4108, RegisterSpace::Holding),
             Some(6000)
         );
+        // HR 4109-4112 (alt2 lifetime battery energy totals) project from the
+        // seeded per-module `throughput_kwh` (3 yr × 330 cycles/yr × 9.5 kWh
+        // = 9405 kWh, halved per the alt2 split). The seed happens in
+        // `PlantState::new` before this test mutates state, so we assert the
+        // seeded lifetime value rather than the daily kWh bucket.
+        let seeded_throughput_kwh = state.batteries[0].throughput_kwh;
+        let alt2_raw = (seeded_throughput_kwh / 2.0 * 10.0).round() as u16;
         assert_eq!(store.read_by_space(4109, RegisterSpace::Holding), Some(0));
-        assert_eq!(store.read_by_space(4110, RegisterSpace::Holding), Some(35));
+        assert_eq!(
+            store.read_by_space(4110, RegisterSpace::Holding),
+            Some(alt2_raw)
+        );
         assert_eq!(store.read_by_space(4111, RegisterSpace::Holding), Some(0));
-        assert_eq!(store.read_by_space(4112, RegisterSpace::Holding), Some(25));
+        assert_eq!(
+            store.read_by_space(4112, RegisterSpace::Holding),
+            Some(alt2_raw)
+        );
+        // HR 4113-4114 (alt3 daily) still mirror the daily kWh buckets.
         assert_eq!(store.read_by_space(4113, RegisterSpace::Holding), Some(35));
         assert_eq!(store.read_by_space(4114, RegisterSpace::Holding), Some(25));
         assert_eq!(store.read_by_space(4141, RegisterSpace::Holding), Some(0));
@@ -8829,8 +8893,14 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1374, 1375), 120); // e_pv_total
         assert_eq!(read_u32_ir(&store, 1382, 1383), 1234); // e_import_total — hardcoded CT lifetime
         assert_eq!(read_u32_ir(&store, 1386, 1387), 4321); // e_export_total — hardcoded CT lifetime
-        assert_eq!(read_u32_ir(&store, 1390, 1391), 60); // e_battery_discharge_total
-        assert_eq!(read_u32_ir(&store, 1394, 1395), 50); // e_battery_charge_total
+        // Lifetime counterparts: e_battery_*_total projects from the seeded
+        // per-module `throughput_kwh` (3 yr × 330 cycles/yr × 9.5 kWh = 9405
+        // kWh, halved per the alt1 split). The seed happens in
+        // `PlantState::new` before this test mutates state.
+        let seeded_throughput_kwh = s.batteries[0].throughput_kwh;
+        let alt1_raw = ((seeded_throughput_kwh / 2.0) * 10.0).round() as u32;
+        assert_eq!(read_u32_ir(&store, 1390, 1391), alt1_raw); // e_battery_discharge_total
+        assert_eq!(read_u32_ir(&store, 1394, 1395), alt1_raw); // e_battery_charge_total
         assert_eq!(read_u32_ir(&store, 1398, 1399), 70); // e_load_total
         assert_eq!(read_u32_ir(&store, 1400, 1401), 40); // e_export2_today
         assert_eq!(read_u32_ir(&store, 1402, 1403), 40); // e_export2_total
@@ -9977,6 +10047,185 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // IR 31: EPS backup power — reported when the EPS circuit is actually
+    // flowing power (i.e. during grid-loss island mode), not just armed.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn ir31_eps_backup_power_zero_when_eps_disabled() {
+        let state = make_state();
+        // make_state() leaves enable_eps = false (PlantState default).
+        assert_eq!(store_ir31(&state), 0);
+    }
+
+    #[test]
+    fn ir31_eps_backup_power_zero_when_eps_armed_but_grid_healthy() {
+        // HR(317)=1 just arms the circuit; until the grid actually trips,
+        // the inverter supplies the house from the grid, so EPS power = 0.
+        let mut state = make_state();
+        state.enable_eps = true;
+        // Grid is up by default; no faults active.
+        assert!(state.grid.connected);
+        assert_eq!(store_ir31(&state), 0);
+    }
+
+    #[test]
+    fn ir31_eps_backup_power_reflects_battery_discharge_during_grid_loss() {
+        // During grid-loss island mode the inverter feeds the house from the
+        // battery; report that discharge on IR(31) in GE-wire convention
+        // (positive = power flowing OUT of the battery).
+        // Internal convention is the opposite, so the projection negates.
+        let mut state = make_state();
+        state.enable_eps = true;
+        state.active_faults.push("grid_loss".into());
+        // Battery is supplying 2.5 kW to the backup load (negative per
+        // internal convention). Expected IR(31) = 2500 W.
+        state.batteries[0].power_kw = -2.5;
+        state.sync_battery_from_vec();
+        assert_eq!(store_ir31(&state), 2500);
+    }
+
+    #[test]
+    fn ir31_eps_backup_power_zero_during_grid_loss_when_eps_not_enabled() {
+        // HR(317)=0 + grid_loss must read 0; EPS only fires if the user armed
+        // it before the outage. Without that, the inverter has no way to
+        // island, so IR(31) stays 0.
+        let mut state = make_state();
+        state.enable_eps = false;
+        state.active_faults.push("grid_loss".into());
+        state.batteries[0].power_kw = -1.0;
+        state.sync_battery_from_vec();
+        assert_eq!(store_ir31(&state), 0);
+    }
+
+    #[test]
+    fn ir31_eps_backup_power_clamps_negative_during_grid_loss_charging() {
+        // If the battery is still charging during grid_loss (e.g. PV surplus
+        // charges the bank in island mode), IR(31) must clamp to 0 — EPS
+        // power is never negative on the wire.
+        let mut state = make_state();
+        state.enable_eps = true;
+        state.active_faults.push("grid_loss".into());
+        state.batteries[0].power_kw = 1.5; // charging
+        state.sync_battery_from_vec();
+        assert_eq!(store_ir31(&state), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // IR 6-7: Battery throughput total (uint32, ×0.1 kWh).
+    //
+    // Plant creation seeds each module to a realistic 3-year-old value
+    // (`BATTERY_DEFAULT_AGE_YEARS` × `BATTERY_CYCLES_PER_YEAR` cycles) so the
+    // register reads non-zero on day one and the runtime BatteryEngine
+    // accumulates further throughput from there.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn ir_6_7_throughput_reflects_seeded_three_year_pack() {
+        // End-to-end: PlantState::new() seeds throughput_kwh → projection
+        // writes the (hi, lo) uint32 pair into IR(6-7) at ×0.1 kWh.
+        let state = PlantState::new(test_ts());
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        let total_kwh = state.batteries[0].throughput_kwh;
+        assert!(
+            total_kwh > 0.0,
+            "plant creation must seed throughput_kwh to a realistic value, got {total_kwh}",
+        );
+
+        let raw = (total_kwh / 0.1).round() as u32;
+        let ir6 = store.read_by_space(6, RegisterSpace::Input).unwrap() as u32;
+        let ir7 = store.read_by_space(7, RegisterSpace::Input).unwrap() as u32;
+        let recombined = (ir6 << 16) | ir7;
+        assert_eq!(
+            recombined, raw,
+            "IR(6-7) {ir6:#06x}::{ir7:#06x} = {recombined} (kWh*10) must match seed raw {raw}",
+        );
+    }
+
+    #[test]
+    fn ir_6_7_throughput_scales_linearly_with_battery_capacity() {
+        // Two plants, same age but different nominal_capacity_kwh. The
+        // throughput register should scale linearly with capacity since
+        // cycles = throughput / capacity (same cycle count → same SOH).
+        // PlantState::new seeds at 9.5 kWh default; to test scaling we
+        // build batteries from scratch and apply the seed explicitly.
+        let small_b = sim_models::BatteryState {
+            capacity_kwh: 5.0,
+            nominal_capacity_kwh: 5.0,
+            ..sim_models::BatteryState::default()
+        };
+        let big_b = sim_models::BatteryState {
+            capacity_kwh: 10.0,
+            nominal_capacity_kwh: 10.0,
+            ..sim_models::BatteryState::default()
+        };
+
+        let mut small = vec![small_b];
+        let mut big = vec![big_b];
+        sim_models::seed_batteries_for_age(&mut small, 3.0);
+        sim_models::seed_batteries_for_age(&mut big, 3.0);
+
+        assert!(
+            big[0].throughput_kwh > small[0].throughput_kwh,
+            "bigger battery must have proportionally more seeded throughput",
+        );
+        let ratio = big[0].throughput_kwh / small[0].throughput_kwh;
+        assert!(
+            (ratio - 2.0).abs() < 0.01,
+            "ratio should be 2.0 (10/5), got {ratio}",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // IR 47-48: Inverter powered-on runtime total (uint32, hours).
+    //
+    // Plant creation seeds `state.inverter.work_time_hours` to a 3-year
+    // continuous-runtime baseline (26_280 h) so the register reads a
+    // plausible mid-life value on day one.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn ir_47_48_work_time_reflects_seeded_three_year_runtime() {
+        let state = PlantState::new(test_ts());
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        let hours = state.inverter.work_time_hours;
+        assert!(
+            hours > 0.0,
+            "plant creation must seed work_time_hours to a realistic value, got {hours}",
+        );
+
+        let raw = hours.round() as u32;
+        let ir47 = store.read_by_space(47, RegisterSpace::Input).unwrap() as u32;
+        let ir48 = store.read_by_space(48, RegisterSpace::Input).unwrap() as u32;
+        let recombined = (ir47 << 16) | ir48;
+        assert_eq!(
+            recombined, raw,
+            "IR(47-48) {ir47:#06x}::{ir48:#06x} = {recombined} h must match seed raw {raw}",
+        );
+    }
+
+    #[test]
+    fn ir_47_48_work_time_scales_linearly_with_age() {
+        // 1-year-old inverter should read exactly INVERTER_HOURS_PER_YEAR,
+        // independent of any battery state.
+        let mut inv = sim_models::InverterState::default();
+        sim_models::seed_inverter_for_age(&mut inv, 1.0);
+        assert!(
+            (inv.work_time_hours - sim_models::INVERTER_HOURS_PER_YEAR).abs() < 0.01,
+            "1-year seed must equal {INVERTER_HOURS_PER_YEAR}, got {}",
+            inv.work_time_hours,
+        );
+        let mut inv6 = sim_models::InverterState::default();
+        sim_models::seed_inverter_for_age(&mut inv6, 6.0);
+        assert!(
+            (inv6.work_time_hours - 6.0 * sim_models::INVERTER_HOURS_PER_YEAR).abs() < 0.01,
+            "6-year seed must equal 6 × {INVERTER_HOURS_PER_YEAR}, got {}",
+            inv6.work_time_hours,
+        );
+    }
+
     // Small read-back helpers (project a state and read one register).
     fn store_hr223(state: &PlantState) -> u16 {
         let mut s = RegisterStore::new(default_register_catalogue());
@@ -9997,5 +10246,10 @@ mod tests {
         let mut s = RegisterStore::new(default_register_catalogue());
         s.project_from_state(state);
         s.read_by_space(57, RegisterSpace::Input).unwrap()
+    }
+    fn store_ir31(state: &PlantState) -> u16 {
+        let mut s = RegisterStore::new(default_register_catalogue());
+        s.project_from_state(state);
+        s.read_by_space(31, RegisterSpace::Input).unwrap()
     }
 }

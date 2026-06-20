@@ -29,6 +29,15 @@ fn default_soh() -> f64 {
     1.0
 }
 
+/// Derive realistic throughput_kwh from SOH using the degradation model.
+/// degradation_per_cycle = 0.0002 (0.02% SOH loss per cycle)
+/// throughput_kwh = ((1.0 - SOH) / degradation_per_cycle) * nominal_capacity_kwh
+fn throughput_from_soh(soh: f64, nominal_capacity_kwh: f64) -> f64 {
+    const DEGRADATION_PER_CYCLE: f64 = 0.0002;
+    let cycles = (1.0 - soh) / DEGRADATION_PER_CYCLE;
+    cycles * nominal_capacity_kwh
+}
+
 #[derive(serde::Deserialize)]
 pub struct CreatePlantParams {
     pub battery_count: Option<usize>,
@@ -121,11 +130,21 @@ pub async fn create_plant(
         let batts: Vec<BatteryState> = (0..count)
             .map(|_| {
                 let c_rate_kw = (hv_capacity * 0.7).min(10.0);
+                // Gateway HV stack: seed a 3-year-old pack so IR(6-7)
+                // reads a realistic value on day one, in line with the
+                // single-phase `PlantState::new` behaviour.
+                let seeded_throughput = sim_core::seed_battery_throughput_for_age(
+                    sim_core::BATTERY_DEFAULT_AGE_YEARS,
+                    hv_capacity,
+                );
+                let seeded_soh =
+                    sim_core::seed_battery_soh_for_age(sim_core::BATTERY_DEFAULT_AGE_YEARS);
                 BatteryState {
                     capacity_kwh: hv_capacity,
                     nominal_capacity_kwh: hv_capacity,
                     voltage_v: hv_voltage,
-                    soh: 1.0,
+                    soh: seeded_soh,
+                    throughput_kwh: seeded_throughput,
                     max_charge_kw: c_rate_kw.min(per_module_max_kw),
                     max_discharge_kw: c_rate_kw.min(per_module_max_kw),
                     ..BatteryState::default()
@@ -139,24 +158,48 @@ pub async fn create_plant(
     } else if let Some(modules) = params.battery_modules {
         let module_count = modules.len().clamp(1, 6);
         let per_module_max_kw = max_batt_kw / module_count as f64;
-        let batts: Vec<BatteryState> = modules
-            .into_iter()
-            .take(6)
-            .map(|m| {
-                let soh = m.soh.clamp(0.0, 1.0);
-                let capacity = m.capacity_kwh.max(1.0);
-                let effective_capacity = capacity * soh;
-                let c_rate_kw = (effective_capacity * 0.7).min(10.0);
-                BatteryState {
-                    capacity_kwh: effective_capacity,
-                    nominal_capacity_kwh: capacity,
-                    soh,
-                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
-                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
-                    ..BatteryState::default()
-                }
-            })
-            .collect();
+        let batts: Vec<BatteryState> =
+            modules
+                .into_iter()
+                .take(6)
+                .map(|m| {
+                    let soh = m.soh.clamp(0.0, 1.0);
+                    let capacity = m.capacity_kwh.max(1.0);
+                    let effective_capacity = capacity * soh;
+                    let c_rate_kw = (effective_capacity * 0.7).min(10.0);
+                    // Derive throughput + SOH from a single consistent age.
+                    // When the GUI sends the default `soh = 1.0` we treat it as
+                    // "no user preference" and seed a 3-year-old pack so IR(6-7)
+                    // reads a realistic value on day one. When the user has
+                    // actively lowered SOH (e.g. via the slider), derive the
+                    // equivalent age and seed from that so throughput, cycles,
+                    // and SOH all agree.
+                    let years = if soh < 1.0 {
+                        // Reverse the degradation model: cycles = (1 - soh) /
+                        // BATTERY_DEGRADATION_PER_CYCLE, years = cycles / CYCLES_PER_YEAR.
+                        let cycles = (1.0 - soh) / sim_core::BATTERY_DEGRADATION_PER_CYCLE;
+                        cycles / sim_core::BATTERY_CYCLES_PER_YEAR
+                    } else {
+                        sim_core::BATTERY_DEFAULT_AGE_YEARS
+                    };
+                    let seeded_throughput =
+                        sim_core::seed_battery_throughput_for_age(years, capacity);
+                    let seeded_soh = sim_core::seed_battery_soh_for_age(years);
+                    tracing::info!(
+                    "Creating battery module: SOH={} (from {}y), capacity={}, throughput={} kWh",
+                    seeded_soh, years, capacity, seeded_throughput,
+                );
+                    BatteryState {
+                        capacity_kwh: effective_capacity,
+                        nominal_capacity_kwh: capacity,
+                        soh: seeded_soh,
+                        throughput_kwh: seeded_throughput,
+                        max_charge_kw: c_rate_kw.min(per_module_max_kw),
+                        max_discharge_kw: c_rate_kw.min(per_module_max_kw),
+                        ..BatteryState::default()
+                    }
+                })
+                .collect();
         let mut state = sim_models::PlantState::new(now);
         state.batteries = batts;
         state.sync_battery_from_vec();
@@ -1802,8 +1845,17 @@ pub async fn set_battery_soh(
         // Apply directly without running a full tick (same rationale as set_battery_soc).
         let count = e.state.batteries.len().max(1);
         if let Some(b) = e.state.batteries.get_mut(params.module) {
-            b.soh = params.soh.clamp(0.0, 1.0);
+            let soh = params.soh.clamp(0.0, 1.0);
+            b.soh = soh;
             b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
+            // Derive realistic throughput from SOH using the degradation model
+            b.throughput_kwh = throughput_from_soh(soh, b.nominal_capacity_kwh);
+            tracing::info!(
+                "Set battery SOH: module={}, SOH={}, throughput={} kWh",
+                params.module,
+                soh,
+                b.throughput_kwh
+            );
             let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
             let inv_max_kw = e.state.config.max_ac_watts / 1000.0;
             let per_module_kw = inv_max_kw / count as f64;
@@ -1813,6 +1865,11 @@ pub async fn set_battery_soh(
         }
         // Ensure aggregate limits are sane
         let _ = count;
+        // Update register store so IR 6-7 reflect the new throughput immediately
+        {
+            let mut rs = state.register_store.lock().await;
+            rs.project_from_state(&e.state);
+        }
         let sched_ref = state.schedule.lock().await.clone();
         let dto = PlantStateDto::with_schedule(&e.state, sched_ref.as_ref());
         let _ = app.emit("state_changed", &dto);
@@ -2210,4 +2267,39 @@ pub async fn set_arm_firmware(state: State<'_, AppState>, version: u16) -> Resul
         e.state.inverter.arm_firmware_version = version;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_throughput_from_soh_calculation() {
+        // Test SOH 0.781 (approx 3 years old, 1 cycle/day)
+        let soh = 0.781;
+        let capacity = 9.5;
+        let throughput = throughput_from_soh(soh, capacity);
+
+        // Expected: cycles = (1.0 - 0.781) / 0.0002 = 1095 cycles
+        // throughput = 1095 * 9.5 = 10402.5 kWh
+        assert!(
+            (throughput - 10402.5).abs() < 1.0,
+            "Expected ~10402.5, got {}",
+            throughput
+        );
+        println!("SOH {}: throughput = {} kWh", soh, throughput);
+
+        // Test new battery (SOH 1.0 = 0 throughput)
+        let throughput_new = throughput_from_soh(1.0, 9.5);
+        assert_eq!(throughput_new, 0.0, "New battery should have 0 throughput");
+
+        // Test 50% SOH (end of life)
+        let throughput_eol = throughput_from_soh(0.5, 9.5);
+        let expected_eol = (1.0 - 0.5) / 0.0002 * 9.5; // 2500 cycles * 9.5 = 23750
+        assert!((throughput_eol - expected_eol).abs() < 1.0);
+    }
 }
