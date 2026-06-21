@@ -65,6 +65,32 @@ cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020
 cargo run --bin sim-api -- run examples/basic_day.yaml --battery-count 3 --output /tmp/results
 ```
 
+### Raspberry Pi / Linux desktop
+
+If you're running the GUI on a Raspberry Pi (or any Linux desktop where
+the WebKitGTK webview renders incorrectly), use the bundled launcher
+script instead of `cargo tauri dev`:
+
+```bash
+# Build once, then launch with Pi-friendly WebKitGTK defaults
+cargo build --release --bin sim-tauri
+./scripts/run-pi.sh
+```
+
+The script sets `WEBKIT_DISABLE_COMPOSITING_MODE=1` and
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` so WebKit falls back to CPU
+compositing — this avoids the garbled-display issue caused by the Pi's
+GPU driver interacting badly with WebKitGTK 4.1's compositor on
+Raspberry Pi OS (Debian trixie). For dev mode:
+
+```bash
+./scripts/run-pi.sh cargo tauri dev
+```
+
+If you'd rather opt back in to GPU compositing (e.g. on a Pi 5 where it
+sometimes works), set `GIVSIM_FORCE_GPU=1`. See `scripts/run-pi.sh` for
+the full list of options.
+
 ---
 
 ## GUI — Step by Step

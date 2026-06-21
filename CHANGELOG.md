@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/run-pi.sh`** — a launcher script that exports the WebKitGTK
+  env vars (`WEBKIT_DISABLE_COMPOSITING_MODE=1`,
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`) needed to work around the
+  garbled-display issue seen when running the Tauri GUI on Raspberry Pi 4
+  with Raspberry Pi OS (Debian trixie). The script accepts `cargo` as the
+  first argument to launch `cargo tauri dev` with the same fixes, and a
+  `GIVSIM_FORCE_GPU=1` opt-out for users who want GPU compositing back.
+  Documented in the README under the "Raspberry Pi / Linux desktop"
+  quick-start section.
+
 ## [0.14.4] - 2026-06-06
 
 ### Added
