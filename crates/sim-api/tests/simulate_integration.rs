@@ -961,14 +961,17 @@ async fn status_register_always_1() {
 }
 
 #[tokio::test]
-async fn inverter_mode_default_eco() {
+async fn inverter_mode_default_normal() {
     let state = midday_state();
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
 
-    // HR 27 = battery power mode (0=export/Normal, 1=eco)
+    // HR 27 = battery power mode (0=Normal/export, 1=Eco).
+    // Default must be Normal so the charge/discharge power limits the user
+    // sets via HR 111/112 (e.g. 100% × 6 kW = 6 kW) are honoured instead of
+    // being silently halved by Eco's daytime 50% cap.
     let mode = h.read_hr(&mut s, 27).await;
-    assert_eq!(mode, 1, "HR 27 should be 1 (Eco) by default");
+    assert_eq!(mode, 0, "HR 27 should be 0 (Normal) by default");
 }
 
 #[tokio::test]
@@ -1255,9 +1258,9 @@ async fn internal_inverter_mode_register() {
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
 
-    // HR 100 = internal inverter mode (1=Eco default)
+    // HR 100 = internal inverter mode (0=Normal default)
     let mode = h.read_hr(&mut s, 100).await;
-    assert_eq!(mode, 1, "HR 100 should be 1 (Eco) by default");
+    assert_eq!(mode, 0, "HR 100 should be 0 (Normal) by default");
 }
 
 #[tokio::test]
@@ -1693,8 +1696,8 @@ async fn full_holding_block_0_to_119_gen3() {
 
     // HR 0 = DTC = 0x2001
     assert_eq!(data[0], 0x2001);
-    // HR 27 = power mode = 1 (Eco)
-    assert_eq!(data[27], 1);
+    // HR 27 = power mode = 0 (Normal)
+    assert_eq!(data[27], 0);
     // HR 50 = active power rate = 100
     assert_eq!(data[50], 100);
     // HR 56, 57 = discharge slot 1 = 60 (disabled)

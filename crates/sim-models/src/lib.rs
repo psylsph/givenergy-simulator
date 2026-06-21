@@ -125,8 +125,15 @@ pub struct ModeState {
 
 impl Default for ModeState {
     fn default() -> Self {
+        // Default to Normal (full solar-to-battery priority) to match the
+        // factory GivEnergy inverter default and the user's expectation when
+        // they set the charge/discharge power limits via HR 111/112. Eco
+        // (which halves daytime charging to preserve battery for evening) is
+        // an explicit user/schedule choice, not a silent default — defaulting
+        // to Eco here caused the charge limit shown in the client (e.g.
+        // 100% × 6 kW = 6 kW) to be silently halved to 3 kW during 10:00–16:00.
         Self {
-            effective: InverterMode::Eco,
+            effective: InverterMode::Normal,
             source: ModeSource::User,
             scheduled_mode: None,
         }

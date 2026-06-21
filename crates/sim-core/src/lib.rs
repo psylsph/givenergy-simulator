@@ -2736,6 +2736,44 @@ mod tests {
     }
 
     #[test]
+    fn new_plant_defaults_to_normal_mode_full_charge() {
+        // Regression: the plant-mode default used to be Eco, which silently
+        // halves daytime (10:00–16:00) charging to 50% of the configured
+        // limit. A user setting the client-side charge power limit to 100%
+        // (e.g. 6 kW on a 3-module Gateway) would then see only ~3 kW charge
+        // and assume the limit was being ignored. The default is now Normal,
+        // so a fresh plant must charge at the full configured rate without
+        // any explicit mode override.
+        let mut state = PlantState::with_battery_count(ts(12), 3);
+        state.config.inverter_type = "Gateway12kW".to_string();
+        state.config.max_ac_watts = 6000.0;
+        state.solar.generation_w = 6300.0;
+        state.load.demand_w = 615.0;
+        for b in &mut state.batteries {
+            b.capacity_kwh = 3.4;
+            b.nominal_capacity_kwh = 3.4;
+            b.soc_percent = 50.0;
+            b.max_charge_kw = 2.0;
+            b.max_discharge_kw = 2.0;
+        }
+        state.sync_battery_from_vec();
+        // NOTE: no mode_state.set_user(...) call — relies on the default.
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        let charge_w = state.total_battery_power_kw() * 1000.0;
+        assert!(
+            charge_w > 5000.0,
+            "a fresh Gateway plant at midday must charge at the full 5685 W excess (Normal-mode default), got {charge_w} W"
+        );
+    }
+
+    #[test]
     fn inverter_deficit_uses_battery_then_grid() {
         let mut state = PlantState::new(ts(20));
         state.solar.generation_w = 0.0;
