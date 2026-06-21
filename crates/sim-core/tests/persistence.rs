@@ -353,8 +353,8 @@ fn plant_default_mode_is_eco() {
     );
     assert_eq!(
         state.inverter.mode_state.effective,
-        sim_models::InverterMode::Normal,
-        "Default mode should be Normal (Eco is an explicit user choice, not the silent default)"
+        sim_models::InverterMode::Eco,
+        "Default mode should be Eco so the GUI projection reports battery_mode = Eco on a fresh plant"
     );
 }
 

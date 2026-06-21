@@ -223,12 +223,12 @@ async fn read_write_holding_inverter_mode() {
     let serial = serial_arr();
     let mut stream = TcpStream::connect(addr).await.expect("connect");
 
-    // HR 100 = inverter_mode (0=Normal by default)
+    // HR 100 = inverter_mode (1=Eco by default)
     let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 100, 1);
     let raw = send_recv(&mut stream, &req).await;
     let (_, _, payload) = decode_response(&raw);
     let (_, _, data) = parse_read_payload(&payload);
-    assert_eq!(data[0], 0, "HR 100 starts at Normal (0)");
+    assert_eq!(data[0], 1, "HR 100 starts at Eco (1)");
 
     // Write HR 100 = 2 (ForceCharge)
     let req = build_write_request(&serial, 0x32, 100, 2);

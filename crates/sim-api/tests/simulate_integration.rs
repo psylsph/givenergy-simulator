@@ -1697,8 +1697,8 @@ async fn full_holding_block_0_to_119_gen3() {
 
     // HR 0 = DTC = 0x2001
     assert_eq!(data[0], 0x2001);
-    // HR 27 = power mode = 0 (Normal)
-    assert_eq!(data[27], 0);
+    // HR 27 = power mode = 1 (Eco default)
+    assert_eq!(data[27], 1);
     // HR 50 = active power rate = 100
     assert_eq!(data[50], 100);
     // HR 56, 57 = discharge slot 1 = 60 (disabled)

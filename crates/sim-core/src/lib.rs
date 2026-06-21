@@ -2707,14 +2707,18 @@ mod tests {
     }
 
     #[test]
-    fn new_plant_defaults_to_normal_mode_full_charge() {
-        // Regression: the plant-mode default used to be Eco, which silently
-        // halves daytime (10:00–16:00) charging to 50% of the configured
-        // limit. A user setting the client-side charge power limit to 100%
-        // (e.g. 6 kW on a 3-module Gateway) would then see only ~3 kW charge
-        // and assume the limit was being ignored. The default is now Normal,
-        // so a fresh plant must charge at the full configured rate without
-        // any explicit mode override.
+    fn new_plant_defaults_to_eco_mode() {
+        // A fresh plant now defaults to Eco mode. The simulator projection
+        // surfaces this as `battery_mode = Eco` in the GUI rather than the
+        // catch-all `ExportPaused` label.
+        //
+        // In the simulator, Eco is a no-op label — it dispatches to the
+        // same `normal_priority` rules as Normal (the historical Eco
+        // behaviour of halving 10:00–16:00 charging was removed because the
+        // silent 50% cap repeatedly looked like a broken charge limit to
+        // users). Users who want full solar-to-battery priority therefore
+        // see identical behaviour in Eco and Normal — the label is just a
+        // user-facing flag.
         let mut state = PlantState::with_battery_count(ts(12), 3);
         state.config.inverter_type = "Gateway12kW".to_string();
         state.config.max_ac_watts = 6000.0;
@@ -2729,6 +2733,11 @@ mod tests {
         }
         state.sync_battery_from_vec();
         // NOTE: no mode_state.set_user(...) call — relies on the default.
+        assert_eq!(
+            state.inverter.mode_state.effective,
+            sim_models::InverterMode::Eco,
+            "fresh plants must default to Eco"
+        );
 
         let mut inv = InverterEngine::new();
         let ctx = TickContext {
@@ -2737,10 +2746,12 @@ mod tests {
         };
         inv.update(&ctx, &mut state);
 
+        // Eco dispatches like Normal, so the full 5685 W excess flows to
+        // the bank (capped by 3 × 2 kW = 6 kW battery limit ≈ 5685 W).
         let charge_w = state.total_battery_power_kw() * 1000.0;
         assert!(
             charge_w > 5000.0,
-            "a fresh Gateway plant at midday must charge at the full 5685 W excess (Normal-mode default), got {charge_w} W"
+            "a fresh Gateway plant at midday in Eco mode must charge the full excess, got {charge_w} W"
         );
     }
 
