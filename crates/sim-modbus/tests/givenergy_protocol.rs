@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 // Helpers
 // ===========================================================================
 
-const TEST_SERIAL: [u8; SERIAL_LEN] = [b'S', b'A', b'1', b'2', b'3', b'4', b' ', b' ', b' ', b' '];
+const TEST_SERIAL: [u8; SERIAL_LEN] = *b"SA1234    ";
 
 /// Encode a frame with a known serial.
 fn encode_frame(slave: u8, func: u8, payload: &[u8]) -> Vec<u8> {
@@ -884,7 +884,7 @@ async fn unsupported_fn_0x10_returns_error() {
 
 #[test]
 fn response_inner_pdu_contains_given_payload() {
-    let serial = [b'T', b'E', b'S', b'T', b' ', b' ', b' ', b' ', b' ', b' '];
+    let serial = *b"TEST      ";
     let resp = build_response(&serial, 0x32, 0x03, &[0xAB, 0xCD]);
     let inner_pdu = &resp[HEADER_SIZE..];
     let slave = inner_pdu[0];

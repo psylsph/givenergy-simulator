@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 // Helpers (copied from givenergy_protocol.rs)
 // ===========================================================================
 
-const TEST_SERIAL: [u8; SERIAL_LEN] = [b'S', b'A', b'1', b'2', b'3', b'4', b' ', b' ', b' ', b' '];
+const TEST_SERIAL: [u8; SERIAL_LEN] = *b"SA1234    ";
 
 fn encode_frame(slave: u8, func: u8, payload: &[u8]) -> Vec<u8> {
     let mut inner = Vec::with_capacity(2 + payload.len() + 2);

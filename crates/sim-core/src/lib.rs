@@ -837,13 +837,10 @@ impl InverterEngine {
         let inv_max_w = state.config.max_ac_watts;
 
         if net >= 0.0 {
-            // Solar covers load. Excess charges battery.
+            // Solar covers load. Excess charges battery up to the hardware /
+            // user limits; once the bank is full the surplus exports to grid.
             let excess = net;
-            let max_charge_w = state.effective_max_charge_w();
-            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let charge_limit = max_charge_w.min(soc_headroom).min(inv_max_w).max(0.0);
+            let charge_limit = state.charge_power_ceiling_w().min(inv_max_w);
             let to_battery = excess.min(charge_limit);
             let to_grid = excess - to_battery;
 
@@ -853,11 +850,7 @@ impl InverterEngine {
         } else {
             // Solar deficit. Battery supplies first, then grid.
             let deficit = -net;
-            let max_discharge_w = state.effective_max_discharge_w();
-            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let discharge_limit = max_discharge_w.min(soc_available).min(inv_max_w).max(0.0);
+            let discharge_limit = state.discharge_power_ceiling_w().min(inv_max_w);
             let from_battery = deficit.min(discharge_limit);
             let from_grid = deficit - from_battery;
 
@@ -878,11 +871,7 @@ impl InverterEngine {
 
         if net >= 0.0 {
             let excess = net;
-            let max_charge_w = state.effective_max_charge_w();
-            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let charge_limit = max_charge_w.min(soc_headroom).min(inv_max_w).max(0.0);
+            let charge_limit = state.charge_power_ceiling_w().min(inv_max_w);
 
             // Daytime cap: limit charging to 50% of the calculated limit
             let eco_charge_limit = if (10..16).contains(&hour) {
@@ -899,11 +888,7 @@ impl InverterEngine {
             state.inverter.ac_power_w = solar_w;
         } else {
             let deficit = -net;
-            let max_discharge_w = state.effective_max_discharge_w();
-            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let discharge_limit = max_discharge_w.min(soc_available).min(inv_max_w).max(0.0);
+            let discharge_limit = state.discharge_power_ceiling_w().min(inv_max_w);
             let from_battery = deficit.min(discharge_limit);
             let from_grid = deficit - from_battery;
 
@@ -932,11 +917,7 @@ impl InverterEngine {
             let curtailed = export - capped;
             if curtailed > 0.0 {
                 // Redirect curtailed solar to battery if headroom exists
-                let max_charge_w = state.effective_max_charge_w();
-                let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                    * state.total_battery_capacity()
-                    * 1000.0;
-                let charge_room = max_charge_w.min(soc_headroom).max(0.0);
+                let charge_room = state.charge_power_ceiling_w();
                 let already_charging = state.total_battery_power_kw() * 1000.0;
                 let room = (charge_room - already_charging).max(0.0);
                 let to_battery = curtailed.min(room);
@@ -961,15 +942,11 @@ impl InverterEngine {
         let solar_deficit = (-net).max(0.0);
         let inv_max_w = state.config.max_ac_watts;
 
-        let max_charge_w = state.effective_max_charge_w();
-        let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-            * state.total_battery_capacity()
-            * 1000.0;
-        let charge_capacity = max_charge_w.min(soc_headroom.max(0.0)).min(inv_max_w);
+        let charge_capacity = state.charge_power_ceiling_w().min(inv_max_w);
 
         let from_solar = solar_surplus.min(charge_capacity);
         let remaining_capacity = charge_capacity - from_solar;
-        let from_grid = remaining_capacity.min(max_charge_w);
+        let from_grid = remaining_capacity.min(inv_max_w);
 
         state.distribute_battery_power((from_solar + from_grid) / 1000.0);
         state.grid.power_w = solar_deficit + from_grid;
@@ -983,11 +960,7 @@ impl InverterEngine {
         let net = solar_w - load_w;
         let inv_max_w = state.config.max_ac_watts;
 
-        let max_discharge_w = state.effective_max_discharge_w();
-        let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-            * state.total_battery_capacity()
-            * 1000.0;
-        let discharge = max_discharge_w.min(soc_available.max(0.0)).min(inv_max_w);
+        let discharge = state.discharge_power_ceiling_w().min(inv_max_w);
 
         state.distribute_battery_power(-discharge / 1000.0);
 
@@ -1010,22 +983,14 @@ impl InverterEngine {
 
         if net >= 0.0 {
             let excess = net;
-            let max_charge_w = state.effective_max_charge_w();
-            let soc_headroom = (state.max_aggregate_soc() - state.aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let charge_limit = max_charge_w.min(soc_headroom).max(0.0);
+            let charge_limit = state.charge_power_ceiling_w();
             let to_battery = excess.min(charge_limit);
 
             state.distribute_battery_power(to_battery / 1000.0);
             state.inverter.ac_power_w = load_w + to_battery;
         } else {
             let deficit = -net;
-            let max_discharge_w = state.effective_max_discharge_w();
-            let soc_available = (state.aggregate_soc() - state.min_aggregate_soc()) / 100.0
-                * state.total_battery_capacity()
-                * 1000.0;
-            let discharge_limit = max_discharge_w.min(soc_available).max(0.0);
+            let discharge_limit = state.discharge_power_ceiling_w();
             let from_battery = deficit.min(discharge_limit);
 
             state.distribute_battery_power(-from_battery / 1000.0);
@@ -1706,8 +1671,15 @@ pub fn seed_energy_totals_for_time_of_day(
         let ac_out_w: f64;
         if net >= 0.0 {
             let excess = net;
-            let soc_headroom = ((max_soc - soc_percent) / 100.0) * total_capacity_kwh * 1000.0;
-            let charge_limit = eff_max_charge_w.min(soc_headroom.max(0.0)).min(inv_max_w);
+            // Charge ceiling: hardware/user limit, 0 once the bank is full
+            // (mirrors PlantState::charge_power_ceiling_w; the SOC clamp below
+            // guarantees we never overshoot max_soc).
+            let charge_limit = if soc_percent >= max_soc - 1e-3 {
+                0.0
+            } else {
+                eff_max_charge_w
+            };
+            let charge_limit = charge_limit.min(inv_max_w);
             let to_battery = excess.min(charge_limit);
             let to_grid = excess - to_battery;
             to_battery_w = to_battery;
@@ -1715,10 +1687,12 @@ pub fn seed_energy_totals_for_time_of_day(
             ac_out_w = solar_w;
         } else {
             let deficit = -net;
-            let soc_available = ((soc_percent - min_soc) / 100.0) * total_capacity_kwh * 1000.0;
-            let discharge_limit = eff_max_discharge_w
-                .min(soc_available.max(0.0))
-                .min(inv_max_w);
+            let discharge_limit = if soc_percent <= min_soc + 1e-3 {
+                0.0
+            } else {
+                eff_max_discharge_w
+            }
+            .min(inv_max_w);
             let from_battery = deficit.min(discharge_limit);
             let from_grid = deficit - from_battery;
             from_battery_w = from_battery;
@@ -2679,6 +2653,85 @@ mod tests {
         assert!(
             state.grid.power_w < 0.0,
             "Grid should be exporting (negative)"
+        );
+    }
+
+    #[test]
+    fn normal_priority_charges_full_excess_at_high_soc() {
+        // Regression for a units bug: `normal_priority` previously used the
+        // battery's *remaining energy* (Wh) as a *power* cap (W). A 10.2 kWh
+        // bank at 80% SOC has ≈2 kWh of headroom, so charging was wrongly
+        // throttled to ~2 kW and the rest of the solar excess exported —
+        // even though the bank was nowhere near full. Now the bank must absorb
+        // all excess up to its 6 kW charge limit.
+        let mut state = PlantState::with_battery_count(ts(12), 3);
+        state.config.inverter_type = "Gateway12kW".to_string();
+        state.config.max_ac_watts = 6000.0;
+        state.solar.generation_w = 6300.0;
+        state.load.demand_w = 615.0;
+        state.battery_charge_limit_percent = 100.0;
+        for b in &mut state.batteries {
+            b.capacity_kwh = 3.4;
+            b.nominal_capacity_kwh = 3.4;
+            b.soc_percent = 80.0; // not full: 20% headroom
+            b.min_soc = 4.0;
+            b.max_soc = 100.0;
+            b.max_charge_kw = 2.0; // 3 × 2.0 = 6.0 kW bank limit
+            b.max_discharge_kw = 2.0;
+        }
+        state.sync_battery_from_vec();
+        state.inverter.mode_state.set_user(InverterMode::Normal);
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        // Excess = 6300 − 615 = 5685 W, under the 6 kW limit → ALL of it charges.
+        let charge_w = state.total_battery_power_kw() * 1000.0;
+        assert!(
+            charge_w > 5000.0,
+            "battery should absorb nearly all 5685 W excess at 80% SOC, got {charge_w} W"
+        );
+        assert!(
+            state.grid.power_w > -100.0,
+            "grid should not be exporting while the battery has headroom, got {} W",
+            state.grid.power_w
+        );
+    }
+
+    #[test]
+    fn normal_priority_stops_charging_when_full() {
+        // A full battery must stop absorbing so the surplus exports to grid.
+        // (The BatteryEngine clamps SOC regardless, but the power-flow
+        // registers and energy totals must reflect zero charge.)
+        let mut state = PlantState::new(ts(12));
+        state.config.max_ac_watts = 5000.0;
+        state.solar.generation_w = 4000.0;
+        state.load.demand_w = 500.0;
+        state.batteries[0].soc_percent = 100.0; // full
+        state.batteries[0].max_soc = 100.0;
+        state.batteries[0].max_charge_kw = 3.0;
+        state.sync_battery_from_vec();
+        state.inverter.mode_state.set_user(InverterMode::Normal);
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        assert!(
+            state.total_battery_power_kw().abs() < 0.01,
+            "full battery must not charge, got {} kW",
+            state.total_battery_power_kw()
+        );
+        assert_eq!(
+            state.grid.power_w, -3500.0,
+            "all 3500 W excess should export when the battery is full"
         );
     }
 

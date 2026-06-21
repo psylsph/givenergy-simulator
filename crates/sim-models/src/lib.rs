@@ -858,6 +858,40 @@ impl PlantState {
         self.total_max_discharge_kw() * 1000.0 * scale
     }
 
+    /// Max charging power (W) the battery bank can absorb *right now*: the
+    /// hardware C-rate scaled by the user's charge-power-limit %, clamped to 0
+    /// at the SOC ceiling so a full battery stops absorbing and surplus flows
+    /// to the grid instead.
+    ///
+    /// This replaces the old `soc_headroom` term, which computed *energy*
+    /// remaining (Wh) but used it as a *power* cap (W) — a units mismatch that
+    /// throttled charging far too early (e.g. a 10 kWh bank at 80% SOC has
+    /// 2 kWh of headroom, which the old code read as a 2 kW charge cap). The
+    /// `BatteryEngine` already clamps SOC to `[min_soc, max_soc]`, so only the
+    /// boundary needs guarding here.
+    ///
+    /// Does NOT include the inverter AC throughput cap — callers apply that.
+    pub fn charge_power_ceiling_w(&self) -> f64 {
+        if self.aggregate_soc() >= self.max_aggregate_soc() - 1e-3 {
+            return 0.0;
+        }
+        self.effective_max_charge_w().max(0.0)
+    }
+
+    /// Max discharging power (W) the battery bank can deliver *right now*: the
+    /// hardware C-rate scaled by the user's discharge-power-limit %, clamped to
+    /// 0 at the SOC floor so an empty battery stops discharging and load falls
+    /// to the grid.
+    ///
+    /// Mirrors `charge_power_ceiling_w` (replaces the old `soc_available` Wh-as-W
+    /// term). Does NOT include the inverter AC throughput cap.
+    pub fn discharge_power_ceiling_w(&self) -> f64 {
+        if self.aggregate_soc() <= self.min_aggregate_soc() + 1e-3 {
+            return 0.0;
+        }
+        self.effective_max_discharge_w().max(0.0)
+    }
+
     /// Aggregate net power in kW (positive = charging bank).
     pub fn total_battery_power_kw(&self) -> f64 {
         self.batteries.iter().map(|b| b.power_kw).sum()

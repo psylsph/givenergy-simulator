@@ -214,11 +214,15 @@ pub async fn create_plant(
     plant_state.config.pv2_peak_watts = params.pv2_peak_watts.unwrap_or(0.0);
     plant_state.config.inverter_type = inv_type.to_string();
     plant_state.config.ct_meter_installed = params.ct_meter_installed.unwrap_or(true);
-    // Gateway: derive parallel_aio_num from battery count (1 AIO per 3 modules)
+    // Gateway: the N battery modules form a single HV stack inside ONE AIO
+    // (single-AIO topology — see docs/gateway-register-reference.md §11 and
+    // AGENTS.md "Single-AIO topology: parallel_aio_num = 1"). The modules are
+    // BMU cells of one stack, NOT separate AIOs, so parallel_aio_num is always
+    // 1 and AIO2/AIO3 stay zero. (Advertising N AIOs made clients multiply the
+    // per-AIO 6 kW battery limit by N, producing a phantom e.g. 18 kW limit
+    // the sim could never reach.)
     if inv_type.starts_with("Gateway") {
-        // One AIO per battery module (max 3, matching real Gateway limit).
-        let n = plant_state.batteries.len();
-        plant_state.config.parallel_aio_num = (n as u16).clamp(1, 3);
+        plant_state.config.parallel_aio_num = 1;
     }
     // Default DSP firmware per inverter type. Matches typical real-world values.
     plant_state.inverter.dsp_firmware_version = match inv_type {
