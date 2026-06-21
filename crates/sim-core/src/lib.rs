@@ -802,7 +802,16 @@ impl DeviceModel for InverterEngine {
                 } else if state.scheduled_discharge {
                     self.force_discharge(state);
                 } else {
-                    self.eco_priority(state, solar_w, load_w);
+                    // Eco is now a no-op label: it dispatches to the same
+                    // normal_priority rules as Normal. The previous Eco
+                    // behaviour halved daytime charging (10:00–16:00) to
+                    // preserve battery for evening, but that silent 50%
+                    // cap repeatedly looked like a broken charge limit to
+                    // users (the client showed the configured limit, e.g.
+                    // 6 kW, while the sim quietly charged at 3 kW). If a
+                    // battery-preservation policy is needed in future it
+                    // should be opt-in and explicit, not a hidden default.
+                    self.normal_priority(state, solar_w, load_w);
                 }
             }
             InverterMode::ForceCharge => {
@@ -856,44 +865,6 @@ impl InverterEngine {
 
             state.distribute_battery_power(-from_battery / 1000.0); // negative = discharging
             state.grid.power_w = from_grid; // positive = import
-            state.inverter.ac_power_w = solar_w + from_battery;
-        }
-    }
-
-    /// Eco priority: preserves battery charge for evening peak.
-    /// - During daytime (10:00–16:00): caps battery charging at 50% of max rate
-    ///   and prefers grid export over charging.
-    /// - During evening/night: uses battery freely to cover load.
-    fn eco_priority(&self, state: &mut PlantState, solar_w: f64, load_w: f64) {
-        let hour = state.timestamp.time().hour();
-        let net = solar_w - load_w;
-        let inv_max_w = state.config.max_ac_watts;
-
-        if net >= 0.0 {
-            let excess = net;
-            let charge_limit = state.charge_power_ceiling_w().min(inv_max_w);
-
-            // Daytime cap: limit charging to 50% of the calculated limit
-            let eco_charge_limit = if (10..16).contains(&hour) {
-                charge_limit * 0.5
-            } else {
-                charge_limit
-            };
-
-            let to_battery = excess.min(eco_charge_limit);
-            let to_grid = excess - to_battery;
-
-            state.distribute_battery_power(to_battery / 1000.0);
-            state.grid.power_w = -to_grid;
-            state.inverter.ac_power_w = solar_w;
-        } else {
-            let deficit = -net;
-            let discharge_limit = state.discharge_power_ceiling_w().min(inv_max_w);
-            let from_battery = deficit.min(discharge_limit);
-            let from_grid = deficit - from_battery;
-
-            state.distribute_battery_power(-from_battery / 1000.0);
-            state.grid.power_w = from_grid;
             state.inverter.ac_power_w = solar_w + from_battery;
         }
     }
@@ -2805,8 +2776,12 @@ mod tests {
     // --- Eco mode ---
 
     #[test]
-    fn eco_mode_charges_slower_during_daytime() {
-        // At 12:00 with solar surplus, Eco caps charging at 50% during daytime (10-16)
+    fn eco_mode_charges_same_as_normal() {
+        // Eco mode used to halve daytime charging (10:00–16:00) to preserve
+        // battery for evening, but that silent reduction repeatedly looked
+        // like a broken charge limit to users (client showed the configured
+        // limit, sim quietly charged at half). Eco now dispatches to the
+        // same normal_priority rules as Normal — pin that here.
         let mut normal_state = PlantState::new(ts(12));
         normal_state.solar.generation_w = 5000.0;
         normal_state.load.demand_w = 1000.0;
@@ -2834,16 +2809,8 @@ mod tests {
         let eco_charge = eco_state.total_battery_power_kw();
 
         assert!(
-            eco_charge < normal_charge,
-            "Eco should charge slower than Normal at noon: eco={}, normal={}",
-            eco_charge,
-            normal_charge
-        );
-        assert!(
-            (eco_charge - normal_charge * 0.5).abs() < 0.01,
-            "Eco daytime charge should be ~50% of Normal: eco={}, expected={}",
-            eco_charge,
-            normal_charge * 0.5
+            (eco_charge - normal_charge).abs() < 1e-6,
+            "Eco must charge identically to Normal (no hidden daytime cap): eco={eco_charge}, normal={normal_charge}"
         );
     }
 
@@ -4143,21 +4110,20 @@ mod tests {
         };
         inv.update(&ctx, &mut state);
 
-        // Eco mode caps daytime charging at 50% (hour 12 is in 10-16 window)
-        // 3 batteries × 3kW = 9kW max charge, but inverter cap = 5000W
-        // charge_limit = min(9000, SOC_headroom, 5000) = 5000W
-        // eco_charge_limit = 5000 * 0.5 = 2500W
-        // Excess: 6kW - 2.5kW charge = 3.5kW exported
+        // Eco mode no longer caps daytime charging — it dispatches to the
+        // same normal_priority rules. With 3 batteries × 3 kW = 9 kW max
+        // and a 5 kW inverter AC cap, the bank charges up to the inverter
+        // cap (excess 7 kW − load 1 kW = 6 kW, min(6 kW, 5 kW cap) = 5 kW).
         let total_power = state.total_battery_power_kw();
         assert!(total_power > 0.0, "Battery bank should charge in Eco");
         assert!(
-            (total_power - 2.5).abs() < 0.01,
-            "Eco should cap charge at 50% of inverter limit: got {}",
+            (total_power - 5.0).abs() < 0.01,
+            "Eco must charge up to the inverter AC cap (no hidden daytime cap): got {}",
             total_power
         );
         assert!(
-            state.grid.power_w < -3000.0,
-            "Should export excess solar to grid, got grid={}",
+            state.grid.power_w > -1500.0 && state.grid.power_w < -500.0,
+            "Surplus above the inverter cap should export: got grid={}",
             state.grid.power_w
         );
     }
