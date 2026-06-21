@@ -345,8 +345,8 @@ For a healthy simulator: IR(1622)=0, IR(1623)=0 → empty fault list.
 | Quantity | Reg | Sign |
 |---|---|---|
 | Grid current `i_grid` | 1609 | signed (int16) |
-| AC1 / AIO inverter power `p_ac1`, `p_aio*_inverter` | 1616, 1816–1818 | signed (int16); **+ = discharging/out, − = charging/in** (GE inverter convention) |
-| Liberty / smart load `p_liberty` | 1619 | signed (int16) |
+| AC1 / AIO inverter power `p_ac1`, `p_aio*_inverter` | 1616, 1816–1818 | signed (int16); **+ = charging/in, − = discharging/out** — the **opposite** of the standard inverter `p_battery` (IR 52). Confirmed by GivTCP `read.py:1556`, which negates `GEInv.p_aio_total` to recover `Battery_Power` in its internal + = discharging convention. A simulator that emits the same convention as IR 52 (i.e. + = discharge) will appear inverted to every real-client decoder. |
+| Liberty / smart load `p_liberty` | 1619 | signed (int16); same convention as `p_ac1` (raw + = into the smart load) |
 | PV power `p_pv` | 1617 | unsigned |
 | Load power `p_load` | 1618 | unsigned; **excludes EV charger** (key gateway property) |
 

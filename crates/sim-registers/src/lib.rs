@@ -1893,9 +1893,16 @@ impl RegisterStore {
         let connected = state.grid.connected;
         let line_v = if connected { 240.0 } else { 0.0 };
 
-        // GE inverter sign convention: battery power + = discharging/out,
-        // - = charging/in. Internal convention is the opposite, so negate.
-        let aio_power_w = -(state.total_battery_power_kw() * 1000.0);
+        // Gateway wire convention for p_ac1 (1616), p_aio_total (1702), and
+        // the per-AIO p_aioN_inverter (1816–1818) is the OPPOSITE of the
+        // standard inverter's p_battery (IR 52): raw + = charging/in,
+        // − = discharging/out. Confirmed by GivTCP read.py:1556, which
+        // negates GEInv.p_aio_total to recover Battery_Power in its internal
+        // + = discharging convention. Since total_battery_power_kw() is
+        // already + = charging internally, we emit it VERBATIM here — do
+        // not negate (negating would produce the inverted wire convention
+        // that real GivEnergy gateway hardware does not use).
+        let aio_power_w = state.total_battery_power_kw() * 1000.0;
         let pv_w = state.solar.generation_w;
         // Gateway house load correctly excludes the EV charger (key property):
         // `load.demand_w` is household-only; `evc` draw is tracked separately.
@@ -9386,16 +9393,21 @@ mod tests {
 
     #[test]
     fn gateway_aio_power_sign_convention() {
-        // GE wire convention: battery power + = discharging/out, - = charging/in.
-        // Internal: total_battery_power_kw() + = charging. So negate.
-        let s = gateway_state(); // battery charging at 2kW → wire value negative
+        // GivEnergy Gateway wire convention for p_ac1 (1616), p_aio_total
+        // (1702) and per-AIO p_aioN_inverter (1816–1818) is the OPPOSITE of
+        // the standard inverter p_battery (IR 52): raw + = charging/in,
+        // − = discharging/out. Confirmed by GivTCP read.py:1556 (negates
+        // p_aio_total to recover Battery_Power with + = discharge internally).
+        // aio_state (1703) independently corroborates: 1 = charging,
+        // 2 = discharging, 0 = idle — a +raw value pairs with aio_state=1.
+        let s = gateway_state(); // battery charging at 2kW → wire value POSITIVE
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&s);
 
         let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16;
         assert!(
-            ir(1616) < 0,
-            "p_ac1 must be negative while charging, got {}",
+            ir(1616) > 0,
+            "p_ac1 must be positive while charging (Gateway convention), got {}",
             ir(1616)
         );
         assert_eq!(ir(1616), ir(1702), "p_ac1 == p_aio_total for single-AIO");
@@ -9419,8 +9431,8 @@ mod tests {
 
         let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16;
         assert!(
-            ir(1816) > 0,
-            "p_aio1_inverter must be positive while discharging, got {}",
+            ir(1816) < 0,
+            "p_aio1_inverter must be negative while discharging (Gateway convention), got {}",
             ir(1816)
         );
         assert_eq!(store.read_by_space(1703, RegisterSpace::Input), Some(2));
@@ -9503,15 +9515,16 @@ mod tests {
         assert_eq!(ir(1701), 3, "parallel_aio_online_num = 3");
 
         // Each AIO gets 1/3 of total battery power.
-        // 3 modules × 2kW charging each = 6kW total = -6000W on wire.
-        // Each AIO: -6000/3 = -2000W (charging).
+        // 3 modules × 2kW charging each = 6kW total. Gateway wire convention
+        // (opposite of standard IR 52 p_battery): raw + = charging, so each
+        // AIO emits +6000/3 = +2000W on the wire (charging).
         for aio_i in 0..3 {
             let power_reg = 1816u16 + aio_i as u16;
             let p = i16(power_reg);
             assert_eq!(
                 p,
-                -2000,
-                "AIO{} inverter power must be -2000W (charging), got {}",
+                2000,
+                "AIO{} inverter power must be +2000W (charging, Gateway convention), got {}",
                 aio_i + 1,
                 p
             );

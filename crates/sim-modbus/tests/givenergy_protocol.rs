@@ -1219,14 +1219,15 @@ async fn gateway_multi_aio_serves_3_aio_registers() {
     assert_eq!(data[2], 65, "aio3_soc");
 
     // 3) Read per-AIO inverter power (1816-1818)
-    // 3 modules × 2kW charging = 6kW total → -6000W on wire.
-    // Each AIO: -6000/3 = -2000W charging (negative on wire).
+    // 3 modules × 2kW charging = 6kW total. Gateway wire convention
+    // (opposite of standard IR 52 p_battery): raw + = charging, so each
+    // AIO emits +6000/3 = +2000W charging (positive on wire).
     let resp = send_recv(&mut stream, &build_read_input_request(1816, 3)).await;
     let (_, _, payload) = decode_response(&resp);
     let (_, _, data) = parse_read_payload(&payload);
     for (i, &v) in data.iter().enumerate() {
         let signed = v as i16;
-        assert_eq!(signed, -2000, "AIO{} power must be -2000W", i + 1);
+        assert_eq!(signed, 2000, "AIO{} power must be +2000W (charging)", i + 1);
     }
 
     // 4) Read per-AIO charge today (1705, 1708, 1711)
