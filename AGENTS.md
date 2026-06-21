@@ -303,6 +303,33 @@ Input (IR 0-59) and Holding (HR 0-320) register definitions are in the source:
 - Gateway aggregation at IR 1600–1859 (served only for Gateway12kW).
 - Simulator-internal registers at HR 100-705 (inverter, battery, PV, grid, energy, config, schedules).
 
+### Grid port max power output (per-family register)
+The wire register that carries the inverter's grid-port max power output
+**depends on the inverter family** — there is no single register that
+covers every model. The classification lives in
+`crates/sim-tauri/src/commands.rs::GridPortPowerFamily::from_inverter_type`
+and is mirrored in `ui/index.html::gridPortPowerFamily` so the GUI label,
+register hint, and Set-button enabled-state all follow the inverter type
+without an extra round trip.
+
+| Inverter family | Wire register | Encoding | Writable? | Notes |
+|---|---|---|---|---|
+| Single-phase / AC-coupled / Gen1-4 / PV / Polar / Gen3+ / AIO / AIOHybrid | HR 26 (`ge_hr_grid_port_max_power_output`) | `C.uint16` (raw = watts, no scaling) | **Read-only** | givenergy-modbus defines no setter; clients can read but not write. Simulator mirrors `state.config.max_ac_watts`. |
+| Three-phase / HV / ACThreePhase | HR 1063 (`p_export_limit`) | `C.deci` (raw = watts × 10, clamped to u16) | Yes | givenergy-modbus `max=6500`. The simulator divides the raw value by 10 when ingesting a write and multiplies by 10 on the way out, so the user-facing unit is always watts. |
+| EMS / EmsCommercial / Gateway12kW | HR 2071 (`ems_export_power_limit`) | `C.uint16` (raw = watts, no scaling) | Yes | givenergy-modbus does not set a max — full 16-bit range (0–65535 W) is valid. The schedule engine previously wrote this register from `schedule.export_power_limit_w`; it now mirrors the live `state.inverter.export_limit_w` so user edits take effect immediately. The schedule still drives the value during export windows via `SetExportLimit`. |
+
+All three registers project from `state.inverter.export_limit_w` (or, for
+HR 26, `state.config.max_ac_watts`). When the schedule's export window is
+active, `sim_core::ScheduleEngine` copies `schedule.export_power_limit_w`
+into `state.inverter.export_limit_w` per tick — the same scalar the GUI
+displays and writes back, so a set-then-tick round trip is consistent.
+
+The `/api/invoke/{get,set}_grid_port_max_power` Tauri commands wrap the
+GUI side of this. Modbus client writes are routed via
+`sim-tauri::commands::modbus_address_to_command` (and the `sim-api`
+equivalent) — HR 102 → `SetExportLimit(value)`,
+HR 1063 → `SetExportLimit(value / 10.0)`, HR 2071 → `SetExportLimit(value)`.
+
 ### Inverter fault registers (bit conventions)
 Named faults project to different registers by inverter family, using bit tables from
 givenergy-modbus (`_inverter_fault_code` / `_inverter_fault_code2`) and giv_tcp.

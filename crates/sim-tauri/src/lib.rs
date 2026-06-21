@@ -74,6 +74,8 @@ pub fn run() {
             commands::set_dsp_firmware,
             commands::set_arm_firmware,
             commands::set_ct_meter,
+            commands::get_grid_port_max_power,
+            commands::set_grid_port_max_power,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule

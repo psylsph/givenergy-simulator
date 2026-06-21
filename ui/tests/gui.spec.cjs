@@ -8,15 +8,34 @@
 const { test, expect } = require('@playwright/test');
 
 const mockTauriScript = `
+  // The page's <script> block (lines 17-85 of index.html) installs a fetch-based
+  // shim that overwrites window.__TAURI__.core.invoke when __TAURI_INTERNALS__
+  // is absent. Set a non-null sentinel to bypass that shim and keep the mock
+  // in place.
+  window.__TAURI_INTERNALS__ = { __mock__: true };
   window.__TAURI_MOCK__ = { calls: [] };
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, params) => {
         window.__TAURI_MOCK__.calls.push({ cmd, params: JSON.parse(JSON.stringify(params || {})) });
         if (cmd === 'create_plant') {
+          // Honour the inverter_type the GUI passed in (when present), so
+          // tests that select a non-default type can verify the resulting
+          // register hint and Set-button enabled-state without juggling
+          // extra mocks per case.
+          const requested = params && params.params && params.params.inverter_type;
+          const invType = requested || 'Gen3Hybrid';
+          // Pick plausible caps per family so the field's current-watts
+          // display is meaningful without each test having to specify it.
+          const isThreePhase = invType.startsWith('ThreePhase') || invType === 'ACThreePhase';
+          const isEms = invType === 'EMS' || invType === 'EmsCommercial' || invType === 'Gateway12kW';
+          const maxOutputW = isThreePhase ? 11000 : isEms ? 5000 : 5000;
+          const exportLimitW = isThreePhase || isEms ? 6500 : 5000;
           return {
             timestamp: '2025-06-01T12:00:00', inverter_mode: 'Eco', battery_mode: 'Eco',
-            inverter_type: 'Gen3Hybrid', inverter_ac_power_w: 3000,
+            inverter_type: invType, inverter_ac_power_w: 3000,
+            inverter_max_output_w: maxOutputW,
+            export_limit_w: exportLimitW,
             aggregate_soc: 75.0, battery_power_kw: 2.5, battery_temperature_celsius: 28.0,
             battery_module_count: 1,
             battery_modules: [{ capacity_kwh: 8.2, soc_percent: 75.0, power_kw: 2.5, temperature_celsius: 28.0 }],
@@ -43,6 +62,8 @@ const mockTauriScript = `
         if (cmd === 'load_plant') return { timestamp: '2025-06-01T12:00:00', inverter_mode: 'Eco' };
         if (cmd === 'load_scenario') return { name: 'Test', event_count: 5 };
         if (cmd === 'export_recording') return '/tmp/test.csv';
+        if (cmd === 'get_grid_port_max_power') return 5000;
+        if (cmd === 'set_grid_port_max_power') return 'ThreePhase';
         return null;
       },
     },
@@ -331,4 +352,92 @@ test('battery SOC slider renders in battery display', async ({ page }) => {
   expect(c).toBeTruthy();
   expect(p(c).module).toBe(0);
   expect(p(c).soc).toBe(75);
+});
+
+// ===== Grid Port Max Power Output =====
+// The wire register for grid port max power output depends on inverter
+// family (per the giv_tcp / givenergy-modbus model audit):
+//   - Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+:
+//     HR 26 is read-only — the Set button is disabled in the GUI.
+//   - Three-phase / HV / ACThreePhase: HR 1063 (`p_export_limit`, ×0.1).
+//     The Set button writes user-friendly watts; the backend encodes.
+//   - EMS / EmsCommercial / Gateway: HR 2071 (`export_power_limit`, raw W).
+//
+// The Playwright mock returns a fixed inverter_type of Gen3Hybrid, so we
+// cover SinglePhase (read-only), ThreePhase, and Ems by re-rendering the
+// page with a different inverter type before clicking create.
+
+test('grid port power field is read-only for Gen3Hybrid (single-phase, HR 26)', async ({ page }) => {
+  await setupPage(page);
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+
+  // The register hint must show HR 26 for single-phase.
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 26/);
+  // Set button must be disabled — givenergy-modbus defines HR 26 with no
+  // setter (read-only on the wire).
+  await expect(page.locator('#btn-apply-grid-port-power')).toBeDisabled();
+  await expect(page.locator('#grid-port-power-input')).toBeDisabled();
+});
+
+test('grid port power field is writable for ThreePhase11kW (HR 1063)', async ({ page }) => {
+  await setupPage(page);
+  await page.selectOption('#inverter-type', 'ThreePhase11kW');
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 1063/);
+  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
+  await expect(page.locator('#grid-port-power-input')).toBeEnabled();
+
+  // Type a value and click Set — must invoke set_grid_port_max_power.
+  await page.fill('#grid-port-power-input', '4500');
+  await page.click('#btn-apply-grid-port-power');
+  await page.waitForTimeout(300);
+
+  const calls = await getCalls(page);
+  const c = calls.find(x => x.cmd === 'set_grid_port_max_power');
+  expect(c).toBeTruthy();
+  expect(p(c).watts).toBe(4500);
+});
+
+test('grid port power field is writable for EMS (HR 2071)', async ({ page }) => {
+  await setupPage(page);
+  // The dropdown only includes the inverter types exposed in the GUI; for
+  // EMS we fall back to Gateway12kW which uses the same HR 2071 family.
+  await page.selectOption('#inverter-type', 'Gateway12kW');
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 2071/);
+  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
+
+  await page.fill('#grid-port-power-input', '3000');
+  await page.click('#btn-apply-grid-port-power');
+  await page.waitForTimeout(300);
+
+  const calls = await getCalls(page);
+  const c = calls.find(x => x.cmd === 'set_grid_port_max_power');
+  expect(c).toBeTruthy();
+  expect(p(c).watts).toBe(3000);
+});
+
+test('grid port power field reclassifies on inverter-type change', async ({ page }) => {
+  await setupPage(page);
+  await page.selectOption('#inverter-type', 'Gen3Hybrid');
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  // Single-phase after create.
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 26/);
+
+  // Change inverter type to ThreePhase — register hint should flip.
+  await page.selectOption('#inverter-type', 'ThreePhase11kW');
+  await page.waitForTimeout(100);
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 1063/);
+  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
+
+  // Change to Gateway — EMS family.
+  await page.selectOption('#inverter-type', 'Gateway12kW');
+  await page.waitForTimeout(100);
+  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 2071/);
 });

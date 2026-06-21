@@ -8,6 +8,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Grid Port Max Power Output sidebar control** — a new "Grid Port Max
+  Power Output" group in the Controls sidebar that auto-detects the
+  relevant wire register from the inverter family (per a manual audit
+  of the giv_tcp `model/{baseinverter,threephase,ems,gateway}.py`
+  register maps cross-checked against givenergy-modbus):
+  - **Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+** —
+    **read-only display** of `ge_hr_grid_port_max_power_output` (HR 26).
+    The Set button is disabled because givenergy-modbus defines HR 26
+    with no setter. The displayed value comes from
+    `PlantState.config.max_ac_watts` (the plant configuration cap).
+  - **Three-phase / HV / ACThreePhase** — **read + write** of
+    `p_export_limit` (HR 1063, `C.deci` / ×0.1 encoding). The GUI shows
+    user-friendly watts; the simulator multiplies by 10 on the way to
+    the register (clamped to 65535 dW = 6553.5 W). Backend clamps to
+    6500 W (givenergy-modbus `max=6500`) before the encoding step.
+  - **EMS / EmsCommercial / Gateway** — **read + write** of
+    `ems_export_power_limit` (HR 2071, raw `C.uint16`).
+  Two new Tauri commands, `get_grid_port_max_power` and
+  `set_grid_port_max_power`, route the user-friendly watt value to the
+  correct register via a `GridPortPowerFamily` classifier (3 variants:
+  `SinglePhase`, `ThreePhase`, `Ems`). The classifier is mirrored in
+  JavaScript so the sidebar label, register hint, and Set-button
+  enabled-state follow the inverter type without an extra round trip.
+
+- **Register projections** — three new register defs / projection branches
+  in `sim-registers`:
+  - `tph_hr_p_export_limit` (HR 1063, Holding, ReadWrite, ×0.1) for
+    three-phase / HV / AIO, projected from `state.inverter.export_limit_w`.
+  - `ems_export_power_limit` (HR 2071) now projected from the live
+    `state.inverter.export_limit_w` instead of `schedule.export_power_limit_w`
+    so user edits via the new control take effect immediately. The
+    schedule engine still drives the value during export windows via
+    `SetExportLimit` (unchanged). The schedule projection no longer
+    overwrites HR 2071.
+  - `modbus_address_to_command` (both `sim-tauri` and `sim-api`) now
+    routes HR 102 → `SetExportLimit`, HR 1063 → `SetExportLimit(value / 10)`,
+    and HR 2071 → `SetExportLimit(value)`, so a Modbus client write
+    reaches the same state field as the GUI.
+  - `set_grid_port_max_power` clamps per family: HR 1063 caps at 6500 W
+    (givenergy-modbus `max=6500`); HR 2071 caps at 65535 W (16-bit u16
+    register ceiling; givenergy-modbus does not constrain this register).
+    The old single-clamp of 6500 W blocked EMS users from setting a
+    reasonable high cap and produced a value/range mismatch in the GUI's
+    help text. The helpers `GridPortPowerFamily::max_w` and
+    `clamp_watts` carry the per-family limits and are unit-tested in
+    `sim-tauri::commands::tests`.
+
+### Changed
+
+- **`is_schedule_register`** in `sim-tauri::commands` and `sim-api::main`
+  no longer matches HR 2071. The schedule accumulator would otherwise
+  race the new direct-projection path. The address mapping
+  `2062..=2071` becomes `2062..=2070`.
+
 - **`scripts/run-pi.sh`** — a launcher script that exports the WebKitGTK
   env vars (`WEBKIT_DISABLE_COMPOSITING_MODE=1`,
   `WEBKIT_DISABLE_DMABUF_RENDERER=1`) needed to work around the

@@ -590,6 +590,18 @@
           <button id="btn-apply-dsp-fw" class="btn-mini">Set</button>
         </div>
 
+        <label style="margin-top:8px" id="grid-port-power-label">
+          Grid Port Max Power (W)
+          <span id="grid-port-power-register" style="color:var(--text-muted);font-size:10px;margin-left:4px">—</span>
+        </label>
+        <div class="row" style="gap:4px;align-items:center">
+          <input type="number" id="grid-port-power-input" min="0" max="65535" step="50" placeholder="—" style="flex:1">
+          <button id="btn-apply-grid-port-power" class="btn-mini">Set</button>
+        </div>
+        <div id="grid-port-power-note" style="font-size:10px;color:var(--text-muted);margin-top:2px">
+          Auto-detects register from inverter type
+        </div>
+
       </div>
 
       <div class="sidebar-section">
@@ -881,6 +893,96 @@
     el('inverter-type').addEventListener('change', toggleGatewayBatteryUi);
     toggleGatewayBatteryUi();
 
+    // ---- Grid Port Max Power Output ----
+    // The wire register depends on inverter family (per the giv_tcp /
+    // givenergy-modbus model audit):
+    //   - Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+:
+    //     HR 26 (read-only on the wire per givenergy-modbus — the field is
+    //     shown for reference but the Set button is disabled).
+    //   - Three-phase / HV / ACThreePhase: HR 1063 (`p_export_limit`,
+    //     C.deci encoding). The input is in watts; the backend multiplies
+    //     by 10 on the way to the register.
+    //   - EMS / EmsCommercial / Gateway: HR 2071 (`export_power_limit`,
+    //     raw watts).
+    // The gridPortPowerFamily() classifier mirrors
+    // sim-tauri::commands::GridPortPowerFamily::from_inverter_type — both
+    // classify identically and both must be updated together.
+    function gridPortPowerFamily(inverterType) {
+      if (!inverterType) return 'SinglePhase';
+      if (inverterType.startsWith('ThreePhase') || inverterType === 'ACThreePhase') {
+        return 'ThreePhase';
+      }
+      if (inverterType === 'EMS' || inverterType === 'EmsCommercial' || inverterType === 'Gateway12kW') {
+        return 'Ems';
+      }
+      return 'SinglePhase';
+    }
+    const GRID_PORT_REGISTER_LABELS = {
+      SinglePhase: 'HR 26 (read-only)',
+      ThreePhase: 'HR 1063 (×0.1 dW)',
+      Ems: 'HR 2071 (raw W)',
+    };
+    let currentGridPortFamily = null; // cached; refreshed on every state_changed event
+
+    function applyGridPortPowerFamily(family, currentWatts) {
+      currentGridPortFamily = family;
+      const labelEl = el('grid-port-power-register');
+      const inputEl = el('grid-port-power-input');
+      const btnEl = el('btn-apply-grid-port-power');
+      const noteEl = el('grid-port-power-note');
+      labelEl.textContent = GRID_PORT_REGISTER_LABELS[family] || '—';
+      const writable = family !== 'SinglePhase';
+      inputEl.disabled = !writable;
+      btnEl.disabled = !writable;
+      inputEl.style.opacity = writable ? '1' : '0.6';
+      btnEl.style.opacity = writable ? '1' : '0.6';
+      // Display the current value (rounded to whole watts). Update only when
+      // (a) the input doesn't have focus (otherwise we'd clobber what the
+      // user is currently typing), and (b) the displayed value differs from
+      // the live state. This keeps the field responsive during ticking
+      // without fighting an in-progress edit.
+      const isFocused = document.activeElement === inputEl;
+      if (!isFocused && typeof currentWatts === 'number' && Number.isFinite(currentWatts)) {
+        const rounded = Math.round(currentWatts);
+        if (inputEl.value !== String(rounded)) {
+          inputEl.value = String(rounded);
+        }
+        inputEl.placeholder = String(rounded);
+      } else if (typeof currentWatts !== 'number' || !Number.isFinite(currentWatts)) {
+        inputEl.value = '';
+        inputEl.placeholder = '—';
+      }
+      if (family === 'SinglePhase') {
+        noteEl.textContent = 'Read-only — givenergy-modbus defines HR 26 with no setter. Set inverter AC output via plant configuration.';
+        noteEl.style.color = 'var(--text-muted)';
+      } else if (family === 'ThreePhase') {
+        noteEl.textContent = 'Range 0–6500 W (givenergy-modbus `max=6500` on HR 1063). Stored as dW (×10) on the wire.';
+        noteEl.style.color = 'var(--text-muted)';
+      } else {
+        // EMS family — HR 2071 is C.uint16 (raw watts, no scaling). 16-bit
+        // ceiling is 65535, not 6500 (that's only the HR 1063 cap).
+        noteEl.textContent = 'Range 0–65535 W (16-bit u16 register, raw watts on HR 2071).';
+        noteEl.style.color = 'var(--text-muted)';
+      }
+    }
+
+    async function refreshGridPortPower() {
+      if (!invoke) return;
+      try {
+        const watts = await invoke('get_grid_port_max_power');
+        // Family is best-effort here — the inverter type isn't part of this
+        // response. If we haven't classified yet (no plant), leave the field
+        // empty. The state_changed handler classifies and re-displays.
+        if (currentGridPortFamily) {
+          const inputEl = el('grid-port-power-input');
+          inputEl.value = String(Math.round(watts));
+          inputEl.placeholder = String(Math.round(watts));
+        }
+      } catch (e) {
+        // Plant not yet created — silently ignore.
+      }
+    }
+
     // ---- Update battery module display in main panel ----
     // Track slider interaction to avoid resetting slider mid-drag.
     // Use input/change events (not pointerdown) for reliable cross-browser support.
@@ -1040,6 +1142,9 @@
         const s = event.payload;
         updateDashboard(s);
         pushTimeline(s);
+        // No grid-port-power refresh here — `updateDashboard(s)` already
+        // calls `applyGridPortPowerFamily` for any state that carries
+        // `inverter_type`, so this event path inherits the refresh.
       });
 
       listen('scenario_completed', () => {
@@ -1117,6 +1222,19 @@
     function updateDashboard(s, fullSync) {
       // Sync sidebar controls from state only on explicit load (not every tick)
       if (fullSync) syncSidebarControls(s);
+
+      // Keep the Grid Port Max Power Output field in sync with state on every
+      // tick (state_changed event) AND on explicit loads (create_plant, etc.).
+      // The classification needs `s.inverter_type` to pick the right wire
+      // register (HR 26 / 1063 / 2071) — without it the field would stay at
+      // the initial dropdown value forever.
+      if (s && s.inverter_type) {
+        const fam = gridPortPowerFamily(s.inverter_type);
+        const currentWatts = fam === 'SinglePhase'
+          ? s.inverter_max_output_w
+          : s.export_limit_w;
+        applyGridPortPowerFamily(fam, currentWatts);
+      }
 
       // Inverter clock display
       el('inverter-clock').textContent = '\uD83D\uDD50 ' + (s.timestamp || '—');
@@ -1601,6 +1719,52 @@
       } catch (e) { console.error('set dsp fw failed:', e); }
     });
 
+    // ---- Grid Port Max Power Output ----
+    // The backend decides which wire register (HR 26 / 1063 / 2071) the
+    // value lands in based on the current inverter type. Single-phase
+    // (HR 26) is rejected as read-only on the wire — the Set button is
+    // disabled for that family, see applyGridPortPowerFamily().
+    el('btn-apply-grid-port-power').addEventListener('click', async () => {
+      if (currentGridPortFamily === 'SinglePhase') {
+        el('footer-info').textContent = 'HR 26 is read-only on the wire for this inverter family';
+        return;
+      }
+      const v = parseFloat(el('grid-port-power-input').value);
+      if (!Number.isFinite(v) || v < 0) {
+        el('footer-info').textContent = 'Watts must be a non-negative number';
+        return;
+      }
+      try {
+        const family = await invoke('set_grid_port_max_power', { watts: v });
+        const note = family === 'ThreePhase'
+          ? 'HR 1063 (×0.1 dW)'
+          : family === 'Ems' ? 'HR 2071 (raw W)' : 'HR 26';
+        el('footer-info').textContent = `Grid port max power set to ${v} W → ${note}`;
+        // Refresh the displayed value from the engine so the input reflects
+        // the clamped/encoded value the simulator actually stored.
+        await refreshGridPortPower();
+      } catch (e) {
+        el('footer-info').textContent = `Set failed: ${e}`;
+        console.error('set_grid_port_max_power failed:', e);
+      }
+    });
+
+    // Also refresh the field when the user changes the inverter type in the
+    // Plant Setup panel — the wire register mapping changes immediately.
+    el('inverter-type').addEventListener('change', () => {
+      // Classify against the dropdown's current value, but only commit to the
+      // field if a plant has been created (otherwise the placeholder stays
+      // as the placeholder). The next state_changed event will overwrite.
+      const fam = gridPortPowerFamily(el('inverter-type').value);
+      applyGridPortPowerFamily(fam, undefined);
+    });
+    // Initial classification so the field shows the right register hint
+    // even before any plant is created or any state_changed event arrives.
+    applyGridPortPowerFamily(
+      gridPortPowerFamily(el('inverter-type').value),
+      undefined
+    );
+
     // EVC controls
     el('evc-toggle').addEventListener('click', async () => {
       evcEnabled = !evcEnabled;
@@ -1709,9 +1873,17 @@
     });
 
     // Scenario
-    el('btn-load-scenario').addEventListener('click', () => el('scenario-input').click());
+    // The scenario UI was removed at some point but the JS handlers
+    // remained, which would throw on page load because `el('btn-load-scenario')`
+    // returns null. Guarded to keep the page working even if the scenario
+    // feature is restored later.
+    const btnLoadScenario = el('btn-load-scenario');
+    const scenarioInput = el('scenario-input');
+    if (btnLoadScenario && scenarioInput) {
+      btnLoadScenario.addEventListener('click', () => scenarioInput.click());
+    }
 
-    el('scenario-input').addEventListener('change', async (e) => {
+    scenarioInput?.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
@@ -1726,7 +1898,9 @@
           if (!res.ok) throw new Error((await res.json()).error || 'scenario upload failed');
           info = await res.json();
         }
-        el('scenario-info').innerHTML = `<div style="font-size:11px;margin-bottom:4px">
+        const infoEl = el('scenario-info');
+        if (!infoEl) return;
+        infoEl.innerHTML = `<div style="font-size:11px;margin-bottom:4px">
           <strong>${info.name}</strong> (${info.days}d, ${info.events.length} events)</div>` +
           info.events.map(ev => `<div class="scenario-event">${ev.time} — ${ev.mode||''} ${ev.weather||''}</div>`).join('');
       } catch (err) { console.error('load_scenario failed:', err); }

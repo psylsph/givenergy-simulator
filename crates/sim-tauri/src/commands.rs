@@ -499,6 +499,23 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         } else {
             InverterMode::Eco
         })),
+        // HR 102: Inverter export limit (W) — single-phase / AC-coupled / Gen1-4
+        // wires `ge_hr_grid_port_max_power_output` (HR 26) as read-only, but
+        // HR 102 is a separate, writable export-limit register the inverter
+        // uses to apply a user-set cap. giv_tcp / givenergy-modbus map both
+        // HR 102 (internal) and the wire-protocol export limit to this
+        // same state field.
+        102 => Some(Command::SetExportLimit(value as f64)),
+        // HR 1063: Three-phase / HV / AIO `p_export_limit`. Wire encoding is
+        // `C.deci` (raw = watts × 10, clamped to u16). givenergy-modbus and
+        // giv_tcp both pass a `WriteHoldingRegisterRequest(1063, watts × 10)`,
+        // and givenergy-modbus caps `valid=(-6500, 6500)`. The simulator
+        // stores the user-friendly watts in `state.inverter.export_limit_w`;
+        // the projection in `sim-registers` re-multiplies by 10 on the way out.
+        1063 => Some(Command::SetExportLimit((value as f64) / 10.0)),
+        // HR 2071: EMS / EmsCommercial / Gateway `export_power_limit`. Raw
+        // watts (C.uint16, no scaling).
+        2071 => Some(Command::SetExportLimit(value as f64)),
         // HR 100: Inverter mode (internal)
         100 => {
             let mode = match value {
@@ -535,6 +552,13 @@ fn hhmm_to_hours(val: u16) -> Option<f64> {
 }
 
 /// Check if a register address is a schedule-related holding register.
+///
+/// HR 2071 (`ems_export_power_limit`) was previously in this list because the
+/// schedule engine wrote it from `schedule.export_power_limit_w`. After the
+/// 2071 projection moved to `project_from_state` (mirroring
+/// `state.inverter.export_limit_w`), the schedule accumulator no longer needs
+/// to react to writes — they're routed straight to `SetExportLimit` via
+/// `modbus_address_to_command`.
 fn is_schedule_register(addr: u16) -> bool {
     matches!(
         addr,
@@ -542,7 +566,7 @@ fn is_schedule_register(addr: u16) -> bool {
             | 242..=245 | 272 | 275
             | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1121
-            | 2062..=2071
+            | 2062..=2070
             | 2044..=2061
     )
 }
@@ -2274,6 +2298,179 @@ pub async fn set_arm_firmware(state: State<'_, AppState>, version: u16) -> Resul
 }
 
 // ---------------------------------------------------------------------------
+// Grid port max power output
+// ---------------------------------------------------------------------------
+
+/// Family of a connected inverter, as far as the grid-port-max-power-output
+/// wire protocol is concerned. Used to route the same user-facing watts
+/// value to the correct Modbus register — see `modbus_address_to_command`
+/// for the byte-level encoding of each register.
+///
+/// The categorisation comes from a manual audit of the giv_tcp model files
+/// (baseinverter.py, threephase.py, ems.py, gateway.py) cross-checked
+/// against givenergy-modbus (inverter.py, inverter_threephase.py, ems.py):
+///
+/// * `SinglePhase` — HR 26 `ge_hr_grid_port_power_output` is **read-only**
+///   on the wire (givenergy-modbus defines no setter, no `valid=` for write).
+///   Clients can read it but cannot change it. The simulator mirrors
+///   `state.config.max_ac_watts` there.
+/// * `ThreePhase` — HR 1063 `p_export_limit`, encoded `C.deci` (raw = watts
+///   × 10). givenergy-modbus caps `max=6500`. Round-trips via
+///   `state.inverter.export_limit_w`.
+/// * `Ems` — HR 2071 `ems_export_power_limit`, raw watts (`C.uint16`). Used
+///   by EMS, EmsCommercial, and the Gateway (Gateway inherits the EMS
+///   register map per the giv_tcp / givenergy-modbus convention).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum GridPortPowerFamily {
+    SinglePhase,
+    ThreePhase,
+    Ems,
+}
+
+impl GridPortPowerFamily {
+    /// Classify an inverter type string into the wire-protocol family.
+    pub fn from_inverter_type(inverter_type: &str) -> Self {
+        // Three-phase: starts with "ThreePhase" (ThreePhase / ThreePhase8kW /
+        // ThreePhase10kW / ThreePhase11kW) OR equals "ACThreePhase". Per
+        // giv_tcp's `model/threephase.py` these all share the 1000-1124
+        // HR block and the 1061-1120 IR block, so they all read/write the
+        // same `p_export_limit` at HR 1063.
+        if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+            return Self::ThreePhase;
+        }
+        // EMS family: EMS, EmsCommercial, and the Gateway all use HR 2071
+        // for `export_power_limit`. Gateway's giv_tcp model
+        // (`givenergy_modbus_async/model/gateway.py`) doesn't define its
+        // own inverter_max_power or export_power_limit — it inherits via
+        // the underlying AIO/EMS projection (see `docs/gateway-register-reference.md`).
+        if inverter_type == "EMS"
+            || inverter_type == "EmsCommercial"
+            || inverter_type == "Gateway12kW"
+        {
+            return Self::Ems;
+        }
+        // Everything else (Gen1/2/3/4 Hybrid, Polar, Gen3Plus, AC-coupled,
+        // PV inverter, AIO, AIOHybrid) is single-phase from the wire
+        // protocol's point of view — HR 26 is the grid port max power
+        // output register and it is read-only.
+        Self::SinglePhase
+    }
+
+    /// Human-readable label used by the GUI to disambiguate the three
+    /// registers (HR 26 vs HR 1063 vs HR 2071). Drives the field label and
+    /// help text in the sidebar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SinglePhase => "Grid Port Max Power Output (HR 26, read-only)",
+            Self::ThreePhase => "Grid Port Max Export Limit (HR 1063, ×0.1 dW)",
+            Self::Ems => "Grid Port Export Power Limit (HR 2071, raw W)",
+        }
+    }
+
+    /// Maximum user-facing watts this family will accept. Mirrors the wire
+    /// register's safe-input ceiling:
+    /// * ThreePhase — givenergy-modbus `max=6500` on HR 1063.
+    /// * Ems — 16-bit u16 register ceiling (65535 raw watts) on HR 2071.
+    ///   givenergy-modbus doesn't set a max for HR 2071.
+    /// * SinglePhase — N/A (HR 26 is read-only on the wire; setter
+    ///   rejects unconditionally).
+    pub fn max_w(self) -> f64 {
+        match self {
+            Self::SinglePhase => 0.0,
+            Self::ThreePhase => 6500.0,
+            Self::Ems => 65535.0,
+        }
+    }
+
+    /// Clamp a user-supplied watts value to this family's safe-input
+    /// ceiling. Negative values are pinned to 0 (the UI rejects negatives
+    /// up-front, but defence-in-depth).
+    pub fn clamp_watts(self, watts: f64) -> f64 {
+        watts.max(0.0).min(self.max_w())
+    }
+}
+
+/// Read the current grid port max power output, in user-friendly watts.
+///
+/// The return value is what the user sees in the GUI. The internal storage
+/// (`state.inverter.export_limit_w` / `state.config.max_ac_watts`) is the
+/// same scalar for both single-phase and three-phase / EMS — only the wire
+/// encoding differs. For single-phase this returns the static
+/// `config.max_ac_watts` (HR 26 is read-only).
+#[tauri::command]
+pub async fn get_grid_port_max_power(state: State<'_, AppState>) -> Result<f64, String> {
+    let eng = state.engine.lock().await;
+    let Some(e) = eng.as_ref() else {
+        return Err("No plant created".to_string());
+    };
+    let family = GridPortPowerFamily::from_inverter_type(&e.state.config.inverter_type);
+    let watts = match family {
+        GridPortPowerFamily::SinglePhase => e.state.config.max_ac_watts,
+        // Both ThreePhase and Ems store the active limit in
+        // `state.inverter.export_limit_w`. The wire encoding (deci vs raw)
+        // is handled by the projection, not by this getter.
+        GridPortPowerFamily::ThreePhase | GridPortPowerFamily::Ems => {
+            e.state.inverter.export_limit_w
+        }
+    };
+    Ok(watts)
+}
+
+/// Set the grid port max power output, in user-friendly watts.
+///
+/// Behaviour depends on the inverter family:
+/// * **Single-phase / AC-coupled / Gen1-4 / PV / AIO / AIOHybrid / Polar /
+///   Gen3Plus**: rejected with an error — HR 26 is read-only on the wire
+///   per givenergy-modbus (`model/inverter.py` has no setter for
+///   `grid_port_max_power_output`). The single-phase max output comes from
+///   the plant configuration (`config.max_ac_watts`), not from a writable
+///   register.
+/// * **Three-phase / HV / AIO three-phase**: enqueues `SetExportLimit` with
+///   the raw watts. The projection in `sim-registers` encodes HR 1063 as
+///   `watts × 10` (C.deci) before serving it to Modbus clients.
+/// * **EMS / EmsCommercial / Gateway**: enqueues `SetExportLimit` with the
+///   raw watts. HR 2071 is encoded verbatim (C.uint16, no scaling).
+///
+/// Returns the family on success so the GUI can confirm the right register
+/// was targeted without re-querying the inverter type.
+#[tauri::command]
+pub async fn set_grid_port_max_power(
+    state: State<'_, AppState>,
+    watts: f64,
+) -> Result<GridPortPowerFamily, String> {
+    if !watts.is_finite() || watts < 0.0 {
+        return Err(format!(
+            "Watts must be a non-negative finite number, got {watts}"
+        ));
+    }
+    let family = {
+        let eng = state.engine.lock().await;
+        let Some(e) = eng.as_ref() else {
+            return Err("No plant created".to_string());
+        };
+        GridPortPowerFamily::from_inverter_type(&e.state.config.inverter_type)
+    };
+    match family {
+        GridPortPowerFamily::SinglePhase => Err(format!(
+            "{} is read-only on the wire (givenergy-modbus defines no setter). \
+             Change the inverter's max AC output via the plant configuration instead.",
+            family.label()
+        )),
+        GridPortPowerFamily::ThreePhase | GridPortPowerFamily::Ems => {
+            let mut eng = state.engine.lock().await;
+            if let Some(e) = eng.as_mut() {
+                // Clamp to the family's wire-protocol maximum (6500 W on
+                // HR 1063, 65535 W on HR 2071). The register projection
+                // further clamps the raw u16 value on the way out.
+                let clamped = family.clamp_watts(watts);
+                e.enqueue(Command::SetExportLimit(clamped));
+            }
+            Ok(family)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2305,5 +2502,144 @@ mod tests {
         let throughput_eol = throughput_from_soh(0.5, 9.5);
         let expected_eol = (1.0 - 0.5) / 0.0002 * 9.5; // 2500 cycles * 9.5 = 23750
         assert!((throughput_eol - expected_eol).abs() < 1.0);
+    }
+
+    #[test]
+    fn grid_port_power_family_classifies_inverter_types() {
+        use GridPortPowerFamily::*;
+
+        // Three-phase family — all share the HR 1000-1124 block per giv_tcp
+        // model/threephase.py. ACThreePhase is included for symmetry with
+        // is_three_phase_inverter() in sim-registers.
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("ThreePhase"),
+            ThreePhase
+        );
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("ThreePhase8kW"),
+            ThreePhase
+        );
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("ThreePhase10kW"),
+            ThreePhase
+        );
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("ThreePhase11kW"),
+            ThreePhase
+        );
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("ACThreePhase"),
+            ThreePhase
+        );
+
+        // EMS family — EMS, EmsCommercial, and Gateway (the Gateway inherits
+        // its export_power_limit / 2071 semantics from EMS per
+        // docs/gateway-register-reference.md).
+        assert_eq!(GridPortPowerFamily::from_inverter_type("EMS"), Ems);
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("EmsCommercial"),
+            Ems
+        );
+        assert_eq!(GridPortPowerFamily::from_inverter_type("Gateway12kW"), Ems);
+
+        // Single-phase family — HR 26 is read-only. Includes all the
+        // hybrid / polar / AC-coupled / Gen3+ / PV inverter / AIO variants.
+        for inv in [
+            "Gen1Hybrid",
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "Gen3Hybrid8kW",
+            "Gen3Hybrid10kW",
+            "Gen4Hybrid6kW",
+            "Gen3Plus6kW",
+            "Gen3Plus4600",
+            "Gen3Plus3600",
+            "Gen3Plus6kW2",
+            "Gen3Plus7kW",
+            "Gen3Plus8kW",
+            "ACCoupled",
+            "ACCoupled2",
+            "Hybrid4600",
+            "Hybrid3600",
+            "Polar5kW",
+            "Polar4600",
+            "Polar3600",
+            "Polar6kW",
+            "Polar7kW",
+            "PVInverter5kW",
+            "PVInverter4600",
+            "PVInverter3600",
+            "PVInverter6kW",
+            "AllInOne",
+            "AllInOne6",
+            "AllInOne5",
+            "AIO6kW",
+            "AIO8kW",
+            "AIO10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+        ] {
+            assert_eq!(
+                GridPortPowerFamily::from_inverter_type(inv),
+                SinglePhase,
+                "expected {inv} to be classified as SinglePhase"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_port_power_family_labels_are_distinct() {
+        // The GUI uses these labels to disambiguate which register the
+        // displayed value corresponds to. They must remain distinguishable.
+        let labels = [
+            GridPortPowerFamily::SinglePhase.label(),
+            GridPortPowerFamily::ThreePhase.label(),
+            GridPortPowerFamily::Ems.label(),
+        ];
+        for i in 0..labels.len() {
+            for j in 0..labels.len() {
+                if i != j {
+                    assert_ne!(labels[i], labels[j], "family labels must be distinct");
+                }
+            }
+        }
+        // HR 26/1063/2071 are mentioned in the labels so the GUI can show
+        // which register is in play without re-querying the inverter type.
+        assert!(labels[0].contains("HR 26"));
+        assert!(labels[1].contains("HR 1063"));
+        assert!(labels[2].contains("HR 2071"));
+    }
+
+    #[test]
+    fn grid_port_power_family_clamp_per_family_max() {
+        // The wire-protocol max differs between HR 1063 (ThreePhase) and
+        // HR 2071 (EMS). A single value over both limits would either let
+        // EMS users accidentally write invalid HR 1063 values, or block
+        // EMS users from setting a reasonable high cap. Per-family clamps
+        // keep the GUI consistent with the underlying register.
+        assert_eq!(GridPortPowerFamily::ThreePhase.max_w(), 6500.0);
+        assert_eq!(GridPortPowerFamily::Ems.max_w(), 65535.0);
+
+        // 6500 W is the boundary case: must pass through unchanged on
+        // both families (fits exactly in the ThreePhase cap; comfortably
+        // below the EMS cap).
+        assert_eq!(GridPortPowerFamily::ThreePhase.clamp_watts(6500.0), 6500.0);
+        assert_eq!(GridPortPowerFamily::Ems.clamp_watts(6500.0), 6500.0);
+
+        // 7000 W exceeds the ThreePhase cap (HR 1063 max=6500) but is
+        // within the EMS cap (HR 2071 is 16-bit).
+        assert_eq!(GridPortPowerFamily::ThreePhase.clamp_watts(7000.0), 6500.0);
+        assert_eq!(GridPortPowerFamily::Ems.clamp_watts(7000.0), 7000.0);
+
+        // 70000 W exceeds both caps; the EMS ceiling is 65535 W.
+        assert_eq!(GridPortPowerFamily::ThreePhase.clamp_watts(70000.0), 6500.0);
+        assert_eq!(GridPortPowerFamily::Ems.clamp_watts(70000.0), 65535.0);
+
+        // Negative inputs pin to 0 on both families (defence-in-depth
+        // even though the UI rejects negatives up-front).
+        assert_eq!(GridPortPowerFamily::ThreePhase.clamp_watts(-100.0), 0.0);
+        assert_eq!(GridPortPowerFamily::Ems.clamp_watts(-100.0), 0.0);
     }
 }

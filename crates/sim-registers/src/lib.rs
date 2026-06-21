@@ -1363,6 +1363,32 @@ impl RegisterStore {
                 "inverter_ac_power" => Some(state.inverter.ac_power_w),
                 "inverter_export_limit_w" => Some(state.inverter.export_limit_w),
                 "inverter_temperature" => Some(state.inverter.temperature_celsius),
+                // HR 1063 (three-phase / HV / AIO): grid port max export power
+                // (`p_export_limit`), wired with deci scaling (×0.1). The
+                // generic (eng / scaling_factor) computation at the bottom of
+                // this match would overflow u16 for realistic watt values
+                // (5000W → raw 50000), so emit the raw deci value explicitly.
+                // Clamps to 65535 dW = 6553.5 W, matching the GivEnergy
+                // 16-bit register ceiling and the givenergy-modbus `max=6500`.
+                "tph_hr_p_export_limit" => {
+                    let raw = (state.inverter.export_limit_w * 10.0)
+                        .round()
+                        .clamp(0.0, 65535.0) as u16;
+                    self.values.insert(key, raw);
+                    continue;
+                }
+                // HR 2071 (EMS / EmsCommercial): export power limit in raw watts.
+                // Per givenergy-modbus model/ems.py: `export_power_limit:
+                // Def(C.uint16, None, HR(2071))` — no scaling factor. We surface
+                // the active export limit (which the schedule engine also
+                // writes here when an export schedule is enabled, see
+                // project_schedule_for), keeping the gateway / EMS view in sync
+                // with the inverter-native mode.
+                "ems_export_power_limit" => {
+                    let raw = state.inverter.export_limit_w.round().clamp(0.0, 65535.0) as u16;
+                    self.values.insert(key, raw);
+                    continue;
+                }
                 "ge_hr_enable_battery_self_heating" => {
                     self.values
                         .insert(key, state.inverter.battery_self_heating as u16);
@@ -2425,7 +2451,21 @@ impl RegisterStore {
         self.write(2068, es3_s);
         self.write(2069, es3_e);
         self.write(2070, schedule.export_target_soc_3 as u16);
-        self.write(2071, schedule.export_power_limit_w as u16);
+        // HR 2071 (EMS / EmsCommercial `export_power_limit`) is projected from
+        // the live plant state via `ems_export_power_limit` in project_from_state,
+        // not duplicated here. The schedule engine copies
+        // `schedule.export_power_limit_w` into `state.inverter.export_limit_w`
+        // each tick (sim-core ScheduleEngine update), so writing 2071 directly
+        // from the schedule would race the GUI's SetExportLimit command — the
+        // state projection runs after the schedule projection in the tick path,
+        // so a user-edited value would briefly bounce back to the schedule's
+        // value before settling.
+        //
+        // Note: HR 2071 is also used by `sim-modbus` to handle write requests
+        // from a connected client; that path enqueues a `SetExportLimit`
+        // command which lands in `state.inverter.export_limit_w` and surfaces
+        // here on the next projection — see
+        // crates/sim-modbus/src/handler.rs::write_holding_register_handler.
 
         // EMS charge/discharge slots (HR 2044-2061) — share the same
         // Schedule fields as native inverter slots.
@@ -5364,6 +5404,22 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
             scaling_factor: 0.1,
             access: ReadOnly,
             space: Input,
+        },
+        // HR 1063: Three-phase / HV grid port max export power
+        // (`p_export_limit` in givenergy-modbus model/inverter_threephase.py
+        // and giv_tcp model/threephase.py). C.deci scaling = ×0.1 (one decimal
+        // place of watts). Range per givenergy-modbus is `max=6500`. Read/write
+        // on the wire — clients such as giv_tcp and the GivEnergy portal send
+        // a WriteHoldingRegisterRequest to this address when the user changes
+        // the export limit in the GUI.
+        RegisterDef {
+            address: 1063,
+            name: "tph_hr_p_export_limit".into(),
+            category: C::Inverter,
+            typ: T::U16,
+            scaling_factor: 0.1,
+            access: ReadWrite,
+            space: Holding,
         },
         RegisterDef {
             address: 1064,
@@ -8939,6 +8995,113 @@ mod tests {
         assert_eq!(read_u32_ir(&store, 1079, 1080), 0); // import: 0W (no grid flow)
         assert_eq!(read_u32_ir(&store, 1081, 1082), 0); // export: 0W (no grid flow)
         assert_eq!(read_u32_ir(&store, 1240, 1241), 0); // export mirror: 0W
+    }
+
+    #[test]
+    fn threephase_hr_1063_p_export_limit_uses_deci_scaling() {
+        // Three-phase / HV / AIO grid port max export power at HR 1063
+        // (`p_export_limit`). givenergy-modbus & giv_tcp both model this as
+        // C.deci (×0.1). The raw register value is therefore watts × 10.
+        let mut s = three_phase_11kw_state();
+        // 7000 W × 10 = 70000 — exceeds u16, must be clamped to 65535.
+        s.inverter.export_limit_w = 7000.0;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(
+            store.read_by_space(1063, RegisterSpace::Holding),
+            Some(65535),
+            "HR 1063 must clamp to u16 ceiling (65535 dW = 6553.5 W)"
+        );
+
+        // Within range, the deci encoding round-trips exactly.
+        s.inverter.export_limit_w = 3600.0;
+        store.project_from_state(&s);
+        assert_eq!(
+            store.read_by_space(1063, RegisterSpace::Holding),
+            Some(36000),
+            "HR 1063 raw value should be watts × 10 (deci scaling)"
+        );
+
+        // Zero limit is allowed (no export).
+        s.inverter.export_limit_w = 0.0;
+        store.project_from_state(&s);
+        assert_eq!(
+            store.read_by_space(1063, RegisterSpace::Holding),
+            Some(0),
+            "HR 1063 raw value should be 0 when export limit is 0 W"
+        );
+
+        // Verify the catalogue entry is exposed as ReadWrite so Modbus
+        // clients (and the GUI's set command) can change it.
+        assert!(
+            store.write(1063, 12345),
+            "HR 1063 (tph_hr_p_export_limit) must accept writes"
+        );
+    }
+
+    #[test]
+    fn ems_hr_2071_export_power_limit_tracks_state() {
+        // EMS / EmsCommercial export power limit at HR 2071
+        // (`ems_export_power_limit`). givenergy-modbus & giv_tcp both
+        // model this as C.uint16 (raw watts, no scaling).
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "EMS".to_string();
+        s.inverter.export_limit_w = 5000.0;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(
+            store.read_by_space(2071, RegisterSpace::Holding),
+            Some(5000),
+            "HR 2071 must mirror state.inverter.export_limit_w (raw watts)"
+        );
+
+        s.inverter.export_limit_w = 12345.0;
+        store.project_from_state(&s);
+        assert_eq!(
+            store.read_by_space(2071, RegisterSpace::Holding),
+            Some(12345)
+        );
+
+        // Above u16 ceiling — clamps to 65535.
+        s.inverter.export_limit_w = 70000.0;
+        store.project_from_state(&s);
+        assert_eq!(
+            store.read_by_space(2071, RegisterSpace::Holding),
+            Some(65535)
+        );
+
+        // Confirm catalogue: ReadWrite.
+        assert!(
+            store.write(2071, 3000),
+            "HR 2071 (ems_export_power_limit) must accept writes"
+        );
+    }
+
+    #[test]
+    fn single_phase_hr_26_grid_port_max_power_is_read_only() {
+        // Single-phase / AC-coupled / Gen1-4 grid port max power output at
+        // HR 26 (`ge_hr_grid_port_max_power_output`). givenergy-modbus
+        // defines this register without a setter — clients cannot write to
+        // it on the wire.
+        let mut s = PlantState::new(test_ts());
+        s.config.inverter_type = "Gen3Hybrid".to_string();
+        s.config.max_ac_watts = 6000.0;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+
+        assert_eq!(
+            store.read_by_space(26, RegisterSpace::Holding),
+            Some(6000),
+            "HR 26 must mirror state.config.max_ac_watts"
+        );
+
+        // Modbus writes must be rejected — ReadOnly catalogue entry.
+        assert!(
+            !store.write(26, 1000),
+            "HR 26 (grid_port_max_power_output) must reject writes (read-only on the wire)"
+        );
     }
 
     #[test]

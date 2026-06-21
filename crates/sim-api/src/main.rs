@@ -510,6 +510,17 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
             // inverter_export_limit_w
             Some(Command::SetExportLimit(cmd.value as f64))
         }
+        1063 => {
+            // tph_hr_p_export_limit — three-phase / HV / AIO. Wire encoding
+            // is C.deci (raw = watts × 10); convert back to user-friendly
+            // watts for `state.inverter.export_limit_w`.
+            Some(Command::SetExportLimit((cmd.value as f64) / 10.0))
+        }
+        2071 => {
+            // ems_export_power_limit — EMS / EmsCommercial / Gateway. Raw
+            // watts (C.uint16, no scaling).
+            Some(Command::SetExportLimit(cmd.value as f64))
+        }
         210 => {
             // battery_min_soc
             Some(Command::SetMinSoc(cmd.value as f64))
@@ -1581,6 +1592,12 @@ async fn serve_config(
 }
 
 /// Check if a register address is a schedule-related holding register.
+///
+/// HR 2071 (`ems_export_power_limit`) is excluded: the projection moved to
+/// `project_from_state` and Modbus writes land directly in
+/// `state.inverter.export_limit_w` via `SetExportLimit` (see
+/// `crates/sim-modbus/src/lib.rs`). Routing it through the schedule accumulator
+/// would race the GUI / client write with the schedule's window logic.
 fn is_schedule_register(addr: u16) -> bool {
     matches!(
         addr,
@@ -1588,7 +1605,7 @@ fn is_schedule_register(addr: u16) -> bool {
             | 242..=245 | 272 | 275
             | 246..=269 | 276..=299
             | 1109 | 1111..=1116 | 1118..=1121
-            | 2062..=2071
+            | 2062..=2070
             | 2044..=2061
     )
 }
