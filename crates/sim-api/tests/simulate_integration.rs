@@ -961,17 +961,18 @@ async fn status_register_always_1() {
 }
 
 #[tokio::test]
-async fn inverter_mode_default_normal() {
+async fn inverter_mode_default_eco() {
     let state = midday_state();
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
 
     // HR 27 = battery power mode (0=Normal/export, 1=Eco).
-    // Default must be Normal so the charge/discharge power limits the user
-    // sets via HR 111/112 (e.g. 100% × 6 kW = 6 kW) are honoured instead of
-    // being silently halved by Eco's daytime 50% cap.
+    // Default is Eco so a freshly-created plant reports `battery_mode = Eco`
+    // in the GUI rather than falling through to the `ExportPaused` arm of
+    // the projection match. Users who want full solar-to-battery priority
+    // can switch to Normal explicitly via HR 27 = 0.
     let mode = h.read_hr(&mut s, 27).await;
-    assert_eq!(mode, 0, "HR 27 should be 0 (Normal) by default");
+    assert_eq!(mode, 1, "HR 27 should be 1 (Eco) by default");
 }
 
 #[tokio::test]
@@ -1258,9 +1259,9 @@ async fn internal_inverter_mode_register() {
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
 
-    // HR 100 = internal inverter mode (0=Normal default)
+    // HR 100 = internal inverter mode (1=Eco default)
     let mode = h.read_hr(&mut s, 100).await;
-    assert_eq!(mode, 0, "HR 100 should be 0 (Normal) by default");
+    assert_eq!(mode, 1, "HR 100 should be 1 (Eco) by default");
 }
 
 #[tokio::test]
