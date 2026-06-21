@@ -4,6 +4,85 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GivEnergy Plant Simulator</title>
+  <script>
+    /*
+     * Browser (non-Tauri) bridge.
+     *
+     * When this page is served outside the Tauri webview — e.g. by the HTTP
+     * server on port 8001 — `window.__TAURI_INTERNALS__` is absent. We install
+     * a shim that backs the same `invoke` / `listen` / `dialog.save` API the
+     * rest of the app uses with `fetch()` calls against this origin, so the
+     * existing UI code works unchanged in a plain browser. Inside Tauri the
+     * real globals are already present and this block is a no-op.
+     */
+    (function () {
+      if (window.__TAURI_INTERNALS__) return;          // real Tauri webview
+      if (!window.__TAURI__) window.__TAURI__ = {};
+
+      window.__TAURI__.core = window.__TAURI__.core || {};
+      window.__TAURI__.core.invoke = async function (cmd, args) {
+        // Exports are handled as downloads instead of server-side file writes.
+        if (cmd === 'export_recording') {
+          const format = (args && args.params && args.params.format) || 'csv';
+          const res = await fetch('/api/export/recordings?format=' + encodeURIComponent(format));
+          if (!res.ok) throw new Error((await errBody(res)) || 'export failed');
+          triggerDownload(await res.blob(), 'recording.' + (format === 'json' ? 'json' : format));
+          return args && args.params ? args.params.path : null;
+        }
+        if (cmd === 'export_config') {
+          const res = await fetch('/api/export/config');
+          if (!res.ok) throw new Error((await errBody(res)) || 'export failed');
+          triggerDownload(await res.blob(), 'plant-config.json');
+          return args ? args.path : null;
+        }
+        const res = await fetch('/api/invoke/' + encodeURIComponent(cmd), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(args || {}),
+        });
+        if (!res.ok) throw new Error((await errBody(res)) || ('invoke ' + cmd + ' failed'));
+        const text = await res.text();
+        return text.length ? JSON.parse(text) : null;
+      };
+
+      window.__TAURI__.event = window.__TAURI__.event || {};
+      const listeners = {};
+      let es = null;
+      window.__TAURI__.event.listen = function (name, cb) {
+        (listeners[name] || (listeners[name] = [])).push(cb);
+        if (!es) {
+          es = new EventSource('/api/events');
+          es.onmessage = function (ev) {
+            try {
+              const msg = JSON.parse(ev.data);
+              (listeners[msg.event] || []).forEach(function (h) { h({ payload: msg.payload }); });
+            } catch (e) { /* ignore malformed */ }
+          };
+        }
+        return Promise.resolve(function () {}); // unlisten (no-op)
+      };
+
+      window.__TAURI__.dialog = window.__TAURI__.dialog || {};
+      // Browsers can't pick an arbitrary save path; the actual file content is
+      // returned by the export endpoints above and downloaded here.
+      window.__TAURI__.dialog.save = async function (opts) {
+        const name = (opts && opts.defaultPath) || 'download';
+        return name;
+      };
+
+      async function errBody(res) {
+        try { return (await res.json()).error; } catch (e) { return null; }
+      }
+      function triggerDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      }
+    })();
+  </script>
   <style>
     :root {
       --bg: #0f172a;
@@ -1636,7 +1715,17 @@
       const file = e.target.files[0];
       if (!file) return;
       try {
-        const info = await invoke('load_scenario', { params: { path: file.path } });
+        let info;
+        if (file.path) {
+          // Tauri exposes the absolute filesystem path.
+          info = await invoke('load_scenario', { params: { path: file.path } });
+        } else {
+          // Browser: upload the file contents to /api/scenario.
+          const text = await file.text();
+          const res = await fetch('/api/scenario', { method: 'POST', body: text });
+          if (!res.ok) throw new Error((await res.json()).error || 'scenario upload failed');
+          info = await res.json();
+        }
         el('scenario-info').innerHTML = `<div style="font-size:11px;margin-bottom:4px">
           <strong>${info.name}</strong> (${info.days}d, ${info.events.length} events)</div>` +
           info.events.map(ev => `<div class="scenario-event">${ev.time} — ${ev.mode||''} ${ev.weather||''}</div>`).join('');

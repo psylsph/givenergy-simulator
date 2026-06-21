@@ -52,6 +52,15 @@ cd crates/sim-tauri && cargo tauri dev
 
 > **Prerequisites:** `cargo install tauri-cli` and on Linux: `sudo apt install libwebkit2gtk-4.1-dev`
 
+The same GUI is **also served over HTTP on port 8001** whenever the app runs, so
+you can open it in any browser at `http://localhost:8001` — handy for headless
+hosts, remote machines, or when WebKitGTK won't render. The browser build talks
+to the exact same backend: every IPC command is bridged over
+`POST /api/invoke/<cmd>`, and live state updates stream over `GET /api/events`
+(SSE). Override the port with `GIVSIM_WEB_PORT`. (The browser build serves the
+compiled-in `ui/index.html`; run `npm run build` and relaunch to pick up
+frontend edits.)
+
 ### Headless CLI
 
 ```bash

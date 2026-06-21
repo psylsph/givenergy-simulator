@@ -373,7 +373,8 @@ Battery sizes: `BATTERY_SIZES = [2.6, 2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 1
 |------|----------|---------|
 | 8899 | GivEnergy proprietary Modbus TCP (with envelope) | Inverter + battery + grid registers |
 | 5020 | Standard Modbus TCP (no envelope) | GivEVC wallbox (HR 0-114, configurable in UI or via `GIVSIM_EVC_PORT`) |
-| 1420 | HTTP | Tauri dev server (UI) |
+| 1420 | HTTP | Tauri dev server (UI, webview only) |
+| 8001 | HTTP | Browser GUI — same frontend + REST bridge to all IPC commands (`GIVSIM_WEB_PORT` to override) |
 
 ### Dongle heartbeat
 The simulator acts as the dongle. It sends heartbeat requests (func 0x01, 8-byte

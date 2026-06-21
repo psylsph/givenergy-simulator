@@ -5,11 +5,12 @@
 
 mod app_state;
 mod commands;
+mod http;
 
 use app_state::AppState;
 use sim_modbus::ModbusCommand;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 const MODBUS_PORT: u16 = 8899;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -77,6 +78,29 @@ pub fn run() {
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule
             let app_handle = app.handle().clone();
+
+            // ---- Browser GUI bridge (HTTP on port 8001) -------------------------
+            // A broadcast channel carries serialized `{event,payload}` envelopes.
+            // We register Tauri listeners so every `app.emit(...)` the command
+            // handlers produce is also delivered to browsers connected to the
+            // SSE feed on `/api/events`.
+            let (event_tx, _) = tokio::sync::broadcast::channel::<String>(256);
+            for event_name in ["state_changed", "scenario_completed", "recording_saved"] {
+                let tx = event_tx.clone();
+                app_handle.listen(event_name, move |event| {
+                    let payload = event.payload();
+                    let payload = if payload.is_empty() { "null" } else { payload };
+                    let envelope = format!("{{\"event\":\"{event_name}\",\"payload\":{payload}}}");
+                    let _ = tx.send(envelope);
+                });
+            }
+            let http_app = app_handle.clone();
+            let http_events = event_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = http::run_http_server(http_app, http_events).await {
+                    tracing::error!("Web UI HTTP server error: {e}");
+                }
+            });
             if let Ok(data_dir) = app_handle.path().app_data_dir() {
                 let save_path = data_dir.join("plant_state.json");
                 if save_path.exists() {
