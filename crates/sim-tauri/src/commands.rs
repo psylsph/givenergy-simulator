@@ -266,7 +266,14 @@ pub async fn create_plant(
         "Gateway12kW" => 6000.0,
         _ => 5000.0,
     };
-    plant_state.inverter.export_limit_w = plant_state.config.max_ac_watts * 0.72;
+    // Seed the export limit at the standard UK EREC G98 default for this
+    // inverter family: 3680 W (16 A × 230 V) for single-phase Micro-
+    // generators, 6500 W for three-phase (the wire ceiling on HR 1063),
+    // and 0 W for EMS (operator must configure explicitly since HR 2071
+    // has no G98 cap on the wire). See
+    // `sim_models::default_export_limit_w_for`.
+    plant_state.inverter.export_limit_w =
+        sim_models::default_export_limit_w_for(&plant_state.config.inverter_type);
 
     // Seed daily energy totals from 00:00 → now so the IR/HR "today" registers
     // (pv_energy_today, grid import/export today, etc.) read realistic values
@@ -2351,19 +2358,27 @@ impl GridPortPowerFamily {
         }
         // Everything else (Gen1/2/3/4 Hybrid, Polar, Gen3Plus, AC-coupled,
         // PV inverter, AIO, AIOHybrid) is single-phase from the wire
-        // protocol's point of view — HR 26 is the grid port max power
-        // output register and it is read-only.
+        // protocol's point of view — HR 26 is read-only and carries the
+        // inverter's *physical* AC output (`max_ac_watts`), NOT a grid
+        // export limit. Use `InverterMode::ExportLimit` to set the grid
+        // export cap independently.
         Self::SinglePhase
     }
 
     /// Human-readable label used by the GUI to disambiguate the three
-    /// registers (HR 26 vs HR 1063 vs HR 2071). Drives the field label and
-    /// help text in the sidebar.
+    /// registers (HR 26 vs HR 1063 vs HR 2071). Drives the field label
+    /// and help text in the sidebar.
+    ///
+    /// Note the semantic split: HR 26 (SinglePhase) carries the inverter's
+    /// *physical* AC output, while HR 1063 / HR 2071 carry the *grid-port
+    /// export limit*. The labels make that distinction explicit so a UK
+    /// installer doesn't read a 3 kW inverter's hardware capability as a
+    /// 3000 W G98 grid-export cap.
     pub fn label(self) -> &'static str {
         match self {
-            Self::SinglePhase => "Grid Port Max Power Output (HR 26, read-only)",
-            Self::ThreePhase => "Grid Port Max Export Limit (HR 1063, ×0.1 dW)",
-            Self::Ems => "Grid Port Export Power Limit (HR 2071, raw W)",
+            Self::SinglePhase => "Inverter Max AC Output (HR 26, read-only)",
+            Self::ThreePhase => "Grid Port Export Limit (HR 1063, ×0.1 dW)",
+            Self::Ems => "Grid Port Export Limit (HR 2071, raw W)",
         }
     }
 
@@ -2468,6 +2483,53 @@ pub async fn set_grid_port_max_power(
             Ok(family)
         }
     }
+}
+
+/// Set the **grid export limit** (the regulatory/DNO-facing cap), in watts.
+///
+/// Distinct from [`set_grid_port_max_power`]: that command targets the wire
+/// register whose semantics *change* per family (HR 26 hardware output for
+/// single-phase, HR 1063 / HR 2071 export limit for three-phase / EMS).
+/// This command always targets the *grid export limit*:
+///
+/// * **Single-phase**: writes the simulator-internal HR 102
+///   (`inverter_export_limit_w`, ReadWrite in the catalogue) via
+///   `Command::SetExportLimit`. Real GivEnergy single-phase inverters don't
+///   expose a client-settable export limit on the wire (givenergy-modbus
+///   defines no setter), but installers still need to configure the
+///   DNO-mandated cap for the site (e.g. UK EREC G98 = 3680 W for a
+///   single-phase Micro-generator). HR 102 carries the user's chosen
+///   limit and the InverterEngine honors it when mode = ExportLimit.
+///   Negative inputs are pinned to 0; positive inputs are accepted
+///   unchanged even if they exceed `max_ac_watts` (e.g. a UK installer
+///   setting 3680 W on a 3 kW AC-coupled inverter) — the inverter
+///   physically can't reach those watts, so the higher cap is harmless.
+/// * **Three-phase / EMS**: writes to the wire register HR 1063 / HR 2071
+///   via `Command::SetExportLimit`, clamped to the family's wire ceiling
+///   (6500 W for HR 1063, 65535 W for HR 2071).
+#[tauri::command]
+pub async fn set_grid_export_limit(state: State<'_, AppState>, watts: f64) -> Result<(), String> {
+    if !watts.is_finite() || watts < 0.0 {
+        return Err(format!(
+            "Watts must be a non-negative finite number, got {watts}"
+        ));
+    }
+    let family = {
+        let eng = state.engine.lock().await;
+        let Some(e) = eng.as_ref() else {
+            return Err("No plant created".to_string());
+        };
+        GridPortPowerFamily::from_inverter_type(&e.state.config.inverter_type)
+    };
+    let clamped = match family {
+        GridPortPowerFamily::SinglePhase => watts.max(0.0),
+        GridPortPowerFamily::ThreePhase | GridPortPowerFamily::Ems => family.clamp_watts(watts),
+    };
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.enqueue(Command::SetExportLimit(clamped));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2641,5 +2703,50 @@ mod tests {
         // even though the UI rejects negatives up-front).
         assert_eq!(GridPortPowerFamily::ThreePhase.clamp_watts(-100.0), 0.0);
         assert_eq!(GridPortPowerFamily::Ems.clamp_watts(-100.0), 0.0);
+    }
+
+    #[test]
+    fn grid_export_limit_clamping_by_family() {
+        // Mirror of the clamping rules inside `set_grid_export_limit`:
+        // single-phase accepts any non-negative value (the InverterEngine
+        // silently clamps to max_ac_watts); three-phase / EMS clamp to
+        // the family's wire ceiling. This unit test pins the policy so
+        // the GUI and the Tauri command can't drift apart.
+        let clamp = |fam: GridPortPowerFamily, watts: f64| -> f64 {
+            match fam {
+                GridPortPowerFamily::SinglePhase => watts.max(0.0),
+                GridPortPowerFamily::ThreePhase | GridPortPowerFamily::Ems => {
+                    fam.clamp_watts(watts)
+                }
+            }
+        };
+
+        // Single-phase: 3680 W (UK EREC G98) passes through unchanged even
+        // though a 3 kW AC-coupled inverter physically can't reach it.
+        // The limit is regulatory, not hardware-bound.
+        assert_eq!(
+            clamp(GridPortPowerFamily::SinglePhase, 3680.0),
+            3680.0,
+            "single-phase should accept the UK G98 3680 W default"
+        );
+        assert_eq!(
+            clamp(GridPortPowerFamily::SinglePhase, 10000.0),
+            10000.0,
+            "single-phase accepts any positive value (hardware caps it later)"
+        );
+        assert_eq!(
+            clamp(GridPortPowerFamily::SinglePhase, -1.0),
+            0.0,
+            "negative inputs pin to 0"
+        );
+
+        // Three-phase: wire ceiling 6500 W.
+        assert_eq!(clamp(GridPortPowerFamily::ThreePhase, 6500.0), 6500.0);
+        assert_eq!(clamp(GridPortPowerFamily::ThreePhase, 7000.0), 6500.0);
+        assert_eq!(clamp(GridPortPowerFamily::ThreePhase, -5.0), 0.0);
+
+        // EMS: full 16-bit ceiling.
+        assert_eq!(clamp(GridPortPowerFamily::Ems, 65535.0), 65535.0);
+        assert_eq!(clamp(GridPortPowerFamily::Ems, 70000.0), 65535.0);
     }
 }

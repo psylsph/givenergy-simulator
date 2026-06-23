@@ -76,6 +76,7 @@ pub fn run() {
             commands::set_ct_meter,
             commands::get_grid_port_max_power,
             commands::set_grid_port_max_power,
+            commands::set_grid_export_limit,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule

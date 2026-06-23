@@ -362,7 +362,10 @@ fn dsp_firmware_for_inverter(inv_type: &str) -> u16 {
 fn configure_inverter(state: &mut PlantState, inv_type: &str) {
     state.config.inverter_type = inv_type.to_string();
     state.config.max_ac_watts = max_ac_w_for_inverter(inv_type);
-    state.inverter.export_limit_w = state.config.max_ac_watts * 0.72;
+    // Seed the export limit at the standard UK EREC G98 default for this
+    // family (3680 W single-phase, 6500 W three-phase wire ceiling, 0 W EMS).
+    // See `sim_models::default_export_limit_w_for` for the source.
+    state.inverter.export_limit_w = sim_models::default_export_limit_w_for(inv_type);
     state.inverter.dsp_firmware_version = dsp_firmware_for_inverter(inv_type);
 }
 

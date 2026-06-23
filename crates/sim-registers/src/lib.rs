@@ -98,6 +98,15 @@ pub enum RegisterCategory {
 pub struct RegisterStore {
     values: std::collections::HashMap<u32, u16>,
     defs: Vec<RegisterDef>,
+    /// Previous snapshot of the EMS plant holding block (HR 2040-2075).
+    /// Carried forward when the block isn't actively projected, preventing
+    /// export_limit_w (HR 2071) from dropping to 0 on poll cycles that
+    /// skip the EMS block.
+    previous_ems_block: std::collections::HashMap<u16, u16>,
+    /// Current inverter type string, set during `project_from_state`.
+    /// Used to gate register access (e.g. HR 2071 is read-only for
+    /// AC Coupled inverters).
+    inverter_type: String,
 }
 
 /// Deterministic per-cell voltage multiplier in [0.99, 1.01] (≤1% noise).
@@ -166,7 +175,12 @@ impl RegisterStore {
     /// Create a store pre-populated from the given register definitions.
     pub fn new(defs: Vec<RegisterDef>) -> Self {
         let values = defs.iter().map(|d| (d.store_key(), 0u16)).collect();
-        Self { values, defs }
+        Self {
+            values,
+            defs,
+            previous_ems_block: std::collections::HashMap::new(),
+            inverter_type: String::new(),
+        }
     }
 
     /// Read a register by address and space.
@@ -185,7 +199,14 @@ impl RegisterStore {
     }
 
     /// Write a holding register value by address (respects access control).
+    /// HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
+    /// inverters — they don't have EMS capability.
     pub fn write(&mut self, address: u16, value: u16) -> bool {
+        if address == 2071
+            && (self.inverter_type == "ACCoupled" || self.inverter_type == "ACCoupled2")
+        {
+            return false;
+        }
         let key = address as u32 + HOLDING_OFFSET;
         if let Some(def) = self.defs.iter().find(|d| d.store_key() == key)
             && def.access == Access::ReadWrite
@@ -206,8 +227,39 @@ impl RegisterStore {
             .any(|d| d.space == space && (start..start + count).contains(&d.address))
     }
 
+    /// Save the current EMS plant holding block (HR 2040-2075) so it can be
+    /// carried forward if the next projection cycle doesn't update it.
+    fn save_ems_block(&mut self) {
+        self.previous_ems_block.clear();
+        for addr in 2040..=2075u16 {
+            let key = addr as u32 + HOLDING_OFFSET;
+            if let Some(&v) = self.values.get(&key) {
+                self.previous_ems_block.insert(addr, v);
+            }
+        }
+    }
+
+    /// Restore EMS plant holding block values from the previous snapshot
+    /// for any register that is currently 0 (meaning it wasn't projected
+    /// this cycle). This prevents export_limit_w (HR 2071) from dropping
+    /// to 0 when the EMS block isn't actively projected.
+    fn carry_forward_ems_block(&mut self) {
+        for (&addr, &prev) in &self.previous_ems_block {
+            let key = addr as u32 + HOLDING_OFFSET;
+            if self.values.get(&key).copied().unwrap_or(0) == 0 && prev != 0 {
+                self.values.insert(key, prev);
+            }
+        }
+    }
+
     /// Update all register values from plant state.
     pub fn project_from_state(&mut self, state: &sim_models::PlantState) {
+        // Track the inverter type for access control gating (e.g. HR 2071
+        // is read-only for AC Coupled inverters).
+        self.inverter_type = state.config.inverter_type.clone();
+        // Save the current EMS block before projection so we can carry
+        // forward values that aren't re-projected this cycle.
+        self.save_ems_block();
         // Project energy registers directly from the live plant totals. Energy
         // totals are a true power-integral (accumulated by EnergyTracker and
         // reset at midnight), so a fresh / early-morning plant legitimately
@@ -1876,6 +1928,14 @@ impl RegisterStore {
         // which makes the version-string validity check fail so clients
         // correctly conclude "no gateway present").
         self.project_gateway_bank(state);
+
+        // Carry forward the EMS plant holding block (HR 2040-2075) from the
+        // previous projection cycle. When this block isn't actively projected
+        // (e.g. for non-EMS inverters), export_limit_w (HR 2071) would drop
+        // to 0, causing the UI to show "unconfigured". The carry-forward
+        // restores any EMS register that was non-zero in the previous cycle
+        // but is now 0 (meaning it wasn't re-projected).
+        self.carry_forward_ems_block();
     }
 
     /// Project the GivEnergy Gateway aggregation bank (Input Registers

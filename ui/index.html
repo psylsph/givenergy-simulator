@@ -590,16 +590,14 @@
           <button id="btn-apply-dsp-fw" class="btn-mini">Set</button>
         </div>
 
-        <label style="margin-top:8px" id="grid-port-power-label">
-          Grid Port Max Power (W)
-          <span id="grid-port-power-register" style="color:var(--text-muted);font-size:10px;margin-left:4px">—</span>
+        <label style="margin-top:8px" id="grid-export-limit-label">
+          Grid Export Limit (W)
         </label>
         <div class="row" style="gap:4px;align-items:center">
-          <input type="number" id="grid-port-power-input" min="0" max="65535" step="50" placeholder="—" style="flex:1">
-          <button id="btn-apply-grid-port-power" class="btn-mini">Set</button>
+          <span id="grid-export-limit-display" style="font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--green);flex:1">—</span>
         </div>
-        <div id="grid-port-power-note" style="font-size:10px;color:var(--text-muted);margin-top:2px">
-          Auto-detects register from inverter type
+        <div id="grid-export-limit-note" style="font-size:10px;color:var(--text-muted);margin-top:2px">
+          UK EREC G98 standard limit. Auto-set per inverter family.
         </div>
 
       </div>
@@ -893,17 +891,26 @@
     el('inverter-type').addEventListener('change', toggleGatewayBatteryUi);
     toggleGatewayBatteryUi();
 
-    // ---- Grid Port Max Power Output ----
+    // ---- Grid Port Power sidebar field ----
     // The wire register depends on inverter family (per the giv_tcp /
-    // givenergy-modbus model audit):
+    // givenergy-modbus model audit). The same UI field shows two
+    // semantically different things depending on the family:
     //   - Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+:
-    //     HR 26 (read-only on the wire per givenergy-modbus — the field is
-    //     shown for reference but the Set button is disabled).
+    //     HR 26 (read-only on the wire per givenergy-modbus). This carries
+    //     the inverter's *physical* AC output (`max_ac_watts`), NOT a grid
+    //     export limit — e.g. 3000 W for a 3 kW AC-coupled unit. The
+    //     label is "Inverter Max AC Output" in this mode.
     //   - Three-phase / HV / ACThreePhase: HR 1063 (`p_export_limit`,
-    //     C.deci encoding). The input is in watts; the backend multiplies
-    //     by 10 on the way to the register.
+    //     C.deci encoding, ×0.1 dW). This is the *grid-port export limit*
+    //     — the regulatory cap on what can flow out to the grid. The input
+    //     is in watts; the backend multiplies by 10 on the way to the
+    //     register.
     //   - EMS / EmsCommercial / Gateway: HR 2071 (`export_power_limit`,
-    //     raw watts).
+    //     raw watts). Same semantics as HR 1063.
+    // The label switches between "Inverter Max AC Output" and "Grid Port
+    // Export Limit" so a UK installer reading the GUI doesn't confuse a
+    // 3 kW inverter's hardware capability with the 3680 W EREC G98
+    // grid-export standard — the latter is a separate ExportLimit field.
     // The gridPortPowerFamily() classifier mirrors
     // sim-tauri::commands::GridPortPowerFamily::from_inverter_type — both
     // classify identically and both must be updated together.
@@ -917,70 +924,40 @@
       }
       return 'SinglePhase';
     }
-    const GRID_PORT_REGISTER_LABELS = {
-      SinglePhase: 'HR 26 (read-only)',
-      ThreePhase: 'HR 1063 (×0.1 dW)',
-      Ems: 'HR 2071 (raw W)',
+    // Read-only display of the UK EREC G98 grid export limit. The value is
+    // auto-set per inverter family at plant creation (see
+    // `sim_models::default_export_limit_w_for`) and is not editable from
+    // the GUI — Modbus clients can still write to the wire register (HR
+    // 102 for single-phase / HR 1063 for three-phase / HR 2071 for EMS)
+    // via `set_grid_export_limit` if a non-default limit is needed.
+    const GRID_EXPORT_LIMIT_NOTES = {
+      // UK EREC G98 single-phase Micro-generator cap: 16 A × 230 V = 3680 W.
+      SinglePhase: 'UK EREC G98 single-phase (16 A × 230 V = 3680 W). Honored in ExportLimit mode.',
+      // Three-phase: HR 1063 (`p_export_limit`, C.deci = watts × 10 in a
+      // u16). givenergy-modbus hard-caps writes at `max=6500` and the u16
+      // ceiling is 6553.5 W, so the default is clamped to the wire ceiling
+      // (6500 W) to round-trip exactly. The UK legal G98 three-phase cap is
+      // 11_040 W but the register physically cannot represent it.
+      ThreePhase: 'Three-phase grid export limit (HR 1063, ×0.1 dW). Wire ceiling 6500 W (givenergy-modbus max). UK G98 legal cap is 11.04 kW but the register can’t represent it.',
+      // EMS / Gateway: full 16-bit register (HR 2071). No G98 cap on the
+      // wire — operator must configure explicitly (default 0 W).
+      Ems: 'EMS export limit (HR 2071, full 16-bit). No G98 cap on the wire — operator must configure.',
     };
     let currentGridPortFamily = null; // cached; refreshed on every state_changed event
 
-    function applyGridPortPowerFamily(family, currentWatts) {
+    function applyGridExportLimitDisplay(family, watts, inverterType) {
       currentGridPortFamily = family;
-      const labelEl = el('grid-port-power-register');
-      const inputEl = el('grid-port-power-input');
-      const btnEl = el('btn-apply-grid-port-power');
-      const noteEl = el('grid-port-power-note');
-      labelEl.textContent = GRID_PORT_REGISTER_LABELS[family] || '—';
-      const writable = family !== 'SinglePhase';
-      inputEl.disabled = !writable;
-      btnEl.disabled = !writable;
-      inputEl.style.opacity = writable ? '1' : '0.6';
-      btnEl.style.opacity = writable ? '1' : '0.6';
-      // Display the current value (rounded to whole watts). Update only when
-      // (a) the input doesn't have focus (otherwise we'd clobber what the
-      // user is currently typing), and (b) the displayed value differs from
-      // the live state. This keeps the field responsive during ticking
-      // without fighting an in-progress edit.
-      const isFocused = document.activeElement === inputEl;
-      if (!isFocused && typeof currentWatts === 'number' && Number.isFinite(currentWatts)) {
-        const rounded = Math.round(currentWatts);
-        if (inputEl.value !== String(rounded)) {
-          inputEl.value = String(rounded);
-        }
-        inputEl.placeholder = String(rounded);
-      } else if (typeof currentWatts !== 'number' || !Number.isFinite(currentWatts)) {
-        inputEl.value = '';
-        inputEl.placeholder = '—';
-      }
-      if (family === 'SinglePhase') {
-        noteEl.textContent = 'Read-only — givenergy-modbus defines HR 26 with no setter. Set inverter AC output via plant configuration.';
-        noteEl.style.color = 'var(--text-muted)';
-      } else if (family === 'ThreePhase') {
-        noteEl.textContent = 'Range 0–6500 W (givenergy-modbus `max=6500` on HR 1063). Stored as dW (×10) on the wire.';
-        noteEl.style.color = 'var(--text-muted)';
+      const displayEl = el('grid-export-limit-display');
+      const noteEl = el('grid-export-limit-note');
+      if (!displayEl || !noteEl) return;
+      if (typeof watts === 'number' && Number.isFinite(watts)) {
+        const rounded = Math.round(watts);
+        const formatted = rounded.toLocaleString('en-GB');
+        displayEl.textContent = `${formatted} W`;
       } else {
-        // EMS family — HR 2071 is C.uint16 (raw watts, no scaling). 16-bit
-        // ceiling is 65535, not 6500 (that's only the HR 1063 cap).
-        noteEl.textContent = 'Range 0–65535 W (16-bit u16 register, raw watts on HR 2071).';
-        noteEl.style.color = 'var(--text-muted)';
+        displayEl.textContent = '—';
       }
-    }
-
-    async function refreshGridPortPower() {
-      if (!invoke) return;
-      try {
-        const watts = await invoke('get_grid_port_max_power');
-        // Family is best-effort here — the inverter type isn't part of this
-        // response. If we haven't classified yet (no plant), leave the field
-        // empty. The state_changed handler classifies and re-displays.
-        if (currentGridPortFamily) {
-          const inputEl = el('grid-port-power-input');
-          inputEl.value = String(Math.round(watts));
-          inputEl.placeholder = String(Math.round(watts));
-        }
-      } catch (e) {
-        // Plant not yet created — silently ignore.
-      }
+      noteEl.textContent = GRID_EXPORT_LIMIT_NOTES[family] || 'Auto-set per inverter family.';
     }
 
     // ---- Update battery module display in main panel ----
@@ -1142,9 +1119,9 @@
         const s = event.payload;
         updateDashboard(s);
         pushTimeline(s);
-        // No grid-port-power refresh here — `updateDashboard(s)` already
-        // calls `applyGridPortPowerFamily` for any state that carries
-        // `inverter_type`, so this event path inherits the refresh.
+        // No separate grid-export-limit refresh here — `updateDashboard(s)`
+        // already calls `applyGridExportLimitDisplay` for any state that
+        // carries `inverter_type`, so this event path inherits the refresh.
       });
 
       listen('scenario_completed', () => {
@@ -1223,17 +1200,17 @@
       // Sync sidebar controls from state only on explicit load (not every tick)
       if (fullSync) syncSidebarControls(s);
 
-      // Keep the Grid Port Max Power Output field in sync with state on every
-      // tick (state_changed event) AND on explicit loads (create_plant, etc.).
-      // The classification needs `s.inverter_type` to pick the right wire
-      // register (HR 26 / 1063 / 2071) — without it the field would stay at
-      // the initial dropdown value forever.
+      // Keep the Grid Export Limit read-only display in sync with state on
+      // every tick (state_changed event) AND on explicit loads. The
+      // classification needs `s.inverter_type` to pick the right note text
+      // (UK EREC G98 single-phase vs three-phase vs EMS); without it the
+      // note would stay at the initial text forever. The displayed watts
+      // value always reads from `s.export_limit_w` regardless of family —
+      // it's the regulatory/DNO-facing cap (UK EREC G98 default 3680 W for
+      // single-phase, 11040 W for three-phase, 0 W for EMS).
       if (s && s.inverter_type) {
         const fam = gridPortPowerFamily(s.inverter_type);
-        const currentWatts = fam === 'SinglePhase'
-          ? s.inverter_max_output_w
-          : s.export_limit_w;
-        applyGridPortPowerFamily(fam, currentWatts);
+        applyGridExportLimitDisplay(fam, s.export_limit_w, s.inverter_type);
       }
 
       // Inverter clock display
@@ -1719,50 +1696,31 @@
       } catch (e) { console.error('set dsp fw failed:', e); }
     });
 
-    // ---- Grid Port Max Power Output ----
-    // The backend decides which wire register (HR 26 / 1063 / 2071) the
-    // value lands in based on the current inverter type. Single-phase
-    // (HR 26) is rejected as read-only on the wire — the Set button is
-    // disabled for that family, see applyGridPortPowerFamily().
-    el('btn-apply-grid-port-power').addEventListener('click', async () => {
-      if (currentGridPortFamily === 'SinglePhase') {
-        el('footer-info').textContent = 'HR 26 is read-only on the wire for this inverter family';
-        return;
-      }
-      const v = parseFloat(el('grid-port-power-input').value);
-      if (!Number.isFinite(v) || v < 0) {
-        el('footer-info').textContent = 'Watts must be a non-negative number';
-        return;
-      }
-      try {
-        const family = await invoke('set_grid_port_max_power', { watts: v });
-        const note = family === 'ThreePhase'
-          ? 'HR 1063 (×0.1 dW)'
-          : family === 'Ems' ? 'HR 2071 (raw W)' : 'HR 26';
-        el('footer-info').textContent = `Grid port max power set to ${v} W → ${note}`;
-        // Refresh the displayed value from the engine so the input reflects
-        // the clamped/encoded value the simulator actually stored.
-        await refreshGridPortPower();
-      } catch (e) {
-        el('footer-info').textContent = `Set failed: ${e}`;
-        console.error('set_grid_port_max_power failed:', e);
-      }
-    });
+    // ---- Grid Export Limit (read-only display) ----
+    // The grid export limit is auto-set per inverter family at plant
+    // creation (see `sim_models::default_export_limit_w_for`) and is not
+    // editable from this GUI. Modbus clients can still write to the wire
+    // register (HR 102 for single-phase / HR 1063 for three-phase / HR 2071
+    // for EMS) via the `set_grid_export_limit` Tauri command if a non-default
+    // limit is needed. The display is refreshed from `updateDashboard(s)`
+    // on every state_changed event.
 
     // Also refresh the field when the user changes the inverter type in the
-    // Plant Setup panel — the wire register mapping changes immediately.
+    // Plant Setup panel — the family classification (single-phase /
+    // three-phase / EMS) changes immediately, even before the next tick.
     el('inverter-type').addEventListener('change', () => {
-      // Classify against the dropdown's current value, but only commit to the
-      // field if a plant has been created (otherwise the placeholder stays
-      // as the placeholder). The next state_changed event will overwrite.
       const fam = gridPortPowerFamily(el('inverter-type').value);
-      applyGridPortPowerFamily(fam, undefined);
+      // No `watts` value yet (no plant exists); pass undefined and let
+      // `applyGridExportLimitDisplay` show "—". The next state_changed
+      // event will overwrite with the actual `export_limit_w`.
+      applyGridExportLimitDisplay(fam, undefined, el('inverter-type').value);
     });
-    // Initial classification so the field shows the right register hint
-    // even before any plant is created or any state_changed event arrives.
-    applyGridPortPowerFamily(
+    // Initial classification so the note text reflects the current dropdown
+    // selection even before any plant is created.
+    applyGridExportLimitDisplay(
       gridPortPowerFamily(el('inverter-type').value),
-      undefined
+      undefined,
+      el('inverter-type').value
     );
 
     // EVC controls

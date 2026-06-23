@@ -356,7 +356,7 @@ fn max_ac_w_for_inverter(inv_type: &str) -> f64 {
 fn configure_inverter(state: &mut PlantState, inv_type: &str) {
     state.config.inverter_type = inv_type.to_string();
     state.config.max_ac_watts = max_ac_w_for_inverter(inv_type);
-    state.inverter.export_limit_w = state.config.max_ac_watts * 0.72;
+    state.inverter.export_limit_w = sim_models::default_export_limit_w_for(inv_type);
 }
 
 // ===========================================================================

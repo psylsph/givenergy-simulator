@@ -8,6 +8,113 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// UK EREC G98 / G99 standard grid-export limits
+// ---------------------------------------------------------------------------
+//
+// Per EREC G98 (Issue 1 Amendment 7, October 2022, ENA), a "Micro-generator"
+// is limited to a Registered Capacity of 16 A per phase, which at 230 V
+// single-phase nominal is exactly 3680 W (16 A × 230 V). Three-phase G98
+// Micro-generators can therefore export up to 3 × 3680 = 11_040 W across the
+// three phases — but the `givenergy-modbus` HR 1063 (`p_export_limit`,
+// C.deci) is hard-capped at `max=6500` on the wire (u16 × 0.1 dW = 6553.5 W
+// representable max), so the ThreePhase family default is clamped to 6500 W
+// to round-trip exactly on the wire. EMS HR 2071 is a full 16-bit register
+// (0–65 535 W). Single-phase HR 26 is read-only on the wire (mirrors
+// `config.max_ac_watts`) and has no client-settable export-limit field.
+//
+// `default_export_limit_w_for(inverter_type)` returns the standard UK
+// legal default that should seed a brand-new plant so a freshly built
+// sim matches what an MCS installer would set before the customer even
+// touches the GUI.
+
+/// Default UK single-phase G98 Micro-generator limit: 16 A × 230 V = 3680 W.
+/// Reference: EREC G98 § Scope (Issue 1 Amendment 7, October 2022):
+/// "16 A per phase, 230/400 V AC corresponds to 3.68 kilowatts (kW) on a
+/// single-phase supply".
+pub const DEFAULT_G98_SINGLE_PHASE_EXPORT_W: f64 = 3680.0;
+
+/// Wire ceiling for the three-phase export limit, in watts.
+///
+/// The UK EREC G98 three-phase legal limit is 3 × (16 A × 230 V) = 11_040 W,
+/// but the `givenergy-modbus` register HR 1063 (`p_export_limit`, C.deci)
+/// encodes the value as watts × 10 into a u16, giving a representable max of
+/// 65 535 dW = 6553.5 W, and givenergy-modbus itself hard-caps writes at
+/// `max=6500`. We default to 6500 W so the value round-trips exactly on the
+/// wire (state → HR 1063 read → state): any higher value would be silently
+/// clamped by the projection and the Modbus client would read a different
+/// number from what `state.inverter.export_limit_w` holds.
+pub const DEFAULT_G98_THREE_PHASE_EXPORT_W: f64 = 6500.0;
+
+/// Default UK EREC G98 export limit for a given inverter family, in watts.
+///
+/// Returns the standard default that should seed a brand-new plant so a
+/// freshly built sim matches what an MCS installer would set before the
+/// customer touches the GUI, **clamped to what the wire register can
+/// actually represent**:
+/// * Single-phase (Gen1-4 Hybrid, Polar, Gen3+, AC-coupled, PV, AIO,
+///   AIOHybrid, Gateway) — 3680 W (UK EREC G98 single-phase = 16 A × 230 V).
+/// * Three-phase (ThreePhase*, ACThreePhase) — 6500 W, the wire ceiling of
+///   HR 1063 (`max=6500` in givenergy-modbus). The UK legal three-phase
+///   G98 cap is 11_040 W but the register physically cannot represent it,
+///   so we use the wire ceiling to keep the state ↔ HR 1063 round-trip
+///   exact rather than silently clamping.
+/// * EMS / EmsCommercial — 0 W. HR 2071 is full 16-bit with no G98 cap on
+///   the wire; we return 0 so the export-limit code path is disabled
+///   until an operator explicitly configures it (no sensible "legal
+///   default" applies).
+pub fn default_export_limit_w_for(inverter_type: &str) -> f64 {
+    if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+        DEFAULT_G98_THREE_PHASE_EXPORT_W
+    } else if inverter_type == "EMS" || inverter_type == "EmsCommercial" {
+        0.0
+    } else {
+        DEFAULT_G98_SINGLE_PHASE_EXPORT_W
+    }
+}
+
+/// Physical AC output capability of a given inverter type, in watts.
+///
+/// This is the inverter's *hardware* cap — how much AC power it can
+/// physically produce. Distinct from [`default_export_limit_w_for`], which
+/// is the *regulatory* DNO-facing export limit. For an AC-coupled 3 kW
+/// inverter this is 3000 W (the inverter can't make more), while the UK
+/// EREC G98 export limit is independently 3680 W.
+///
+/// Mirrors the table that previously lived only in
+/// `sim_tauri::commands::create_plant` and `sim_api::main::configure_inverter`.
+/// Both call sites now use this function so the inverter catalogue has a
+/// single source of truth.
+pub fn max_ac_watts_for(inverter_type: &str) -> f64 {
+    match inverter_type {
+        "Gen3Hybrid8kW" => 8000.0,
+        "Gen3Hybrid10kW" => 10000.0,
+        "Gen3Plus6kW" => 5000.0,
+        "Gen3Plus4600" => 4600.0,
+        "Gen3Plus3600" => 3600.0,
+        "Gen3Plus6kW2" => 6000.0,
+        "AllInOne6" => 6000.0,
+        "AIO8kW" => 8000.0,
+        "AIO10kW" => 10000.0,
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
+        "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
+        "ACCoupled" | "ACCoupled2" => 3000.0,
+        "AllInOne" => 6000.0,
+        "AllInOne5" => 5000.0,
+        "Gen1Hybrid" => 5000.0,
+        "Gen2Hybrid" => 5000.0,
+        "Gen3Hybrid" => 5000.0,
+        // Gateway: aggregates an All-in-One (6kW AC) behind it.
+        "Gateway12kW" => 6000.0,
+        _ => 5000.0,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Calibration state
 // ---------------------------------------------------------------------------
 
@@ -202,7 +309,12 @@ impl Default for InverterState {
         let mut s = Self {
             mode_state: ModeState::default(),
             ac_power_w: 0.0,
-            export_limit_w: 3600.0,
+            // UK EREC G98 single-phase Micro-generator limit: 16 A × 230 V
+            // = 3680 W. See DEFAULT_G98_SINGLE_PHASE_EXPORT_W for the source.
+            // `default_export_limit_w_for(inverter_type)` should be preferred
+            // at plant-creation time so three-phase / EMS plants get the
+            // correct per-family default.
+            export_limit_w: DEFAULT_G98_SINGLE_PHASE_EXPORT_W,
             temperature_celsius: 35.0,
             dsp_firmware_version: default_dsp_firmware(),
             arm_firmware_version: 0,
@@ -1356,6 +1468,153 @@ impl Default for Schedule {
             export_target_soc_3: 50.0,
             export_power_limit_w: 0.0,
             enable_export_schedule: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn g98_single_phase_default_is_3680_w() {
+        // UK EREC G98: 16 A × 230 V = 3680 W is the single-phase
+        // Micro-generator Registered Capacity. The constant is the source
+        // of truth — the helper must return exactly that value for every
+        // single-phase inverter family.
+        assert_eq!(DEFAULT_G98_SINGLE_PHASE_EXPORT_W, 3680.0);
+
+        for inv in &[
+            "Gen1Hybrid",
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "Gen3Hybrid8kW",
+            "Gen3Hybrid10kW",
+            "Gen3Plus6kW",
+            "Gen3Plus4600",
+            "Gen3Plus3600",
+            "Gen3Plus6kW2",
+            "Gen3Plus7kW",
+            "Gen3Plus8kW",
+            "Polar5kW",
+            "Polar4600",
+            "Polar3600",
+            "Polar6kW",
+            "Polar7kW",
+            "Polar8kW",
+            "PVInverter5kW",
+            "PVInverter4600",
+            "PVInverter3600",
+            "PVInverter6kW",
+            "ACCoupled",
+            "ACCoupled2",
+            "AllInOne6",
+            "AllInOne",
+            "AllInOne5",
+            "AIO6kW",
+            "AIO8kW",
+            "AIO10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+            "Gen4Hybrid6kW",
+            "Hybrid3600",
+            "Hybrid4600",
+            "Gateway12kW",
+        ] {
+            assert_eq!(
+                default_export_limit_w_for(inv),
+                3680.0,
+                "single-phase {inv} should default to UK G98 3680 W"
+            );
+        }
+    }
+
+    #[test]
+    fn three_phase_default_is_wire_ceiling_6500_w() {
+        // UK EREC G98 three-phase Micro-generator cap is 11.04 kW, but the
+        // wire register HR 1063 (`p_export_limit`, C.deci) encodes watts × 10
+        // into a u16. givenergy-modbus hard-caps writes at `max=6500`, and
+        // even the raw u16 ceiling (65 535 dW = 6553.5 W) is below the legal
+        // limit. We therefore default to 6500 W so the value round-trips
+        // exactly on the wire: the Modbus client reads back the same value
+        // that `state.inverter.export_limit_w` holds, with no silent
+        // clamping. A higher default (e.g. 11 040 W) would be clamped by the
+        // projection and the client would read 6553.5 W instead.
+        assert_eq!(DEFAULT_G98_THREE_PHASE_EXPORT_W, 6500.0);
+        for inv in &[
+            "ThreePhase",
+            "ThreePhase8kW",
+            "ThreePhase10kW",
+            "ThreePhase11kW",
+            "ACThreePhase",
+        ] {
+            assert_eq!(
+                default_export_limit_w_for(inv),
+                6500.0,
+                "{inv} should default to the HR 1063 wire ceiling (6500 W) for exact round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn ems_default_is_zero_until_operator_configures() {
+        // EMS / EmsCommercial / Gateway use HR 2071, a full 16-bit register
+        // with no G98 cap on the wire. The simulator mustn't pretend a
+        // specific "legal default" applies — return 0 so the export-limit
+        // code path is disabled until an operator sets it explicitly.
+        for inv in &["EMS", "EmsCommercial"] {
+            assert_eq!(
+                default_export_limit_w_for(inv),
+                0.0,
+                "{inv} should default to 0 (operator-configured)"
+            );
+        }
+    }
+
+    #[test]
+    fn inverter_state_default_uses_g98_single_phase_limit() {
+        // `InverterState::default()` is reached whenever a plant snapshot
+        // is reconstructed without an explicit inverter_type — e.g. test
+        // fixtures. It must produce a sensible UK G98 single-phase value
+        // (3680 W), not the old 3600 W.
+        let s = InverterState::default();
+        assert_eq!(s.export_limit_w, 3680.0);
+    }
+
+    #[test]
+    fn ac_coupled_keeps_3kw_ac_output_but_gets_3680w_grid_export_limit() {
+        // Regression guard: a 3 kW AC-coupled inverter physically can't
+        // produce more than 3 kW AC, so `max_ac_watts` must stay at 3000
+        // (representing the inverter's hardware cap). But the UK EREC G98
+        // grid-port export limit is a regulatory cap on what can flow
+        // *out* to the grid — that's 16 A × 230 V = 3680 W regardless of
+        // how big the inverter is. The two are distinct concepts and must
+        // not be conflated: `max_ac_watts` is the inverter's *capability*,
+        // `export_limit_w` is the DNO-facing *export limit*. A user with a
+        // 3 kW AC-coupled inverter in the UK still gets a 3680 W export
+        // limit set as the default — they're free to lower it for their
+        // own DNO arrangement, but they shouldn't see "3000 W" as the
+        // *grid* limit just because that's how big the inverter is.
+        for inv in &["ACCoupled", "ACCoupled2"] {
+            assert_eq!(
+                max_ac_watts_for(inv),
+                3000.0,
+                "{inv} must keep its 3 kW physical AC output"
+            );
+            assert_eq!(
+                default_export_limit_w_for(inv),
+                3680.0,
+                "{inv} grid-port export limit must default to UK G98 3680 W"
+            );
+            assert!(
+                default_export_limit_w_for(inv) > max_ac_watts_for(inv),
+                "{inv}: export limit ({}) must exceed physical AC output ({}) so a 3 kW inverter \
+                 isn't artificially capped below what its hardware can do.",
+                default_export_limit_w_for(inv),
+                max_ac_watts_for(inv),
+            );
         }
     }
 }
