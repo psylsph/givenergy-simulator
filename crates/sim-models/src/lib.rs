@@ -8,6 +8,32 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Dongle misbehaviour simulation
+// ---------------------------------------------------------------------------
+
+/// Modes for simulating a faulty inverter dongle on the Modbus TCP port.
+///
+/// Real dongles sometimes return bad, stale, empty, or no data. This enum
+/// lets the GUI toggle between failure modes so client apps can be tested
+/// against realistic fault conditions.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum DongleMisbehaviourMode {
+    /// Normal operation — return real register data.
+    #[default]
+    Off,
+    /// Return all zeros for every register read (no data).
+    EmptyData,
+    /// Return stale/frozen data — registers never update after first read.
+    StaleData,
+    /// Return random/garbage values for every register.
+    GarbageData,
+    /// Drop the TCP connection on read attempts (no response).
+    DropConnection,
+    /// Intermittent failures — randomly return zeros ~50% of reads.
+    Intermittent,
+}
+
+// ---------------------------------------------------------------------------
 // UK EREC G98 / G99 standard grid-export limits
 // ---------------------------------------------------------------------------
 //
@@ -838,6 +864,10 @@ pub struct PlantState {
     /// simulation resumes normal battery physics.
     #[serde(skip)]
     pub manual_soc_hold_ticks: u64,
+    /// Simulate a faulty inverter dongle on the Modbus TCP port.
+    /// Defaults to `Off` (normal operation).
+    #[serde(default)]
+    pub dongle_misbehaviour: DongleMisbehaviourMode,
 }
 
 impl PlantState {
@@ -883,6 +913,7 @@ impl PlantState {
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
             evc: EvcState::default(),
+            dongle_misbehaviour: DongleMisbehaviourMode::Off,
         }
     }
 
@@ -928,6 +959,7 @@ impl PlantState {
             manual_soc_hold_ticks: 0,
             ems_enabled: false,
             evc: EvcState::default(),
+            dongle_misbehaviour: DongleMisbehaviourMode::Off,
         }
     }
 

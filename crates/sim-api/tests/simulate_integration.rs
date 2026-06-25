@@ -128,10 +128,10 @@ impl TestHarness {
             Box::new(ScheduleEngine::new(schedule.clone())),
             Box::new(SolarEngine::new(peak, lat)),
             Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(EvcEngine::new()),
             Box::new(InverterEngine::new()),
             Box::new(FaultEngine::new()),
             Box::new(BatteryEngine::new()),
-            Box::new(EvcEngine::new()),
             Box::new(EnergyTracker::new()),
         ];
 
@@ -159,8 +159,11 @@ impl TestHarness {
         let s = store.clone();
         let b = batt_arc;
         let t = tx;
+        let dongle = std::sync::Arc::new(std::sync::Mutex::new(
+            sim_models::DongleMisbehaviourMode::Off,
+        ));
         tokio::spawn(async move {
-            let _ = sim_modbus::run_modbus_server(addr, s, t, b).await;
+            let _ = sim_modbus::run_modbus_server(addr, s, t, b, dongle).await;
         });
 
         // Wait for server ready

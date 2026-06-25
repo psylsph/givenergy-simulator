@@ -24,6 +24,9 @@ pub fn run() {
     let battery_snapshot = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let pending_time_regs = Arc::new(std::sync::Mutex::new([None; 6]));
     let evc_state = Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default()));
+    let dongle_mode: Arc<std::sync::Mutex<sim_models::DongleMisbehaviourMode>> = Arc::new(
+        std::sync::Mutex::new(sim_models::DongleMisbehaviourMode::Off),
+    );
 
     let app_state = AppState {
         engine: Arc::new(tokio::sync::Mutex::new(None)),
@@ -36,6 +39,7 @@ pub fn run() {
         pending_time_regs: pending_time_regs.clone(),
         evc_state: evc_state.clone(),
         evc_port: Arc::new(std::sync::Mutex::new(5020)),
+        dongle_misbehaviour: dongle_mode.clone(),
     };
     let evc_port_arc = app_state.evc_port.clone();
 
@@ -77,6 +81,8 @@ pub fn run() {
             commands::get_grid_port_max_power,
             commands::set_grid_port_max_power,
             commands::set_grid_export_limit,
+            commands::get_dongle_misbehaviour,
+            commands::set_dongle_misbehaviour,
         ])
         .setup(move |app| {
             // Try to auto-load saved plant state + schedule
@@ -141,10 +147,17 @@ pub fn run() {
                                         Box::new(sim_core::LoadEngine::new(
                                             sim_core::LoadProfile::Family,
                                         )),
+                                        // EvcEngine must run AFTER LoadEngine (so the
+                                        // household baseline is preserved) and BEFORE
+                                        // InverterEngine (so the inverter sees the
+                                        // combined household + EV demand and routes
+                                        // spare solar/battery output to the EV first).
+                                        // See sim-core/tests/balance_repro.rs for the
+                                        // regression test that pins the order.
+                                        Box::new(sim_core::EvcEngine::new()),
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
-                                        Box::new(sim_core::EvcEngine::new()),
                                         Box::new(sim_core::EnergyTracker::new()),
                                     ]
                                 } else {
@@ -153,13 +166,16 @@ pub fn run() {
                                         Box::new(sim_core::LoadEngine::new(
                                             sim_core::LoadProfile::Family,
                                         )),
+                                        Box::new(sim_core::EvcEngine::new()),
                                         Box::new(sim_core::InverterEngine::new()),
                                         Box::new(sim_faults::FaultEngine::new()),
                                         Box::new(sim_core::BatteryEngine::new()),
-                                        Box::new(sim_core::EvcEngine::new()),
                                         Box::new(sim_core::EnergyTracker::new()),
                                     ]
                                 };
+
+                            // Capture dongle mode before plant_state is moved into the engine.
+                            let dongle_mode = plant_state.dongle_misbehaviour;
 
                             let engine = sim_core::SimulationEngine::new(
                                 plant_state,
@@ -179,6 +195,11 @@ pub fn run() {
                             {
                                 let mut eng = app_state.engine.lock().await;
                                 *eng = Some(engine);
+                            }
+                            // Sync dongle misbehaviour mode from persisted state.
+                            {
+                                let mut mode = app_state.dongle_misbehaviour.lock().unwrap();
+                                *mode = dongle_mode;
                             }
                             let _ = app_handle.emit("state_changed", &dto);
                             tracing::info!("Auto-loaded saved plant from {}", save_path.display());
@@ -210,9 +231,14 @@ pub fn run() {
                 tracing::info!("Modbus TCP server listening on {addr}");
                 // CT meter slaves are determined at runtime from the DTC in
                 // the register store, so this adapts to inverter type changes.
-                if let Err(e) =
-                    sim_modbus::run_modbus_server(addr, modbus_store, modbus_tx, modbus_batteries)
-                        .await
+                if let Err(e) = sim_modbus::run_modbus_server(
+                    addr,
+                    modbus_store,
+                    modbus_tx,
+                    modbus_batteries,
+                    dongle_mode,
+                )
+                .await
                 {
                     tracing::error!("Modbus server error: {e}");
                 }

@@ -1990,9 +1990,16 @@ impl RegisterStore {
         // that real GivEnergy gateway hardware does not use).
         let aio_power_w = state.total_battery_power_kw() * 1000.0;
         let pv_w = state.solar.generation_w;
-        // Gateway house load correctly excludes the EV charger (key property):
-        // `load.demand_w` is household-only; `evc` draw is tracked separately.
-        let load_w = state.load.demand_w;
+        // Gateway house load correctly excludes the EV charger (key wire
+        // property of `p_load` per docs/gateway-register-reference.md).
+        // Internally `load.demand_w` includes the EV's draw so the inverter's
+        // solar/battery/grid balance treats EV charging like any other
+        // appliance; the projection layer subtracts the EV contribution here
+        // so the served `p_load` register reports household-only demand.
+        // Clamp at zero rather than wrap around into a large positive u16
+        // if the EV draw exceeds the reported load (which would indicate a
+        // simulation bug elsewhere — e.g. an override mismatch).
+        let load_w = (state.load.demand_w - state.evc.active_power_w).max(0.0);
         let grid_w = state.grid.power_w; // + import / - export
 
         let et = &state.energy_totals;

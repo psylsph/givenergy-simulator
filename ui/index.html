@@ -603,6 +603,20 @@
       </div>
 
       <div class="sidebar-section">
+        <h3>Dongle Simulation</h3>
+        <label>Misbehaviour Mode</label>
+        <select id="dongle-mode">
+          <option value="Off">Off (Normal)</option>
+          <option value="EmptyData">Empty Data (All Zeros)</option>
+          <option value="StaleData">Stale Data (Frozen)</option>
+          <option value="GarbageData">Garbage Data (Random)</option>
+          <option value="DropConnection">Drop Connection</option>
+          <option value="Intermittent">Intermittent (~50%)</option>
+        </select>
+        <button id="btn-apply-dongle" class="full-width" style="margin-top:4px">Apply</button>
+      </div>
+
+      <div class="sidebar-section">
         <h3>Faults</h3>
         <button id="btn-grid-loss" class="btn-mini full-width" style="margin-bottom:4px">⚡ Grid Loss</button>
         <button id="btn-inverter-trip" class="btn-mini full-width" style="margin-bottom:4px">🔌 Inverter Trip</button>
@@ -1694,6 +1708,15 @@
         await invoke('set_dsp_firmware', { version: v });
         el('footer-info').textContent = `DSP firmware set to ${v}`;
       } catch (e) { console.error('set dsp fw failed:', e); }
+    });
+
+    // ---- Dongle Misbehaviour ----
+    el('btn-apply-dongle').addEventListener('click', async () => {
+      const mode = el('dongle-mode').value;
+      try {
+        await invoke('set_dongle_misbehaviour', { mode });
+        el('footer-info').textContent = `Dongle mode: ${mode}`;
+      } catch (e) { console.error('set_dongle_misbehaviour failed:', e); }
     });
 
     // ---- Grid Export Limit (read-only display) ----

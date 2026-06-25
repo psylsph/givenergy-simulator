@@ -128,8 +128,11 @@ async fn start_server(
     let s = store.clone();
     let b = batt_arc;
     let t = tx.clone();
+    let dongle = std::sync::Arc::new(std::sync::Mutex::new(
+        sim_models::DongleMisbehaviourMode::Off,
+    ));
     tokio::spawn(async move {
-        let _ = sim_modbus::run_modbus_server(addr, s, t, b).await;
+        let _ = sim_modbus::run_modbus_server(addr, s, t, b, dongle).await;
     });
 
     // Wait for server to become ready

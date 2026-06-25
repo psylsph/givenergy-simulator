@@ -10,6 +10,7 @@ sim-registers = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 crc = "3"
+fastrand = "2"
 
 [dev-dependencies]
 sim-models = { workspace = true }

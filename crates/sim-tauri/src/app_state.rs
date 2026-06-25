@@ -35,6 +35,8 @@ pub struct AppState {
     pub evc_state: Arc<tokio::sync::Mutex<sim_models::EvcState>>,
     /// EVC Modbus TCP port (default 5020).
     pub evc_port: Arc<std::sync::Mutex<u16>>,
+    /// Dongle misbehaviour simulation mode.
+    pub dongle_misbehaviour: Arc<std::sync::Mutex<sim_models::DongleMisbehaviourMode>>,
 }
 
 impl Default for AppState {
@@ -53,6 +55,9 @@ impl Default for AppState {
             pending_time_regs: Arc::new(std::sync::Mutex::new([None; 6])),
             evc_state: Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default())),
             evc_port: Arc::new(std::sync::Mutex::new(5020)),
+            dongle_misbehaviour: Arc::new(std::sync::Mutex::new(
+                sim_models::DongleMisbehaviourMode::Off,
+            )),
         }
     }
 }
@@ -135,6 +140,8 @@ pub struct PlantStateDto {
     pub enable_eps: bool,
     /// Number of parallel AIO units behind a Gateway (1-3, 0 for non-gateway).
     pub parallel_aio_num: u16,
+    /// Current dongle misbehaviour simulation mode.
+    pub dongle_misbehaviour: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -548,6 +555,7 @@ impl From<&PlantState> for PlantStateDto {
             manual_battery_heater: state.inverter.manual_battery_heater,
             enable_eps: state.enable_eps,
             parallel_aio_num: state.config.parallel_aio_num,
+            dongle_misbehaviour: format!("{:?}", state.dongle_misbehaviour),
             energy_totals: EnergyTotalsDto {
                 grid_import_kwh: state.energy_totals.grid_import_kwh,
                 grid_export_kwh: state.energy_totals.grid_export_kwh,

@@ -203,6 +203,10 @@ enum Commands {
         /// full day quickly when you don't need wall-clock alignment.
         #[arg(long, default_value_t = false)]
         fast: bool,
+        /// Simulate a faulty dongle (Off, EmptyData, StaleData, GarbageData,
+        /// DropConnection, Intermittent).
+        #[arg(long, default_value = "Off")]
+        dongle_misbehaviour: String,
     },
     /// Run a scenario YAML file.
     Run {
@@ -236,6 +240,10 @@ enum Commands {
         /// Also launch a Modbus TCP server on this address.
         #[arg(long)]
         modbus: Option<SocketAddr>,
+        /// Simulate a faulty dongle (Off, EmptyData, StaleData, GarbageData,
+        /// DropConnection, Intermittent).
+        #[arg(long, default_value = "Off")]
+        dongle_misbehaviour: String,
     },
     /// Replay a recording or diff two recordings.
     Replay {
@@ -262,6 +270,10 @@ enum Commands {
         /// Output directory for recording frames.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Simulate a faulty dongle (Off, EmptyData, StaleData, GarbageData,
+        /// DropConnection, Intermittent).
+        #[arg(long, default_value = "Off")]
+        dongle_misbehaviour: String,
     },
 }
 
@@ -547,6 +559,22 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
     }
 }
 
+/// Parse a dongle misbehaviour mode string into an Arc<Mutex<DongleMisbehaviourMode>>.
+fn parse_dongle_mode(
+    s: &str,
+) -> std::sync::Arc<std::sync::Mutex<sim_models::DongleMisbehaviourMode>> {
+    use sim_models::DongleMisbehaviourMode;
+    let mode = match s {
+        "EmptyData" => DongleMisbehaviourMode::EmptyData,
+        "StaleData" => DongleMisbehaviourMode::StaleData,
+        "GarbageData" => DongleMisbehaviourMode::GarbageData,
+        "DropConnection" => DongleMisbehaviourMode::DropConnection,
+        "Intermittent" => DongleMisbehaviourMode::Intermittent,
+        _ => DongleMisbehaviourMode::Off,
+    };
+    std::sync::Arc::new(std::sync::Mutex::new(mode))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -575,6 +603,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             pv2_peak,
             fast,
+            dongle_misbehaviour,
         } => {
             simulate(
                 &inverter,
@@ -592,6 +621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output.as_deref(),
                 pv2_peak,
                 fast,
+                &dongle_misbehaviour,
             )
             .await
         }
@@ -606,6 +636,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             modbus,
             battery_count,
+            dongle_misbehaviour,
         } => {
             run_scenario(
                 &scenario,
@@ -618,6 +649,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output.as_deref(),
                 modbus,
                 battery_count,
+                &dongle_misbehaviour,
             )
             .await
         }
@@ -631,7 +663,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tick_interval,
             modbus,
             output,
-        } => serve_config(&config, tick_interval, modbus, output.as_deref()).await,
+            dongle_misbehaviour,
+        } => {
+            serve_config(
+                &config,
+                tick_interval,
+                modbus,
+                output.as_deref(),
+                &dongle_misbehaviour,
+            )
+            .await
+        }
     }
 }
 
@@ -656,6 +698,7 @@ async fn simulate(
     output_dir: Option<&std::path::Path>,
     pv2_peak: f64,
     fast: bool,
+    dongle_misbehaviour: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let battery_count = battery_count.clamp(1, 6);
     let soc = soc.clamp(0.0, 100.0);
@@ -735,10 +778,13 @@ async fn simulate(
         Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
         Box::new(SolarEngine::new(solar_peak, latitude)),
         Box::new(LoadEngine::new(load_profile)),
+        // EvcEngine runs AFTER LoadEngine and BEFORE InverterEngine so the
+        // inverter sees the combined household + EV demand and routes spare
+        // solar/battery output to the EV first.
+        Box::new(sim_core::EvcEngine::new()),
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
-        Box::new(sim_core::EvcEngine::new()),
         Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
     ];
     let mut engine = SimulationEngine::new(state, devices, tick_interval);
@@ -793,9 +839,17 @@ async fn simulate(
     let battery_shared = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let batt_server = battery_shared.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dongle_mode = parse_dongle_mode(dongle_misbehaviour);
+    let dongle_server = dongle_mode.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            sim_modbus::run_modbus_server(modbus_addr, server_store, cmd_tx, batt_server).await
+        if let Err(e) = sim_modbus::run_modbus_server(
+            modbus_addr,
+            server_store,
+            cmd_tx,
+            batt_server,
+            dongle_server,
+        )
+        .await
         {
             tracing::error!("Modbus server error: {e}");
         }
@@ -917,6 +971,7 @@ async fn run_scenario(
     output_dir: Option<&std::path::Path>,
     modbus: Option<SocketAddr>,
     battery_count: usize,
+    dongle_misbehaviour: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let yaml = std::fs::read_to_string(scenario_path)?;
     let scen = parse_named_scenario(&yaml)?;
@@ -940,10 +995,10 @@ async fn run_scenario(
         Box::new(sim_core::ScheduleEngine::new(initial_schedule.clone())),
         Box::new(solar),
         Box::new(LoadEngine::new(load_profile)),
+        Box::new(sim_core::EvcEngine::new()),
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
-        Box::new(sim_core::EvcEngine::new()),
         Box::new(sim_core::EnergyTracker::new()),
     ];
 
@@ -987,12 +1042,15 @@ async fn run_scenario(
         let store = std::sync::Arc::new(tokio::sync::Mutex::new(reg_store.clone()));
         let server_store = store.clone();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let dongle_mode = parse_dongle_mode(dongle_misbehaviour);
+        let dongle_server = dongle_mode.clone();
         tokio::spawn(async move {
             if let Err(e) = sim_modbus::run_modbus_server(
                 addr,
                 server_store,
                 cmd_tx,
                 Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                dongle_server,
             )
             .await
             {
@@ -1340,6 +1398,7 @@ async fn serve_config(
     tick_interval: u64,
     modbus_addr: std::net::SocketAddr,
     output_dir: Option<&std::path::Path>,
+    dongle_misbehaviour: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(config_path)?;
     let cfg: PlantConfig = serde_json::from_str(&json)?;
@@ -1357,10 +1416,10 @@ async fn serve_config(
         Box::new(sim_core::ScheduleEngine::new(initial_sched)),
         Box::new(SolarEngine::new(peak_watts, latitude)),
         Box::new(LoadEngine::new(LoadProfile::Family)),
+        Box::new(sim_core::EvcEngine::new()),
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
-        Box::new(sim_core::EvcEngine::new()),
         Box::new(sim_core::EnergyTracker::new()),
     ];
 
@@ -1390,9 +1449,17 @@ async fn serve_config(
     let battery_shared = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let batt_server = battery_shared.clone();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dongle_mode = parse_dongle_mode(dongle_misbehaviour);
+    let dongle_server = dongle_mode.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            sim_modbus::run_modbus_server(modbus_addr, server_store, cmd_tx, batt_server).await
+        if let Err(e) = sim_modbus::run_modbus_server(
+            modbus_addr,
+            server_store,
+            cmd_tx,
+            batt_server,
+            dongle_server,
+        )
+        .await
         {
             tracing::error!("Modbus server error: {e}");
         }

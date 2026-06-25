@@ -326,21 +326,28 @@ pub async fn create_plant(
             Box::new(ScheduleEngine::new(sched.clone())),
             Box::new(SolarEngine::new(peak_watts, latitude)),
             Box::new(LoadEngine::new(profile)),
+            // EvcEngine runs AFTER LoadEngine (so LoadEngine's overwrite
+            // of state.load.demand_w with the family / heat-pump / minimal
+            // baseline is preserved) and BEFORE InverterEngine (so the
+            // inverter's solar/battery/grid priority logic sees the EV
+            // draw as part of the total demand — spare solar/battery
+            // output is routed to the EV first, with only the residual
+            // shortfall falling back to grid import).
+            Box::new(sim_core::EvcEngine::new()),
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
-            Box::new(sim_core::EvcEngine::new()),
         ]
     } else {
         vec![
             Box::new(SolarEngine::new(peak_watts, latitude)),
             Box::new(LoadEngine::new(profile)),
+            Box::new(sim_core::EvcEngine::new()),
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(sim_core::EnergyTracker::new().with_last_reset_date(seed_date)),
-            Box::new(sim_core::EvcEngine::new()),
         ]
     };
 
@@ -382,6 +389,9 @@ pub async fn create_plant(
         serde_json::to_string_pretty(&persisted).map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))?;
     tracing::info!("Auto-saved plant to {}", path.display());
+
+    // Reset dongle misbehaviour to Off on new plant creation.
+    *state.dongle_misbehaviour.lock().unwrap() = sim_models::DongleMisbehaviourMode::Off;
 
     Ok(dto)
 }
@@ -2127,21 +2137,21 @@ pub async fn load_plant(
             Box::new(ScheduleEngine::new(sched.clone())),
             Box::new(SolarEngine::new(peak_watts, latitude)),
             Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(EvcEngine::new()),
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
-            Box::new(EvcEngine::new()),
         ]
     } else {
         vec![
             Box::new(SolarEngine::new(peak_watts, latitude)),
             Box::new(LoadEngine::new(LoadProfile::Family)),
+            Box::new(EvcEngine::new()),
             Box::new(InverterEngine::new()),
             Box::new(sim_faults::FaultEngine::new()),
             Box::new(BatteryEngine::new()),
             Box::new(EnergyTracker::new()),
-            Box::new(EvcEngine::new()),
         ]
     };
 
@@ -2275,6 +2285,43 @@ pub async fn set_evc_port(state: State<'_, AppState>, port: u16) -> Result<(), S
 pub async fn get_evc_port(state: State<'_, AppState>) -> Result<u16, String> {
     let port = state.evc_port.lock().map_err(|e| e.to_string())?;
     Ok(*port)
+}
+
+// ---------------------------------------------------------------------------
+// Dongle misbehaviour simulation
+// ---------------------------------------------------------------------------
+
+/// Get the current dongle misbehaviour mode.
+#[tauri::command]
+pub async fn get_dongle_misbehaviour(state: State<'_, AppState>) -> Result<String, String> {
+    let mode = state.dongle_misbehaviour.lock().unwrap();
+    Ok(format!("{:?}", *mode))
+}
+
+/// Set the dongle misbehaviour mode.
+/// Valid values: Off, EmptyData, StaleData, GarbageData, DropConnection, Intermittent.
+#[tauri::command]
+pub async fn set_dongle_misbehaviour(
+    state: State<'_, AppState>,
+    mode: String,
+) -> Result<(), String> {
+    use sim_models::DongleMisbehaviourMode;
+    let parsed = match mode.as_str() {
+        "Off" => DongleMisbehaviourMode::Off,
+        "EmptyData" => DongleMisbehaviourMode::EmptyData,
+        "StaleData" => DongleMisbehaviourMode::StaleData,
+        "GarbageData" => DongleMisbehaviourMode::GarbageData,
+        "DropConnection" => DongleMisbehaviourMode::DropConnection,
+        "Intermittent" => DongleMisbehaviourMode::Intermittent,
+        _ => return Err(format!("Unknown dongle misbehaviour mode: {mode}")),
+    };
+    *state.dongle_misbehaviour.lock().unwrap() = parsed;
+    // Also sync to the engine's PlantState so it survives save/load.
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.dongle_misbehaviour = parsed;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

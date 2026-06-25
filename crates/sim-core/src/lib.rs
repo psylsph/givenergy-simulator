@@ -1750,82 +1750,111 @@ impl DeviceModel for EvcEngine {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState) {
         let evc = &mut state.evc;
 
+        // LoadEngine runs before us and has just overwritten state.load.demand_w
+        // with this tick's household baseline (family / heat-pump / minimal
+        // profile, or the load_override value). Capture it before any
+        // state-machine work — we will reassign load.demand_w = baseline +
+        // evc.active_power_w at the end of update() so the value is always
+        // exactly the household + EV sum, with no risk of carrying a stale
+        // EV contribution forward across state transitions (Charging → End
+        // of Charging, Charging → Idle on cable unplug, etc).
+        let baseline_load_w = state.load.demand_w;
+
         if !evc.enabled {
-            // EVC simulation disabled — stay idle
+            // EVC simulation disabled — stay idle. Reset the state machine
+            // and zero out the EV's active power so the load finalisation
+            // below sets load.demand_w = baseline (the EV contributes
+            // nothing while disabled).
             evc.charging_state = 1; // Idle
             zero_power(evc);
-            return;
+        } else {
+            // State machine driven by connection_status and charge_control
+            match evc.charging_state {
+                // Idle — no cable connected
+                1 => {
+                    zero_power(evc);
+                    if evc.connection_status == 1 {
+                        evc.charging_state = 2; // → Connected
+                    }
+                }
+                // Connected — cable plugged, waiting for start command
+                2 => {
+                    zero_power(evc);
+                    if evc.connection_status == 0 {
+                        evc.charging_state = 1; // → Idle (cable removed)
+                    } else if evc.charge_control == 1 {
+                        evc.charging_state = 3; // → Starting
+                    }
+                }
+                // Starting — brief transient state
+                3 => {
+                    if evc.connection_status == 0 {
+                        evc.charging_state = 1;
+                        zero_power(evc);
+                    } else if evc.charge_control == 2 {
+                        evc.charging_state = 6; // → End of Charging
+                        zero_power(evc);
+                    } else {
+                        // Transition to Charging on next tick
+                        evc.charging_state = 4;
+                        start_charging(evc);
+                    }
+                }
+                // Charging — actively drawing power
+                4 => {
+                    if evc.connection_status == 0 {
+                        evc.charging_state = 1;
+                        zero_power(evc);
+                        evc.session_energy_kwh = 0.0;
+                        evc.session_duration_secs = 0;
+                    } else if evc.charge_control == 2 {
+                        evc.charging_state = 6; // → End of Charging
+                        zero_power(evc);
+                    } else {
+                        // Continue charging
+                        continue_charging(evc, ctx);
+                    }
+                }
+                // End of Charging — cable still connected but stopped
+                6 => {
+                    zero_power(evc);
+                    if evc.connection_status == 0 {
+                        evc.charging_state = 1;
+                        evc.session_energy_kwh = 0.0;
+                        evc.session_duration_secs = 0;
+                    } else if evc.charge_control == 1 {
+                        evc.charging_state = 3; // → Starting again
+                    }
+                }
+                // Any other state → reset to Idle
+                _ => {
+                    evc.charging_state = 1;
+                    zero_power(evc);
+                }
+            }
         }
 
-        // State machine driven by connection_status and charge_control
-        match evc.charging_state {
-            // Idle — no cable connected
-            1 => {
-                zero_power(evc);
-                if evc.connection_status == 1 {
-                    evc.charging_state = 2; // → Connected
-                }
-            }
-            // Connected — cable plugged, waiting for start command
-            2 => {
-                zero_power(evc);
-                if evc.connection_status == 0 {
-                    evc.charging_state = 1; // → Idle (cable removed)
-                } else if evc.charge_control == 1 {
-                    evc.charging_state = 3; // → Starting
-                }
-            }
-            // Starting — brief transient state
-            3 => {
-                if evc.connection_status == 0 {
-                    evc.charging_state = 1;
-                    zero_power(evc);
-                } else if evc.charge_control == 2 {
-                    evc.charging_state = 6; // → End of Charging
-                    zero_power(evc);
-                } else {
-                    // Transition to Charging on next tick
-                    evc.charging_state = 4;
-                    start_charging(evc);
-                }
-            }
-            // Charging — actively drawing power
-            4 => {
-                if evc.connection_status == 0 {
-                    evc.charging_state = 1;
-                    zero_power(evc);
-                    evc.session_energy_kwh = 0.0;
-                    evc.session_duration_secs = 0;
-                } else if evc.charge_control == 2 {
-                    evc.charging_state = 6; // → End of Charging
-                    zero_power(evc);
-                } else {
-                    // Continue charging
-                    continue_charging(evc, ctx);
-                }
-            }
-            // End of Charging — cable still connected but stopped
-            6 => {
-                zero_power(evc);
-                if evc.connection_status == 0 {
-                    evc.charging_state = 1;
-                    evc.session_energy_kwh = 0.0;
-                    evc.session_duration_secs = 0;
-                } else if evc.charge_control == 1 {
-                    evc.charging_state = 3; // → Starting again
-                }
-            }
-            // Any other state → reset to Idle
-            _ => {
-                evc.charging_state = 1;
-                zero_power(evc);
-            }
-        }
-
-        // Add EVC load to grid import when charging
-        if evc.charging_state == 4 {
-            state.grid.power_w += evc.active_power_w;
-        }
+        // Standard house load + EV load = new house load. The inverter,
+        // battery, and grid calculations run after us in the device chain
+        // (Solar → Load → Evc → Inverter → Faults → Battery → EnergyTracker)
+        // and see a single combined load.demand_w — they don't need any
+        // awareness of the EV. Spare solar/battery output is naturally
+        // routed to the EV first via the inverter's existing
+        // `solar - load` priority logic, and only the residual shortfall
+        // falls back to grid import.
+        //
+        // Reassign (not +=) so the value is exactly `baseline + ev_draw`
+        // every tick, with no risk of double counting from a previous
+        // tick's stale contribution. When EVC isn't charging, ev_draw is
+        // zero and load.demand_w is restored to the household baseline.
+        //
+        // EnergyTracker (which runs after InverterEngine) accumulates
+        // `load.demand_w × dt` into `energy_totals.load_consumption_kwh`,
+        // so today's load bucket correctly includes EV charging alongside
+        // regular household demand. From the homeowner's net-metering
+        // perspective the EV self-consumes surplus solar production — the
+        // grid meter only sees the residual shortfall.
+        state.load.demand_w = baseline_load_w + evc.active_power_w;
     }
 }
 

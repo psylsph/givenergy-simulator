@@ -218,6 +218,7 @@ pub async fn run_modbus_server(
     register_store: std::sync::Arc<tokio::sync::Mutex<sim_registers::RegisterStore>>,
     command_tx: CommandSender,
     battery_state: std::sync::Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
+    dongle_mode: std::sync::Arc<std::sync::Mutex<sim_models::DongleMisbehaviourMode>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("GivEnergy Modbus TCP server listening on {addr}");
@@ -228,10 +229,20 @@ pub async fn run_modbus_server(
         let store = register_store.clone();
         let cmd_tx = command_tx.clone();
         let batt_state = battery_state.clone();
+        let dongle = dongle_mode.clone();
 
         tokio::spawn(async move {
+            // DropConnection mode: close immediately without any response.
+            if *dongle.lock().unwrap() == sim_models::DongleMisbehaviourMode::DropConnection {
+                tracing::warn!("Dongle misbehaviour: dropping connection from {peer}");
+                return;
+            }
+
             let mut buf = [0u8; 512];
             let mut pending: Vec<u8> = Vec::new();
+            // Stale-data cache: snapshot of register values from the first read.
+            let stale_cache: std::sync::Arc<std::sync::Mutex<Option<Vec<u16>>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
             // Heartbeat: real dongles send one ~every 3 min, close after 3
             // missed responses. We send every 3 minutes.
             let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(180));
@@ -536,6 +547,71 @@ pub async fn run_modbus_server(
                                     data.extend_from_slice(&val.to_be_bytes());
                                 }
                                 data
+                            };
+
+                            // Apply dongle misbehaviour mode to the register data.
+                            let reg_data = {
+                                let mode = *dongle.lock().unwrap();
+                                match mode {
+                                    sim_models::DongleMisbehaviourMode::Off => reg_data,
+                                    sim_models::DongleMisbehaviourMode::EmptyData => {
+                                        vec![0u8; count as usize * 2]
+                                    }
+                                    sim_models::DongleMisbehaviourMode::GarbageData => {
+                                        let mut garbage = Vec::with_capacity(count as usize * 2);
+                                        for _ in 0..count {
+                                            let val: u16 = fastrand::u16(..);
+                                            garbage.extend_from_slice(&val.to_be_bytes());
+                                        }
+                                        garbage
+                                    }
+                                    sim_models::DongleMisbehaviourMode::Intermittent => {
+                                        if fastrand::bool() {
+                                            vec![0u8; count as usize * 2]
+                                        } else {
+                                            reg_data
+                                        }
+                                    }
+                                    sim_models::DongleMisbehaviourMode::StaleData => {
+                                        // Check if we already have a snapshot (lock is
+                                        // dropped before any .await).
+                                        let has_snapshot = {
+                                            let cache = stale_cache.lock().unwrap();
+                                            cache.is_some()
+                                        };
+                                        if has_snapshot {
+                                            let cache = stale_cache.lock().unwrap();
+                                            let snapshot = cache.as_ref().unwrap();
+                                            let mut stale = Vec::with_capacity(count as usize * 2);
+                                            for i in 0..count {
+                                                let idx = start_addr as usize + i as usize;
+                                                let val = snapshot.get(idx).copied().unwrap_or(0);
+                                                stale.extend_from_slice(&val.to_be_bytes());
+                                            }
+                                            stale
+                                        } else {
+                                            // First read: snapshot the entire register space.
+                                            let snapshot: Vec<u16> = {
+                                                let store_guard = store.lock().await;
+                                                let mut snap = vec![0u16; 10000];
+                                                for addr in 0..10000u16 {
+                                                    if let Some(v) = store_guard.read(addr) {
+                                                        snap[addr as usize] = v;
+                                                    }
+                                                }
+                                                snap
+                                            };
+                                            let mut cache = stale_cache.lock().unwrap();
+                                            *cache = Some(snapshot);
+                                            reg_data
+                                        }
+                                    }
+                                    // DropConnection is handled at connection accept time.
+                                    sim_models::DongleMisbehaviourMode::DropConnection => {
+                                        // Should never reach here, but be safe.
+                                        reg_data
+                                    }
+                                }
                             };
 
                             // Build read response payload:

@@ -1752,8 +1752,11 @@ async fn start_real_server_with_state(
 
     let store_ref = store.clone();
     let batt = std::sync::Arc::new(tokio::sync::Mutex::new(state.batteries.clone()));
+    let dongle = std::sync::Arc::new(std::sync::Mutex::new(
+        sim_models::DongleMisbehaviourMode::Off,
+    ));
     tokio::spawn(async move {
-        let _ = sim_modbus::run_modbus_server(addr, store_ref, tx, batt).await;
+        let _ = sim_modbus::run_modbus_server(addr, store_ref, tx, batt, dongle).await;
     });
     // Give the server time to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
