@@ -199,12 +199,21 @@ impl RegisterStore {
     }
 
     /// Write a holding register value by address (respects access control).
-    /// HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
-    /// inverters — they don't have EMS capability.
+    ///
+    /// Device-type gating (returns `false` → caller emits EC_ILLEGAL_DATA_ADDRESS):
+    /// - HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
+    ///   inverters — they don't have EMS capability.
+    /// - The three-phase control bank (HR 1000-1124) only exists on real
+    ///   three-phase inverters. A Gateway (and any other non-three-phase
+    ///   device) has no registers there, so writes must be rejected —
+    ///   mirroring real hardware, which ACKs no writes into that bank.
     pub fn write(&mut self, address: u16, value: u16) -> bool {
         if address == 2071
             && (self.inverter_type == "ACCoupled" || self.inverter_type == "ACCoupled2")
         {
+            return false;
+        }
+        if (1000..=1124).contains(&address) && !is_three_phase_inverter(&self.inverter_type) {
             return false;
         }
         let key = address as u32 + HOLDING_OFFSET;
@@ -225,6 +234,14 @@ impl RegisterStore {
         self.defs
             .iter()
             .any(|d| d.space == space && (start..start + count).contains(&d.address))
+    }
+
+    /// Returns true if this store models a three-phase inverter
+    /// (`ThreePhase*` or `ACThreePhase`). Used by the Modbus server to reject
+    /// reads into the three-phase holding control bank (HR 1000-1124) on
+    /// devices that lack it (e.g. Gateway12kW), mirroring real hardware.
+    pub fn is_three_phase_device(&self) -> bool {
+        is_three_phase_inverter(&self.inverter_type)
     }
 
     /// Save the current EMS plant holding block (HR 2040-2075) so it can be
@@ -2228,7 +2245,12 @@ impl RegisterStore {
     /// Call after `project_from_state` — this overwrites the hardcoded
     /// "disabled sentinel" values with the actual schedule.
     pub fn project_schedule(&mut self, schedule: &sim_models::Schedule) {
-        self.project_schedule_for(schedule, "");
+        // Use the store's own device identity (set by `project_from_state`)
+        // so schedule gating — including the three-phase TPH mirror block —
+        // stays consistent with the device type rather than defaulting to an
+        // unknown ("") type.
+        let inverter_type = self.inverter_type.clone();
+        self.project_schedule_for(schedule, &inverter_type);
     }
 
     /// Like `project_schedule` but accepts inverter type string.
@@ -2408,9 +2430,13 @@ impl RegisterStore {
         self.write(263, schedule.charge_target_soc_8 as u16);
         self.write(266, schedule.charge_target_soc_9 as u16);
         self.write(269, schedule.charge_target_soc_10 as u16);
-        self.write(1111, schedule.charge_target_soc as u16);
-        self.write(1109, 4);
-        self.write(1112, if charge_enabled { 1 } else { 0 });
+        // TPH charge control mirrors (HR 1109/1111/1112) only apply to
+        // three-phase inverters — a Gateway has no three-phase control bank.
+        if is_three_phase_inverter(inverter_type) {
+            self.write(1111, schedule.charge_target_soc as u16);
+            self.write(1109, 4);
+            self.write(1112, if charge_enabled { 1 } else { 0 });
+        }
         self.write(272, schedule.discharge_target_soc as u16);
         self.write(
             275,
@@ -2485,25 +2511,31 @@ impl RegisterStore {
             },
         );
 
-        // TPH mirror slot time registers (HR 1113-1121)
-        // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
-        self.write(1113, cs1_start);
-        self.write(1114, cs1_end);
-        // TPH_CHARGE_SLOT_2_START/END = 1115-1116 (mirrors HR 31-32 / 243-244)
-        self.write(1115, cs2_start);
-        self.write(1116, cs2_end);
-        // TPH_DISCHARGE_SLOT_1_START/END = 1118-1119 (mirrors HR 56-57)
-        self.write(1118, ds1_start);
-        self.write(1119, ds1_end);
-        // TPH_DISCHARGE_SLOT_2_START/END = 1120-1121 (mirrors HR 44-45)
-        self.write(1120, ds2_start);
-        self.write(1121, ds2_end);
-        // TPH_BATTERY_SOC_RESERVE = 1109 (mirrors HR 110)
-        let reserve = self
-            .read_by_space(110, RegisterSpace::Holding)
-            .filter(|&v| v != 0)
-            .unwrap_or(4);
-        self.write(1109, reserve);
+        // TPH mirror slot time registers (HR 1113-1121) — three-phase only.
+        // A Gateway (and any non-three-phase device) has no three-phase
+        // control bank, so the mirrors are skipped entirely; the standard
+        // single-phase slot writes above (HR 94/95, 56/57, 44/45, 31/32,
+        // 243/244) already cover its needs.
+        if is_three_phase_inverter(inverter_type) {
+            // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
+            self.write(1113, cs1_start);
+            self.write(1114, cs1_end);
+            // TPH_CHARGE_SLOT_2_START/END = 1115-1116 (mirrors HR 31-32 / 243-244)
+            self.write(1115, cs2_start);
+            self.write(1116, cs2_end);
+            // TPH_DISCHARGE_SLOT_1_START/END = 1118-1119 (mirrors HR 56-57)
+            self.write(1118, ds1_start);
+            self.write(1119, ds1_end);
+            // TPH_DISCHARGE_SLOT_2_START/END = 1120-1121 (mirrors HR 44-45)
+            self.write(1120, ds2_start);
+            self.write(1121, ds2_end);
+            // TPH_BATTERY_SOC_RESERVE = 1109 (mirrors HR 110)
+            let reserve = self
+                .read_by_space(110, RegisterSpace::Holding)
+                .filter(|&v| v != 0)
+                .unwrap_or(4);
+            self.write(1109, reserve);
+        }
 
         // Export schedule slots (HR 2062-2071)
         let (es1_s, es1_e) = slot_pair(schedule.export_start_1, schedule.export_end_1);
@@ -8359,7 +8391,14 @@ mod tests {
 
     #[test]
     fn extended_givtcp_schedule_registers_are_catalogued_and_projected() {
+        // The TPH holding bank (HR 1108-1123) mirrors charge/discharge slots and
+        // target SoCs, and only exists on three-phase inverters. The store must
+        // be a three-phase device for both the projection (project_schedule_for
+        // gates the TPH mirror block on inverter type) and the write() calls
+        // (the store rejects TPH writes on non-three-phase devices).
+        let s = three_phase_11kw_state();
         let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
         let sched = sim_models::Schedule {
             charge_start: 1.5,
             charge_end: 2.5,
@@ -8378,7 +8417,7 @@ mod tests {
             ..Default::default()
         };
 
-        store.project_schedule(&sched);
+        store.project_schedule_for(&sched, "ThreePhase11kW");
 
         for addr in [
             242, 243, 244, 245, 272, 275, 1109, 1111, 1112, 1113, 1114, 1115, 1116, 1118, 1119,
@@ -8386,10 +8425,10 @@ mod tests {
         ] {
             assert!(
                 store.write(addr, 42),
-                "HR {addr} should be catalogued ReadWrite"
+                "HR {addr} should be catalogued ReadWrite for a three-phase device"
             );
         }
-        store.project_schedule(&sched);
+        store.project_schedule_for(&sched, "ThreePhase11kW");
         assert_eq!(store.read_by_space(242, RegisterSpace::Holding), Some(80));
         assert_eq!(store.read_by_space(243, RegisterSpace::Holding), Some(300));
         assert_eq!(store.read_by_space(244, RegisterSpace::Holding), Some(400));
@@ -8865,6 +8904,10 @@ mod tests {
         // must mirror HR 94/95 and HR 31/32. Same for discharge slots
         // at HR 1118-1121 mirroring HR 56/57 and HR 44/45.
         let mut store = RegisterStore::new(default_register_catalogue());
+        // The store must be a real three-phase device for the TPH mirror
+        // writes to land (write() rejects HR 1000-1124 on non-three-phase
+        // devices). Production always runs project_from_state first.
+        store.project_from_state(&three_phase_11kw_state());
         let sched = sim_models::Schedule {
             charge_start: 1.5,
             charge_end: 5.0,
@@ -8924,6 +8967,7 @@ mod tests {
     #[test]
     fn threephase_11kw_charge_target_soc_mirrored_at_hr_1111() {
         let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&three_phase_11kw_state());
         let sched = sim_models::Schedule {
             charge_target_soc: 87.0,
             ..Default::default()
@@ -9914,6 +9958,116 @@ mod tests {
         assert!(store.write(35, 2025), "HR 35 year must accept write");
         assert!(store.write(36, 6), "HR 36 month must accept write");
         assert_eq!(store.read(35), Some(2025));
+    }
+
+    #[test]
+    fn gateway_rejects_three_phase_control_bank_writes() {
+        // A real Gateway dongle has no three-phase control registers
+        // (HR 1000-1124). The store must reject writes into that bank so the
+        // Modbus server returns EC_ILLEGAL_DATA_ADDRESS — letting clients
+        // (HEM) fall back to single-phase commands instead of being ACKed.
+        // The complementary single-phase side is covered by
+        // `gateway_control_writes_accepted` (HR 94-116 etc.).
+        let s = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        assert!(
+            !store.is_three_phase_device(),
+            "sanity: gateway is NOT three-phase"
+        );
+
+        // Three-phase control bank — every write must be rejected.
+        assert!(
+            !store.write(1063, 36000),
+            "HR 1063 (TPH export limit) must reject"
+        );
+        assert!(
+            !store.write(1078, 10),
+            "HR 1078 (TPH discharge reserve) must reject"
+        );
+        assert!(
+            !store.write(1108, 100),
+            "HR 1108 (TPH discharge limit) must reject"
+        );
+        assert!(
+            !store.write(1109, 4),
+            "HR 1109 (TPH soc reserve) must reject"
+        );
+        assert!(
+            !store.write(1110, 100),
+            "HR 1110 (TPH charge limit) must reject"
+        );
+        assert!(
+            !store.write(1111, 100),
+            "HR 1111 (TPH target SoC) must reject"
+        );
+        assert!(
+            !store.write(1113, 1300),
+            "HR 1113 (TPH charge slot 1 start) must reject"
+        );
+        assert!(
+            !store.write(1121, 2100),
+            "HR 1121 (TPH discharge slot 2 end) must reject"
+        );
+        assert!(
+            !store.write(1122, 1),
+            "HR 1122 (TPH force discharge) must reject"
+        );
+        assert!(
+            !store.write(1123, 1),
+            "HR 1123 (TPH force charge) must reject"
+        );
+
+        // Nothing actually landed in the TPH bank.
+        assert_eq!(store.read_by_space(1111, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(1113, RegisterSpace::Holding), Some(0));
+
+        // Single-phase schedule equivalents still succeed.
+        assert!(
+            store.write(94, 1300),
+            "HR 94 (charge slot 1 start) must accept"
+        );
+        assert!(store.write(96, 1), "HR 96 (enable charge) must accept");
+        assert!(
+            store.write(116, 100),
+            "HR 116 (charge target SoC) must accept"
+        );
+
+        // project_schedule_for must NOT mirror into the TPH bank for a gateway:
+        // it gates the TPH mirror block on the inverter type.
+        let sched = sim_models::Schedule {
+            charge_start: 1.5,
+            charge_end: 2.5,
+            charge_target_soc: 80.0,
+            ..Default::default()
+        };
+        store.project_schedule_for(&sched, "Gateway12kW");
+        assert_eq!(
+            store.read_by_space(1111, RegisterSpace::Holding),
+            Some(0),
+            "gateway must not project TPH target SoC"
+        );
+        assert_eq!(
+            store.read_by_space(1113, RegisterSpace::Holding),
+            Some(0),
+            "gateway must not project TPH charge slot"
+        );
+        assert_eq!(
+            store.read_by_space(1109, RegisterSpace::Holding),
+            Some(0),
+            "gateway must not project TPH soc reserve"
+        );
+        // ...but single-phase registers ARE projected.
+        assert_eq!(
+            store.read_by_space(116, RegisterSpace::Holding),
+            Some(80),
+            "gateway projects single-phase charge target SoC"
+        );
+        assert_eq!(
+            store.read_by_space(94, RegisterSpace::Holding),
+            Some(130),
+            "gateway projects single-phase charge slot 1 start"
+        );
     }
 
     #[test]

@@ -432,3 +432,71 @@ async fn hv_battery_cluster_discovery_serves_bms_bcu_and_bmus() {
         );
     }
 }
+
+#[tokio::test]
+async fn gateway_three_phase_control_bank_rejected_on_wire() {
+    // A real Gateway dongle has no three-phase control registers
+    // (HR 1000-1124). On the wire, reads and writes into that bank must
+    // return a Modbus exception (EC_ILLEGAL_DATA_ADDRESS) — not phantom
+    // zeros or an ACK — so clients like HEM fall back to single-phase
+    // commands instead of polling bogus data. This exercises the real
+    // `run_modbus_server` / `serve_connection` code path.
+    let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let mut state = PlantState::new(ts);
+    state.config.inverter_type = "Gateway12kW".to_string();
+    state.batteries[0].soc_percent = 65.0;
+    state.sync_battery_from_vec();
+
+    let (addr, _store, _rx) = start_server(&state).await;
+    let serial = serial_arr();
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+
+    // Holding read fully inside the three-phase control bank → exception.
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 1108, 16);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func,
+        FC_READ_HOLDING | 0x80,
+        "Gateway holding read into HR 1108-1123 must return an exception"
+    );
+
+    // Holding read that merely overlaps the bank → exception too.
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 1120, 8);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func,
+        FC_READ_HOLDING | 0x80,
+        "Gateway holding read overlapping HR 1000-1124 must return an exception"
+    );
+
+    // Write into the three-phase control bank → exception (no ACK).
+    let req = build_write_request(&serial, 0x11, 1113, 1300);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func,
+        FC_WRITE_SINGLE | 0x80,
+        "Gateway write into HR 1113 must return an exception"
+    );
+
+    // Sanity: single-phase holding reads/writes (HR 94-116) still work.
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 94, 2);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func, FC_READ_HOLDING,
+        "Gateway single-phase holding read (HR 94) must succeed"
+    );
+    let req = build_write_request(&serial, 0x11, 116, 100);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func, FC_WRITE_SINGLE,
+        "Gateway single-phase write (HR 116) must succeed"
+    );
+}

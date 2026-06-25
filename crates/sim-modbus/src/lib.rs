@@ -503,6 +503,30 @@ pub async fn run_modbus_server(
                                 }
                             }
 
+                            // The three-phase holding control bank (HR 1000-1124) only
+                            // exists on three-phase inverters. On other devices (e.g.
+                            // Gateway12kW) the bank is absent, so reads into it must
+                            // return EC_ILLEGAL_DATA_ADDRESS instead of phantom zeros —
+                            // otherwise clients (e.g. HEM polling the three-phase config
+                            // block for a gateway) keep getting plausible-looking junk.
+                            if inner_func == FC_READ_HOLDING
+                                && (start_addr as u32) < 1125
+                                && (start_addr as u32 + count as u32) > 1000
+                            {
+                                let is_tph = store.lock().await.is_three_phase_device();
+                                if !is_tph {
+                                    let resp = build_error_response(
+                                        &serial,
+                                        slave,
+                                        inner_func,
+                                        EC_ILLEGAL_DATA_ADDRESS,
+                                    );
+                                    let _ = stream.write_all(&resp).await;
+                                    pending.drain(..frame_len);
+                                    continue;
+                                }
+                            }
+
                             let reg_data = if let Some(br) = battery_read {
                                 let batts = batt_state.lock().await;
                                 let store_guard = store.lock().await;
