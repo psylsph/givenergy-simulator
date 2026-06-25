@@ -29,11 +29,17 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.16.6** — IR 11-12 / IR 1374-1375 are now true lifetime registers
-(projected from `solar_lifetime_kwh`, seeded to a 12,345 kWh baseline at
-plant creation, never reset by the midnight rollover). Previously these
-registers re-projected the daily `solar_generation_kwh` bucket and zeroed
-alongside it. See commit log for older changelogs.
+**0.17.0** — EVC charger integrated into the household load balance
+(EvcEngine now runs between LoadEngine and InverterEngine so the
+inverter sees the combined household + EV demand and routes spare
+solar/battery output to the EV first via the standard `solar - load`
+priority logic). Previously the EV's draw was layered on top of the
+inverter's balance after it had already run, producing an unbalanced
+GUI display (solar 3.5 kW, load 12.7 kW, battery -1.5 kW, grid 0 W for
+a 5 kW household + 7.7 kW EV charging). Also adds a Dongle
+misbehaviour simulation (Off / EmptyData / StaleData / GarbageData /
+DropConnection / Intermittent) so client apps can be tested against
+realistic dongle failure modes. See commit log for older changelogs.
 
 ## Common Gotchas
 
