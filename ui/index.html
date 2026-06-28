@@ -470,27 +470,48 @@
           <option value="Gen1Hybrid">Gen1 Hybrid (0x2001, FW 2xx)</option>
           <option value="Gen2Hybrid">Gen2 Hybrid (0x2001, FW 8xx)</option>
           <option value="Gen3Hybrid">Gen3 Hybrid (0x2001, FW 3xx)</option>
-          <option value="Gen3Hybrid8kW">Polar 8kW (0x2101)</option>
+          <option value="Hybrid4600">Hybrid 4.6kW (0x2002)</option>
+          <option value="Hybrid3600">Hybrid 3.6kW (0x2003)</option>
+          <option value="Polar5kW">Polar 5kW (0x2101)</option>
+          <option value="Gen3Hybrid8kW">Polar 8kW (0x2106)</option>
+          <option value="Polar4600">Polar 4.6kW (0x2102)</option>
           <option value="Gen3Hybrid10kW">Polar 10kW (0x2102)</option>
+          <option value="Polar3600">Polar 3.6kW (0x2103)</option>
+          <option value="Polar6kW">Polar 6kW (0x2104)</option>
+          <option value="Polar7kW">Polar 7kW (0x2105)</option>
+          <option value="Polar8kW">Polar 8kW (0x2106)</option>
           <option value="Gen3Plus6kW">Gen3 Plus 6kW (0x2201)</option>
           <option value="Gen3Plus4600">Gen3 Plus 4.6kW (0x2202)</option>
           <option value="Gen3Plus3600">Gen3 Plus 3.6kW (0x2203)</option>
           <option value="Gen3Plus6kW2">Gen3 Plus 6kW (0x2204)</option>
+          <option value="Gen3Plus7kW">Gen3 Plus 7kW (0x2205)</option>
+          <option value="Gen3Plus8kW">Gen3 Plus 8kW (0x2206)</option>
+          <option value="PVInverter5kW">PV Inverter 5kW (0x2301)</option>
+          <option value="PVInverter4600">PV Inverter 4.6kW (0x2302)</option>
+          <option value="PVInverter3600">PV Inverter 3.6kW (0x2303)</option>
+          <option value="PVInverter6kW">PV Inverter 6kW (0x2304)</option>
           <option value="ACCoupled">AC Coupled (0x3001)</option>
           <option value="ACCoupled2">AC Coupled Mk2 (0x3002)</option>
           <option value="ThreePhase">Three Phase 6kW (0x4001)</option>
           <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
           <option value="ThreePhase10kW">Three Phase 10kW (0x4003)</option>
           <option value="ThreePhase11kW">Three Phase 11kW (0x4004)</option>
+          <option value="AIOCommercial">AIO Commercial (0x4101)</option>
+          <option value="EMS">EMS (0x5001)</option>
+          <option value="EMSCommercial">EMS Commercial (0x5101)</option>
+          <option value="ACThreePhase">AC Three Phase (0x6001)</option>
           <option value="Gateway12kW">Gateway 12kW (0x7001)</option>
           <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
           <option value="AllInOne">All-in-One (0x8002)</option>
           <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
+          <option value="AIO6kW">AIO 6kW (0x8101)</option>
           <option value="AIO8kW">AIO 8kW (0x8102)</option>
           <option value="AIO10kW">AIO 10kW (0x8103)</option>
           <option value="AIOHybrid6kW">AIO Hybrid 6kW (0x8201)</option>
           <option value="AIOHybrid8kW">AIO Hybrid 8kW (0x8202)</option>
           <option value="AIOHybrid10kW">AIO Hybrid 10kW (0x8203)</option>
+          <option value="AIOHybrid12kW">AIO Hybrid 12kW (0x8204)</option>
+          <option value="Gen4Hybrid6kW">Gen4 Hybrid 6kW (0x8304)</option>
         </select>
 
         <div id="battery-config-section">
@@ -843,6 +864,36 @@
       AIOHybrid6kW:    { dtc: 0x8201, label: 'AIO Hybrid 6kW', maxBattW: 6000, nomV: 307.0 },
       AIOHybrid8kW:    { dtc: 0x8202, label: 'AIO Hybrid 8kW', maxBattW: 8000, nomV: 307.0 },
       AIOHybrid10kW:   { dtc: 0x8203, label: 'AIO Hybrid 10kW',maxBattW: 10000,nomV: 307.0 },
+      AIOHybrid12kW:   { dtc: 0x8204, label: 'AIO Hybrid 12kW',maxBattW: 12000,nomV: 307.0 },
+      // --- Variants accepted by the Rust catalogue but not in the original preset map ---
+      // Single-phase hybrids (0x2002/0x2003)
+      Hybrid4600:      { dtc: 0x2002, label: 'Hybrid 4.6kW',    maxBattW: 3600, nomV: 51.2 },
+      Hybrid3600:      { dtc: 0x2003, label: 'Hybrid 3.6kW',    maxBattW: 3600, nomV: 51.2 },
+      // Polar family (0x2101/0x2103/0x2104/0x2105/0x2106). 0x2102 already
+      // covered by Gen3Hybrid10kW above (same DTC).
+      Polar5kW:        { dtc: 0x2101, label: 'Polar 5kW',       maxBattW: 3600, nomV: 51.2 },
+      Polar4600:       { dtc: 0x2102, label: 'Polar 4.6kW',     maxBattW: 3600, nomV: 51.2 },
+      Polar3600:       { dtc: 0x2103, label: 'Polar 3.6kW',     maxBattW: 3600, nomV: 51.2 },
+      Polar6kW:        { dtc: 0x2104, label: 'Polar 6kW',       maxBattW: 3600, nomV: 51.2 },
+      Polar7kW:        { dtc: 0x2105, label: 'Polar 7kW',       maxBattW: 3600, nomV: 51.2 },
+      Polar8kW:        { dtc: 0x2106, label: 'Polar 8kW',       maxBattW: 8000, nomV: 51.2 },
+      // Gen3 Plus high-wattage (0x2205/0x2206)
+      Gen3Plus7kW:     { dtc: 0x2205, label: 'Gen3 Plus 7kW',   maxBattW: 3600, nomV: 51.2 },
+      Gen3Plus8kW:     { dtc: 0x2206, label: 'Gen3 Plus 8kW',   maxBattW: 3600, nomV: 51.2 },
+      // PV-only inverters (0x230x) — no battery bank
+      PVInverter5kW:   { dtc: 0x2301, label: 'PV Inverter 5kW', maxBattW: 0,    nomV: 0    },
+      PVInverter4600:  { dtc: 0x2302, label: 'PV Inverter 4.6kW', maxBattW: 0,  nomV: 0    },
+      PVInverter3600:  { dtc: 0x2303, label: 'PV Inverter 3.6kW', maxBattW: 0,  nomV: 0    },
+      PVInverter6kW:   { dtc: 0x2304, label: 'PV Inverter 6kW', maxBattW: 0,    nomV: 0    },
+      // Three-phase commercial / AC-coupled three-phase
+      AIOCommercial:   { dtc: 0x4101, label: 'AIO Commercial',  maxBattW: 6000, nomV: 307.0 },
+      EMS:             { dtc: 0x5001, label: 'EMS',             maxBattW: 3600, nomV: 51.2 },
+      EMSCommercial:   { dtc: 0x5101, label: 'EMS Commercial',  maxBattW: 3600, nomV: 51.2 },
+      ACThreePhase:    { dtc: 0x6001, label: 'AC Three Phase',  maxBattW: 3600, nomV: 76.8 },
+      // All-in-One 6kW (0x8101) — distinct from AIO 8kW / 10kW (0x8102/0x8103)
+      AIO6kW:          { dtc: 0x8101, label: 'AIO 6kW',         maxBattW: 6000, nomV: 307.0 },
+      // Gen4 hybrid (newer family, 0x8304)
+      Gen4Hybrid6kW:   { dtc: 0x8304, label: 'Gen4 Hybrid 6kW', maxBattW: 3600, nomV: 51.2 },
     };
 
     function fmt(w) {
@@ -1388,6 +1439,15 @@
         </div>`;
       };
       const isAcCoupled = s.inverter_type && s.inverter_type.startsWith('ACCoupled');
+      // Timed Discharge (HR 318-320 battery-pause slot) is only served by the
+      // AC-output inverter families: AC-coupled (0x3001/0x3002), AC three-phase
+      // (0x60xx) and residential All-in-One (0x80xx). DC hybrids (20xx/21xx/22xx)
+      // and three-phase/HV register-bank families (40xx/41xx/81xx/82xx) use a
+      // different slot bank and must not show it.
+      const _dtc = (INVERTER_PRESETS[s.inverter_type] || {}).dtc;
+      const showTimedDischarge = _dtc === 0x3001 || _dtc === 0x3002
+        || (_dtc >> 8) === 0x60
+        || (_dtc >> 8) === 0x80;
       const pctOrDefault = (v) => (v === undefined || v === null || Number(v) <= 0) ? 100 : Number(v);
       const chargeLimit = pctOrDefault(s.charge_power_limit_percent);
       const dischargeLimit = pctOrDefault(s.discharge_power_limit_percent);
@@ -1444,7 +1504,7 @@
           ${isSingleSlot || isAcCoupled ? '' : slotHtml('Charge Slot 2',    sch.charge_slot_2_start,    sch.charge_slot_2_end,    false,                 '→ ', sch.charge_target_soc_2,  'var(--green)')}
           ${slotHtml('Discharge Slot 1', sch.discharge_slot_1_start, sch.discharge_slot_1_end, sch.enable_discharge, '↓ ', sch.discharge_target_soc, 'var(--orange)')}
           ${isSingleSlot || isAcCoupled ? '' : slotHtml('Discharge Slot 2', sch.discharge_slot_2_start, sch.discharge_slot_2_end, false,                 '↓ ', sch.discharge_target_soc_2,'var(--orange)')}
-          ${isAcCoupled ? '' : slotHtml('Pause Slot',       sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
+          ${!showTimedDischarge ? '' : slotHtml('Timed Discharge',    sch.pause_slot_start,       sch.pause_slot_end,       sch.battery_pause_mode !== 0, '', null,                       'var(--yellow)')}
           <div style="border:1px solid var(--border);border-radius:6px;padding:6px">
             <div style="font-size:10px;color:var(--text-muted);margin-bottom:2px">Limits & Control</div>
             <div style="font-size:12px;font-weight:600">Minimum SOC ${(sch.soc_reserve || 0).toFixed(0)}%</div>

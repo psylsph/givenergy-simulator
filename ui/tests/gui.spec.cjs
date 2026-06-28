@@ -14,6 +14,35 @@ const mockTauriScript = `
   // in place.
   window.__TAURI_INTERNALS__ = { __mock__: true };
   window.__TAURI_MOCK__ = { calls: [] };
+  // Build a complete ScheduleDto-shaped object: every charge/discharge slot
+  // (1-10) and target SOC, all disabled (60/60). The real backend always
+  // returns all 20 slots; an incomplete mock makes slotCompact() throw on
+  // undefined.toFixed() and skip rendering the whole schedule card.
+  function mockSchedule() {
+    const sch = {
+      enable_charge: false, enable_discharge: false, soc_reserve: 4,
+      charge_target_soc: 100, battery_pause_mode: 0, pause_slot_start: 60, pause_slot_end: 60,
+    };
+    for (let i = 1; i <= 10; i++) {
+      sch['charge_slot_' + i + '_start'] = 60;
+      sch['charge_slot_' + i + '_end'] = 60;
+      sch['discharge_slot_' + i + '_start'] = 60;
+      sch['discharge_slot_' + i + '_end'] = 60;
+      sch['charge_target_soc_' + i] = 100;
+      sch['discharge_target_soc_' + i] = 4;
+    }
+    return sch;
+  }
+  // Complete BatteryModuleDto-shaped module so updateBatteryDisplay() can
+  // call .toFixed() on every field (voltage_v, current_a, nominal_capacity_kwh,
+  // soh, cycle_count) without throwing.
+  function mockBattery() {
+    return {
+      soc_percent: 75.0, power_kw: 2.5, voltage_v: 51.2, current_a: 48.8,
+      temperature_celsius: 28.0, capacity_kwh: 8.2, nominal_capacity_kwh: 8.2,
+      soh: 1.0, cycle_count: 12.0,
+    };
+  }
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, params) => {
@@ -38,19 +67,12 @@ const mockTauriScript = `
             export_limit_w: exportLimitW,
             aggregate_soc: 75.0, battery_power_kw: 2.5, battery_temperature_celsius: 28.0,
             battery_module_count: 1,
-            battery_modules: [{ capacity_kwh: 8.2, soc_percent: 75.0, power_kw: 2.5, temperature_celsius: 28.0 }],
+            battery_modules: [mockBattery()],
             solar_generation_w: 4000, solar_override: null,
             load_demand_w: 1500, load_override: null,
             grid_power_w: -500, grid_connected: true,
             active_faults: [], weather: 'Clear',
-            schedule: {
-              enable_charge: false, enable_discharge: false, soc_reserve: 4,
-              charge_target_soc: 100, charge_slot_1_start: 0, charge_slot_1_end: 530,
-              charge_slot_2_start: 60, charge_slot_2_end: 60,
-              discharge_slot_1_start: 60, discharge_slot_1_end: 60,
-              discharge_slot_2_start: 60, discharge_slot_2_end: 60,
-              battery_pause_mode: 0, pause_slot_start: 60, pause_slot_end: 60,
-            },
+            schedule: mockSchedule(),
             energy_totals: {
               grid_import_kwh: 1.5, grid_export_kwh: 3.2,
               battery_charge_kwh: 5.0, battery_discharge_kwh: 2.1,
@@ -98,9 +120,12 @@ test('page loads with form elements', async ({ page }) => {
   await expect(page.locator('#btn-start')).toBeVisible();
 });
 
-test('inverter type dropdown has 11 options', async ({ page }) => {
+test('inverter type dropdown has all preset options', async ({ page }) => {
   await setupPage(page);
-  await expect(page.locator('#inverter-type option')).toHaveCount(11);
+  // The dropdown must expose every InverterType variant the Rust catalogue
+  // accepts, so a CLI/JSON-loaded plant can be re-selected in the GUI
+  // without an empty label rendering.
+  await expect(page.locator('#inverter-type option')).toHaveCount(45);
 });
 
 test('battery count has 3 options', async ({ page }) => {
@@ -164,6 +189,54 @@ test('create plant with 2 battery modules', async ({ page }) => {
   expect(c).toBeTruthy();
   expect(p(c).battery_modules).toHaveLength(2);
 });
+
+// ===== Timed Discharge (HR 318-320 pause slot) visibility =====
+//
+// The Timed Discharge slot card is only rendered for AC-output inverter
+// families (AC-coupled 0x3001/0x3002, AC three-phase 0x60xx, residential
+// All-in-One 0x80xx). DC hybrids and three-phase/HV register-bank families
+// use a different slot bank, so the card must be absent for them.
+
+/** Create a plant with the given inverter type and wait for the schedule card. */
+async function createPlantAndWaitForSchedule(page, type) {
+  await setupPage(page);
+  if (type) await page.selectOption('#inverter-type', type);
+  await page.click('#btn-create');
+  // "Charge Slot 1" is always present once the schedule renders, so wait
+  // for it as a readiness signal before asserting on the conditional card.
+  await expect(page.locator('#schedule-display')).toContainText('Charge Slot 1', { timeout: 5000 });
+}
+
+const VISIBLE_TYPES = [
+  ['ACCoupled', 'AC-coupled (0x3001)'],
+  ['ACCoupled2', 'AC-coupled Mk2 (0x3002)'],
+  ['AllInOne6', 'residential All-in-One (0x8001)'],
+  ['AllInOne', 'residential All-in-One (0x8002)'],
+  ['AllInOne5', 'residential All-in-One (0x8003)'],
+  ['ACThreePhase', 'AC three-phase (0x6001)'],
+];
+for (const [type, label] of VISIBLE_TYPES) {
+  test(`Timed Discharge card visible for ${label}`, async ({ page }) => {
+    await createPlantAndWaitForSchedule(page, type);
+    await expect(page.locator('#schedule-display')).toContainText('Timed Discharge');
+  });
+}
+
+const HIDDEN_TYPES = [
+  ['Gen1Hybrid', 'DC hybrid (0x2001)'],
+  ['Gen3Hybrid', 'DC hybrid Gen3 (0x2001)'],
+  ['Gen3Plus6kW', 'DC hybrid Gen3+ (0x2201)'],
+  ['ThreePhase', 'three-phase (0x4001)'],
+  ['AIO8kW', 'HV Gen3 AIO (0x8102)'],
+  ['AIOHybrid6kW', 'AIO Hybrid (0x8201)'],
+  ['Gateway12kW', 'Gateway (0x7001)'],
+];
+for (const [type, label] of HIDDEN_TYPES) {
+  test(`Timed Discharge card hidden for ${label}`, async ({ page }) => {
+    await createPlantAndWaitForSchedule(page, type);
+    await expect(page.locator('#schedule-display')).not.toContainText('Timed Discharge');
+  });
+}
 
 // ===== Mode and weather =====
 

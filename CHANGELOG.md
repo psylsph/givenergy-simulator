@@ -72,6 +72,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Documented in the README under the "Raspberry Pi / Linux desktop"
   quick-start section.
 
+### Fixed
+
+- **Timed Discharge (HR 318-320 battery-pause slot) GUI.** Two display
+  bugs:
+  - `ScheduleDto::from_state` hard-coded the pause-slot fields
+    (`battery_pause_mode` / `pause_slot_start` / `pause_slot_end`) to the
+    disabled sentinels (0 / 60 / 60), so Modbus writes to HR 318-320 never
+    surfaced in the GUI even though `PlantState` was updated correctly.
+    The DTO now reads them from the live state, so a client write is
+    visible after the next refresh.
+  - The schedule card (renamed **"Pause Slot" → "Timed Discharge"**) had
+    an inverted visibility rule — it appeared for everything *except*
+    AC-coupled inverters. It now renders only for the AC-output families
+    that actually serve the HR 318-320 block: AC-coupled (0x3001/0x3002),
+    AC three-phase (0x60xx) and residential All-in-One (0x80xx). DC
+    hybrids (20xx/21xx/22xx), three-phase/HV register-bank families
+    (40xx/41xx/81xx/82xx), and others are hidden. Covered by new Rust
+    unit tests (`ScheduleDto` pause slot) and 13 Playwright tests across
+    inverter families.
+
 ## [0.14.4] - 2026-06-06
 
 ### Added

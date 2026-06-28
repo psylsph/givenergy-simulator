@@ -447,9 +447,9 @@ impl ScheduleDto {
             discharge_slot_9_end: hhmm(de9),
             discharge_slot_10_start: hhmm(ds10),
             discharge_slot_10_end: hhmm(de10),
-            battery_pause_mode: 0,
-            pause_slot_start: 60,
-            pause_slot_end: 60,
+            battery_pause_mode: state.battery_pause_mode,
+            pause_slot_start: state.battery_pause_slot_start,
+            pause_slot_end: state.battery_pause_slot_end,
         }
     }
 }
@@ -624,6 +624,37 @@ mod tests {
         assert_eq!(dto.discharge_slot_1_start, 1700);
         assert_eq!(dto.discharge_slot_1_end, 2100);
         assert_eq!(dto.discharge_target_soc, 25.0);
+    }
+
+    #[test]
+    fn schedule_dto_reflects_live_pause_slot_state() {
+        // Regression: ScheduleDto previously hard-coded the HR 318-320 pause
+        // slot to (mode=0, start=60, end=60), so Modbus writes to those
+        // registers never surfaced in the GUI. The DTO must read them from
+        // state so a client write is visible after the next refresh.
+        let mut state = PlantState::new(ts());
+        state.battery_pause_mode = 2;
+        state.battery_pause_slot_start = 400; // 04:00
+        state.battery_pause_slot_end = 300; // 03:00
+
+        let dto = ScheduleDto::from_state(&state, None);
+
+        assert_eq!(dto.battery_pause_mode, 2);
+        assert_eq!(dto.pause_slot_start, 400);
+        assert_eq!(dto.pause_slot_end, 300);
+    }
+
+    #[test]
+    fn schedule_dto_pause_slot_defaults_when_unset() {
+        // A freshly-constructed PlantState has the disabled sentinels
+        // (mode=0, start=60, end=60); the DTO must echo those, not invent
+        // values.
+        let state = PlantState::new(ts());
+        let dto = ScheduleDto::from_state(&state, None);
+
+        assert_eq!(dto.battery_pause_mode, 0);
+        assert_eq!(dto.pause_slot_start, 60);
+        assert_eq!(dto.pause_slot_end, 60);
     }
 
     #[test]
