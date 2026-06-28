@@ -29,17 +29,18 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
-**0.17.0** — EVC charger integrated into the household load balance
-(EvcEngine now runs between LoadEngine and InverterEngine so the
-inverter sees the combined household + EV demand and routes spare
-solar/battery output to the EV first via the standard `solar - load`
-priority logic). Previously the EV's draw was layered on top of the
-inverter's balance after it had already run, producing an unbalanced
-GUI display (solar 3.5 kW, load 12.7 kW, battery -1.5 kW, grid 0 W for
-a 5 kW household + 7.7 kW EV charging). Also adds a Dongle
-misbehaviour simulation (Off / EmptyData / StaleData / GarbageData /
-DropConnection / Intermittent) so client apps can be tested against
-realistic dongle failure modes. See commit log for older changelogs.
+**0.17.1** — Timed Discharge (HR 318-320 battery-pause slot) GUI fixes.
+The schedule card is renamed **"Pause Slot" → "Timed Discharge"** and two
+bugs are fixed: (1) `ScheduleDto::from_state` hard-coded the pause-slot
+fields to the disabled sentinels, so Modbus writes to HR 318-320 never
+surfaced in the GUI even though `PlantState` was updated correctly — the
+DTO now reads them from live state; (2) the card's visibility rule was
+inverted, so it now renders only for the AC-output families that serve
+the HR 318-320 block (AC-coupled 0x3001/0x3002, AC three-phase 0x60xx,
+residential All-in-One 0x80xx) and is hidden for DC hybrids
+(20xx/21xx/22xx) and three-phase/HV register-bank families
+(40xx/41xx/81xx/82xx). Covered by new Rust unit tests and 13 Playwright
+tests across inverter families. See commit log for older changelogs.
 
 ## Common Gotchas
 
