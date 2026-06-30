@@ -67,6 +67,9 @@ pub enum Command {
     SetSolarOverride(Option<f64>),
     /// Override load demand to a fixed watt value.
     SetLoadOverride(Option<f64>),
+    /// Override inverter temperature to a fixed °C value (bypasses the
+    /// thermal model). `None` restores the thermal model.
+    SetInverterTemperature(Option<f64>),
     SetSimulationTime(NaiveDateTime),
     /// Enable/disable EMS (Energy Management System) control mode.
     SetEmsEnable(bool),
@@ -231,6 +234,15 @@ impl SimulationEngine {
                 }
                 Command::SetLoadOverride(w) => {
                     self.state.load_override = w;
+                }
+                Command::SetInverterTemperature(t) => {
+                    self.state.inverter.temperature_override = t;
+                    // Apply immediately so a follow-up state read reflects it
+                    // before the next tick (mirrors how SetSolarOverride shows
+                    // up at once).
+                    if let Some(v) = t {
+                        self.state.inverter.temperature_celsius = v.clamp(-10.0, 80.0);
+                    }
                 }
                 Command::SetBatterySoc { module, soc } => {
                     if let Some(b) = self.state.batteries.get_mut(module) {
@@ -825,16 +837,23 @@ impl DeviceModel for InverterEngine {
             }
         }
 
-        // Inverter thermal model
-        let ambient = 25.0;
-        let power_kw = state.inverter.ac_power_w / 1000.0;
-        // Heat generated proportional to power throughput (3% losses → heat)
-        let heat = power_kw * 0.03 * 20.0 * ctx.dt_hours; // 20°C/kW thermal resistance
-        // Passive cooling towards ambient (0.5°C/hour per degree above ambient)
-        let temp_diff = state.inverter.temperature_celsius - ambient;
-        let cooling = 0.5 * temp_diff * ctx.dt_hours;
-        state.inverter.temperature_celsius += heat - cooling;
-        state.inverter.temperature_celsius = state.inverter.temperature_celsius.clamp(-10.0, 80.0);
+        // Inverter thermal model. A manual temperature override pins the
+        // value and bypasses the heat/cool integration (see
+        // `temperature_override` / `SetInverterTemperature`).
+        if let Some(t) = state.inverter.temperature_override {
+            state.inverter.temperature_celsius = t.clamp(-10.0, 80.0);
+        } else {
+            let ambient = 25.0;
+            let power_kw = state.inverter.ac_power_w / 1000.0;
+            // Heat generated proportional to power throughput (3% losses → heat)
+            let heat = power_kw * 0.03 * 20.0 * ctx.dt_hours; // 20°C/kW thermal resistance
+            // Passive cooling towards ambient (0.5°C/hour per degree above ambient)
+            let temp_diff = state.inverter.temperature_celsius - ambient;
+            let cooling = 0.5 * temp_diff * ctx.dt_hours;
+            state.inverter.temperature_celsius += heat - cooling;
+            state.inverter.temperature_celsius =
+                state.inverter.temperature_celsius.clamp(-10.0, 80.0);
+        }
     }
 }
 
@@ -1154,22 +1173,36 @@ impl DeviceModel for BatteryEngine {
         let hour = ctx.now.time().num_seconds_from_midnight() as f64 / 3600.0;
         let ambient = self.ambient_for_hour(hour);
 
-        // Check battery pause mode/slot (GivTCP BatteryPauseMode):
-        //   0 = Disabled, 1 = PAUSE_CHARGE, 2 = PAUSE_DISCHARGE, 3 = PAUSE_BOTH
+        // Check battery pause mode/slot (givenergy-modbus / GivTCP BatteryPauseMode):
+        //   HR 318 mode: 0 = Disabled, 1 = PauseCharge, 2 = PauseDischarge, 3 = PauseBoth
+        //   HR 319/320 = the SINGLE pause-slot start/end (HHMM, valid 0-2359).
+        // The GivEnergy portal implements "Timed Discharge" as PauseDischarge
+        // (mode 2) with the pause window set to the COMPLEMENT of the desired
+        // discharge window, which wraps midnight (start > end, e.g. 04:00->03:00
+        // pauses everywhere except 03:00-04:00). Both the normal [start,end)
+        // window and the wrap-around [start,24:00) U [00:00,end) window must be
+        // honoured.
         let pause_charge = state.battery_pause_mode == 1 || state.battery_pause_mode == 3;
         let pause_discharge = state.battery_pause_mode == 2 || state.battery_pause_mode == 3;
-        if (pause_charge || pause_discharge)
-            && state.battery_pause_slot_start != 60
-            && state.battery_pause_slot_end != 60
-        {
-            let in_pause_window = if state.battery_pause_slot_start < state.battery_pause_slot_end {
-                let start_h = (state.battery_pause_slot_start / 100) as f64
-                    + (state.battery_pause_slot_start % 100) as f64 / 60.0;
-                let end_h = (state.battery_pause_slot_end / 100) as f64
-                    + (state.battery_pause_slot_end % 100) as f64 / 60.0;
+        // A slot is active only when both endpoints are valid HHMM encodings
+        // (minutes <= 59) and they differ. start==end covers the disabled
+        // sentinels (our internal `60` and givenergy-modbus's `0`).
+        let valid_hhmm = |v: u16| (v / 100) <= 23 && (v % 100) <= 59;
+        let slot_active = state.battery_pause_slot_start != state.battery_pause_slot_end
+            && valid_hhmm(state.battery_pause_slot_start)
+            && valid_hhmm(state.battery_pause_slot_end);
+        if (pause_charge || pause_discharge) && slot_active {
+            let start_h = (state.battery_pause_slot_start / 100) as f64
+                + (state.battery_pause_slot_start % 100) as f64 / 60.0;
+            let end_h = (state.battery_pause_slot_end / 100) as f64
+                + (state.battery_pause_slot_end % 100) as f64 / 60.0;
+            let in_pause_window = if start_h < end_h {
+                // Normal window: [start, end)
                 hour >= start_h && hour < end_h
             } else {
-                false
+                // Wrap-around window: [start, 24:00) U [00:00, end).
+                // This is what the portal writes for "Timed Discharge".
+                hour >= start_h || hour < end_h
             };
             if in_pause_window {
                 for b in &mut state.batteries {
@@ -4077,6 +4110,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inverter_temp_override_holds_value() {
+        // When a temperature override is set, the thermal model is bypassed
+        // and the temperature is pinned regardless of load/throughput.
+        let mut inv = InverterEngine::new();
+        let mut state = PlantState::new(ts(14));
+        state.solar.generation_w = 5000.0;
+        state.load.demand_w = 1000.0;
+        state.batteries[0].max_charge_kw = 5.0;
+        state.sync_battery_from_vec();
+        state.inverter.temperature_celsius = 25.0;
+        state.inverter.temperature_override = Some(70.0);
+
+        let ctx = TickContext {
+            now: ts(14),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        assert_eq!(
+            state.inverter.temperature_celsius, 70.0,
+            "Override should pin temperature at 70°C even under heavy load"
+        );
+    }
+
+    #[test]
+    fn inverter_temp_override_clamps_to_valid_range() {
+        let mut inv = InverterEngine::new();
+        let mut state = PlantState::new(ts(2));
+        state.inverter.ac_power_w = 0.0;
+        state.inverter.temperature_override = Some(999.0);
+
+        let ctx = TickContext {
+            now: ts(2),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+        assert_eq!(
+            state.inverter.temperature_celsius, 80.0,
+            "Override should clamp to the thermal model's max (80°C)"
+        );
+    }
+
+    #[test]
+    fn inverter_temp_override_none_resumes_model() {
+        // Clearing the override lets the thermal model take over again.
+        let mut inv = InverterEngine::new();
+        let mut state = PlantState::new(ts(2));
+        state.inverter.ac_power_w = 0.0;
+        state.inverter.temperature_celsius = 50.0;
+        state.inverter.temperature_override = None;
+
+        let ctx = TickContext {
+            now: ts(2),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+        assert!(
+            state.inverter.temperature_celsius < 50.0,
+            "With override cleared the model should cool from 50°C, got {}",
+            state.inverter.temperature_celsius
+        );
+    }
+
+    #[test]
+    fn set_inverter_temperature_command_sets_override_and_value() {
+        // SetInverterTemperature(Some) pins both the override and the live
+        // value immediately; SetInverterTemperature(None) clears the override.
+        let devices: Vec<Box<dyn DeviceModel>> = vec![];
+        let mut engine = SimulationEngine::new(PlantState::new(ts(10)), devices, 30);
+        engine.enqueue(Command::SetInverterTemperature(Some(65.0)));
+        engine.apply_commands();
+        assert_eq!(engine.state.inverter.temperature_override, Some(65.0));
+        assert_eq!(engine.state.inverter.temperature_celsius, 65.0);
+
+        engine.enqueue(Command::SetInverterTemperature(None));
+        engine.apply_commands();
+        assert_eq!(engine.state.inverter.temperature_override, None);
+    }
+
     // --- Combinatorial Tests ---
 
     #[test]
@@ -4590,6 +4703,146 @@ mod tests {
 
         // Weather string must be valid
         assert!(!state.weather.is_empty());
+    }
+
+    // --- Battery pause (HR 318-320) / "Timed Discharge" semantics ---
+    //
+    // The GivEnergy portal implements "Timed Discharge" as PauseDischarge
+    // (HR 318 = 2) with the pause window (HR 319/320) set to the COMPLEMENT of
+    // the desired discharge window, which wraps midnight (start > end). These
+    // tests pin both the normal and wrap-around window evaluation.
+    fn pause_test_state(mode: u16, start: u16, end: u16, hour: u32, min: u32) -> PlantState {
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 21)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap();
+        let mut state = PlantState::with_battery_count(ts, 1);
+        state.battery_pause_mode = mode;
+        state.battery_pause_slot_start = start;
+        state.battery_pause_slot_end = end;
+        state.battery_charge_limit_percent = 100.0;
+        state.battery_discharge_limit_percent = 100.0;
+        for b in &mut state.batteries {
+            b.soc_percent = 50.0;
+            b.capacity_kwh = 10.0;
+            b.nominal_capacity_kwh = 10.0;
+            b.max_charge_kw = 5.0;
+            b.max_discharge_kw = 5.0;
+            b.temperature_celsius = 25.0; // below derate threshold (45C)
+        }
+        state.sync_battery_from_vec();
+        state
+    }
+
+    fn tick_battery(state: &mut PlantState, hour: u32, min: u32) {
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 21)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap();
+        let ctx = TickContext {
+            now: ts,
+            dt_hours: 1.0,
+        };
+        BatteryEngine::new().update(&ctx, state);
+    }
+
+    #[test]
+    fn timed_discharge_wraparound_pauses_outside_slot() {
+        // Portal "Timed Discharge 03:00-04:00" writes mode=2 + pause window
+        // 04:00->03:00 (wrap). Noon is in the pause zone -> discharge zeroed.
+        let mut state = pause_test_state(2, 400, 300, 12, 0);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 12, 0);
+        assert_eq!(
+            state.batteries[0].power_kw, 0.0,
+            "discharge must be paused at noon (outside the 03:00-04:00 slot)"
+        );
+    }
+
+    #[test]
+    fn timed_discharge_wraparound_allows_discharge_in_slot() {
+        // Same wrap window 04:00->03:00. 03:30 is inside the desired discharge
+        // slot (not in the pause zone) -> discharge survives.
+        let mut state = pause_test_state(2, 400, 300, 3, 30);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 3, 30);
+        assert!(
+            state.batteries[0].power_kw < -1.0,
+            "discharge must be allowed at 03:30 (inside the slot): got {}",
+            state.batteries[0].power_kw
+        );
+    }
+
+    #[test]
+    fn pause_discharge_normal_window_zeros_in_window() {
+        // Non-wrapping pause window 03:00-04:00, mode=2. 03:30 is in window.
+        let mut state = pause_test_state(2, 300, 400, 3, 30);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 3, 30);
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+    }
+
+    #[test]
+    fn pause_discharge_normal_window_allows_outside() {
+        // Non-wrapping pause window 03:00-04:00, mode=2. Noon is outside.
+        let mut state = pause_test_state(2, 300, 400, 12, 0);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 12, 0);
+        assert!(state.batteries[0].power_kw < -1.0);
+    }
+
+    #[test]
+    fn pause_discharge_does_not_pause_charge() {
+        // mode=2 (PauseDischarge) must NOT zero a charging battery.
+        let mut state = pause_test_state(2, 400, 300, 12, 0);
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 12, 0);
+        assert!(
+            state.batteries[0].power_kw > 1.0,
+            "PauseDischarge must not stop charging: got {}",
+            state.batteries[0].power_kw
+        );
+    }
+
+    #[test]
+    fn pause_charge_mode_zeros_charge_in_window() {
+        // mode=1 (PauseCharge) zeroes charging inside the pause window.
+        let mut state = pause_test_state(1, 300, 400, 3, 30);
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 3, 30);
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+    }
+
+    #[test]
+    fn pause_slot_disabled_when_start_equals_end() {
+        // start==end is an empty/disabled window (covers our `60` sentinel and
+        // givenergy-modbus's `0`). mode=2 but no effective window -> discharge
+        // must NOT be paused at noon.
+        let mut state = pause_test_state(2, 0, 0, 12, 0);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 12, 0);
+        assert!(
+            state.batteries[0].power_kw < -1.0,
+            "start==end window must be disabled: got {}",
+            state.batteries[0].power_kw
+        );
+    }
+
+    #[test]
+    fn pause_slot_disabled_when_mode_zero() {
+        // mode=0 (Disabled) -> nothing paused even with a window set.
+        let mut state = pause_test_state(0, 300, 400, 3, 30);
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 3, 30);
+        assert!(state.batteries[0].power_kw < -1.0);
     }
 
     proptest! {

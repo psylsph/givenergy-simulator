@@ -90,6 +90,8 @@ Run a headless simulation with the 'simulate' subcommand (starts Modbus server a
 \n  giv-sim simulate --inverter ThreePhase --batteries 3 --battery-size 13.6 \
 \n                   --soc 80 --solar-peak 8000 --load-level 1500\
 \n  giv-sim simulate --inverter AllInOne --modbus 0.0.0.0:8899\
+\n  giv-sim simulate --inverter Gen3Hybrid --inverter-temperature 70\
+\n  # --inverter-temperature pins the inverter temp (°C); omit for thermal model\
 \n  giv-sim run scenario.yaml --modbus 0.0.0.0:8899 --output results/\
 \n  giv-sim serve plant_state.json --modbus 0.0.0.0:8899\
 \n  giv-sim replay recording.jsonl"
@@ -207,6 +209,13 @@ enum Commands {
         /// DropConnection, Intermittent).
         #[arg(long, default_value = "Off")]
         dongle_misbehaviour: String,
+        /// Pin the inverter temperature (°C), bypassing the thermal model.
+        ///
+        /// Useful for holding a fixed temperature to exercise derating /
+        /// over-temperature behaviour (e.g. 70 to approach the over-temp
+        /// threshold). Omit to let the thermal model vary it with load.
+        #[arg(long)]
+        inverter_temperature: Option<f64>,
     },
     /// Run a scenario YAML file.
     Run {
@@ -489,11 +498,11 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         311 => Some(Command::SetExportPriority(cmd.value)),
         317 => Some(Command::SetEnableEps(cmd.value != 0)),
         2040 => Some(Command::SetEmsEnable(cmd.value != 0)),
-        318 => Some(Command::SetBatteryPause {
-            mode: cmd.value,
-            start: 60,
-            end: 60,
-        }),
+        // HR 318/319/320 (battery pause mode + single pause slot) are merged
+        // into PlantState together by the write-loop reconciliation so a lone
+        // HR 318 write doesn't clobber the start/end window. See
+        // `enqueue_pause_slot_update`.
+        318..=320 => None,
         // HR 1122: Three-phase force discharge enable
         1122 => Some(Command::SetInverterMode(if cmd.value != 0 {
             sim_models::InverterMode::ForceDischarge
@@ -604,6 +613,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pv2_peak,
             fast,
             dongle_misbehaviour,
+            inverter_temperature,
         } => {
             simulate(
                 &inverter,
@@ -622,6 +632,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pv2_peak,
                 fast,
                 &dongle_misbehaviour,
+                inverter_temperature,
             )
             .await
         }
@@ -699,6 +710,7 @@ async fn simulate(
     pv2_peak: f64,
     fast: bool,
     dongle_misbehaviour: &str,
+    inverter_temperature: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let battery_count = battery_count.clamp(1, 6);
     let soc = soc.clamp(0.0, 100.0);
@@ -748,6 +760,12 @@ async fn simulate(
     // Apply load override if specified
     if load_level > 0.0 {
         state.load_override = Some(load_level);
+    }
+
+    // Pin inverter temperature if requested (bypasses the thermal model).
+    if let Some(t) = inverter_temperature {
+        state.inverter.temperature_override = Some(t);
+        state.inverter.temperature_celsius = t.clamp(-10.0, 80.0);
     }
 
     let load_profile = parse_profile(load_profile);
@@ -828,6 +846,9 @@ async fn simulate(
     tracing::info!("  Latitude:       {latitude}°");
     tracing::info!("  Start date:     {date}");
     tracing::info!("  Tick interval:  {tick_interval}s");
+    if let Some(t) = inverter_temperature {
+        tracing::info!("  Inv temp:       {t:.0}°C (pinned, thermal model off)");
+    }
     tracing::info!("  Modbus server:  {modbus_addr}");
 
     // Initial register projection
@@ -865,7 +886,7 @@ async fn simulate(
         let mut sched_updates: std::collections::HashMap<u16, u16> =
             std::collections::HashMap::new();
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if is_schedule_register(cmd.address) {
+            if is_schedule_register(cmd.address) || matches!(cmd.address, 318..=320) {
                 sched_updates.insert(cmd.address, cmd.value);
             } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                 engine.enqueue(sim_cmd);
@@ -878,6 +899,7 @@ async fn simulate(
             apply_schedule_updates(&mut sched, &sched_updates);
             engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
             schedule_opt = Some(sched);
+            enqueue_pause_slot_update(&mut engine, &sched_updates);
         }
 
         engine.tick();
@@ -1086,7 +1108,7 @@ async fn run_scenario(
                     let mut sched_updates: std::collections::HashMap<u16, u16> =
                         std::collections::HashMap::new();
                     while let Ok(cmd) = rx.try_recv() {
-                        if is_schedule_register(cmd.address) {
+                        if is_schedule_register(cmd.address) || matches!(cmd.address, 318..=320) {
                             sched_updates.insert(cmd.address, cmd.value);
                         } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                             engine.enqueue(sim_cmd);
@@ -1097,6 +1119,7 @@ async fn run_scenario(
                         apply_schedule_updates(&mut sched, &sched_updates);
                         engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
                         schedule_opt = Some(sched);
+                        enqueue_pause_slot_update(&mut engine, &sched_updates);
                     }
                 }
 
@@ -1158,7 +1181,7 @@ async fn run_scenario(
                         40 => time_regs[5] = Some(cmd.value),
                         _ => {}
                     }
-                    if is_schedule_register(cmd.address) {
+                    if is_schedule_register(cmd.address) || matches!(cmd.address, 318..=320) {
                         sched_updates.insert(cmd.address, cmd.value);
                     } else if let Some(sim_cmd) = modbus_command_to_sim(&cmd) {
                         engine.enqueue(sim_cmd);
@@ -1169,6 +1192,7 @@ async fn run_scenario(
                     apply_schedule_updates(&mut sched, &sched_updates);
                     engine.enqueue(Command::SetSchedule(Box::new(sched.clone())));
                     schedule_opt = Some(sched);
+                    enqueue_pause_slot_update(&mut engine, &sched_updates);
                 }
                 if time_regs.iter().all(|r| r.is_some()) {
                     let y = time_regs[0].unwrap() as i32;
@@ -1696,6 +1720,32 @@ fn hhmm_to_hours(val: u16) -> Option<f64> {
 
 /// Apply schedule register updates to a Schedule struct.
 /// Shared between run_scenario and serve_config.
+/// Reconcile HR 318/319/320 (battery pause mode + single pause slot) writes
+/// into one `SetBatteryPause` command, preserving whichever of mode/start/end
+/// wasn't written this cycle. Mirrors the Tauri write-loop reconciliation so a
+/// Modbus client can set the pause window one register at a time (as the
+/// GivEnergy portal does) without earlier writes being lost.
+fn enqueue_pause_slot_update(
+    engine: &mut SimulationEngine,
+    updates: &std::collections::HashMap<u16, u16>,
+) {
+    if updates.contains_key(&318) || updates.contains_key(&319) || updates.contains_key(&320) {
+        let mode = updates
+            .get(&318)
+            .copied()
+            .unwrap_or(engine.state.battery_pause_mode);
+        let start = updates
+            .get(&319)
+            .copied()
+            .unwrap_or(engine.state.battery_pause_slot_start);
+        let end = updates
+            .get(&320)
+            .copied()
+            .unwrap_or(engine.state.battery_pause_slot_end);
+        engine.enqueue(Command::SetBatteryPause { mode, start, end });
+    }
+}
+
 fn apply_schedule_updates(
     sched: &mut sim_models::Schedule,
     updates: &std::collections::HashMap<u16, u16>,

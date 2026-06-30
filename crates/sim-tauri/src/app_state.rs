@@ -101,6 +101,12 @@ pub struct PlantStateDto {
     pub inverter_type: String,
     pub inverter_ac_power_w: f64,
     pub inverter_max_output_w: f64,
+    /// Live inverter temperature (°C) — IR 41 (`ge_ir_inverter_temperature`).
+    pub inverter_temperature_celsius: f64,
+    /// Manual inverter temperature override (°C). `Some` = thermal model
+    /// pinned; `None` = thermal model active. Surfaced so the GUI can show
+    /// the override state and offer a Clear control.
+    pub inverter_temperature_override: Option<f64>,
     /// Live export power limit (W). Drives HR 1063 (`p_export_limit`, three-
     /// phase / HV / AIO, ×0.1 dW encoding) and HR 2071 (`ems_export_power_limit`,
     /// EMS / EmsCommercial / Gateway, raw watts). For single-phase / AC-coupled
@@ -509,6 +515,8 @@ impl From<&PlantState> for PlantStateDto {
             inverter_type: state.config.inverter_type.clone(),
             inverter_ac_power_w: state.inverter.ac_power_w,
             inverter_max_output_w: state.config.max_ac_watts,
+            inverter_temperature_celsius: state.inverter.temperature_celsius,
+            inverter_temperature_override: state.inverter.temperature_override,
             export_limit_w: state.inverter.export_limit_w,
             charge_power_limit_percent: if state.battery_charge_limit_percent <= 0.0 {
                 100.0

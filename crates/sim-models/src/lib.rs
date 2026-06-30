@@ -305,6 +305,15 @@ pub struct InverterState {
     pub export_limit_w: f64,
     /// Inverter temperature in °C.
     pub temperature_celsius: f64,
+    /// Manual inverter temperature override in °C. When `Some(t)` the
+    /// inverter thermal model is bypassed and `temperature_celsius` is held
+    /// at `t` every tick — useful for holding a fixed temperature to exercise
+    /// derating / over-temperature behaviour. Set to `None` to restore the
+    /// thermal model. Driven by the `SetInverterTemperature` command (GUI +
+    /// CLI `--inverter-temperature`). Not a Modbus-writable register (IR 41
+    /// is input/read-only on real hardware), so there is no HR write route.
+    #[serde(default)]
+    pub temperature_override: Option<f64>,
     /// DSP firmware version (HR 19). Defaults to a value appropriate to the
     /// inverter type (449 for most hybrids) but can be overridden at runtime.
     #[serde(default = "default_dsp_firmware")]
@@ -342,6 +351,7 @@ impl Default for InverterState {
             // correct per-family default.
             export_limit_w: DEFAULT_G98_SINGLE_PHASE_EXPORT_W,
             temperature_celsius: 35.0,
+            temperature_override: None,
             dsp_firmware_version: default_dsp_firmware(),
             arm_firmware_version: 0,
             work_time_hours: 0.0,

@@ -499,11 +499,11 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         311 => Some(Command::SetExportPriority(value)),
         317 => Some(Command::SetEnableEps(value != 0)),
         2040 => Some(Command::SetEmsEnable(value != 0)),
-        318 => Some(Command::SetBatteryPause {
-            mode: value,
-            start: 60,
-            end: 60,
-        }),
+        // HR 318/319/320 (battery pause mode + single pause slot) are reconciled
+        // into PlantState together by the write-loop handler below so a lone
+        // HR 318 write doesn't clobber the start/end window. Returning None
+        // here avoids a redundant clobbering enqueue ahead of that merge.
+        318..=320 => None,
         // HR 1122: Three-phase force discharge enable
         1122 => Some(Command::SetInverterMode(if value != 0 {
             InverterMode::ForceDischarge
@@ -2347,6 +2347,33 @@ pub async fn set_arm_firmware(state: State<'_, AppState>, version: u16) -> Resul
     let mut eng = state.engine.lock().await;
     if let Some(e) = eng.as_mut() {
         e.state.inverter.arm_firmware_version = version;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Inverter temperature override
+// ---------------------------------------------------------------------------
+
+/// Override the inverter temperature (°C). When set, the inverter thermal
+/// model is bypassed and the temperature is held at this value every tick —
+/// useful for holding a fixed temperature to exercise derating / over-
+/// temperature behaviour. Pass `null` to clear the override and restore the
+/// thermal model. Mirrors the `SetInverterTemperature` command.
+#[tauri::command]
+pub async fn set_inverter_temperature(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    celsius: Option<f64>,
+) -> Result<(), String> {
+    let mut eng = state.engine.lock().await;
+    if let Some(ref mut e) = *eng {
+        e.state.inverter.temperature_override = celsius;
+        if let Some(v) = celsius {
+            e.state.inverter.temperature_celsius = v.clamp(-10.0, 80.0);
+        }
+        let dto = PlantStateDto::from(&e.state);
+        let _ = app.emit("state_changed", &dto);
     }
     Ok(())
 }

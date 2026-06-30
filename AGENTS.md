@@ -39,8 +39,50 @@ inverted, so it now renders only for the AC-output families that serve
 the HR 318-320 block (AC-coupled 0x3001/0x3002, AC three-phase 0x60xx,
 residential All-in-One 0x80xx) and is hidden for DC hybrids
 (20xx/21xx/22xx) and three-phase/HV register-bank families
-(40xx/41xx/81xx/82xx). Covered by new Rust unit tests and 13 Playwright
-tests across inverter families. See commit log for older changelogs.
+(40xx/41xx/81xx/82xx). Gen3 Hybrid (0x2001, ARM FW 3xx) is also visible
+— confirmed against a physical inverter and givenergy-modbus, which
+declares `battery_pause_mode` (HR 318) in the single-phase getter.
+Gen1/Gen2 (0x2001, FW 2xx/8xx) stay hidden pending confirmation. Covered
+by new Rust unit tests and 13 Playwright tests across inverter families.
+See commit log for older changelogs.
+
+**0.17.2** — Timed Discharge pause-window semantics fix. The `BatteryEngine`
+pause evaluation only handled normal `[start, end)` windows; when the GivEnergy
+portal writes "Timed Discharge" it sets `battery_pause_mode = 2` (PauseDischarge)
+and writes the pause window as the **complement** of the desired discharge
+slot, which wraps midnight (`start > end`, e.g. 03:00–04:00 discharge →
+pause 04:00→03:00). The wrap-around case fell through to a dead `else { false }`
+arm, so Timed Discharge had no effect. `sim-core` now honours both windows
+(`hour >= start || hour < end` for the wrap case) and treats `start == end` as
+disabled (covers our `60` sentinel and givenergy-modbus's `0`). Also fixed:
+`modbus_address_to_command(318)` in both `sim-tauri` and `sim-api` returned a
+`SetBatteryPause { start: 60, end: 60 }` that clobbered the window, and the
+`sim-api` CLI path dropped HR 319/320 writes entirely — both now reconcile
+318/319/320 into one `SetBatteryPause` preserving unwritten fields. Confirmed
+against `britkat1980/giv_tcp` (`GivLUT.battery_pause_mode`, `baseinverter.py`
+HR 318-320 = single `battery_pause_slot_1`). 8 new `sim-core` unit tests.
+
+**0.17.3** — Inverter temperature override (GUI + CLI). Adds a way to pin
+the inverter temperature, bypassing the `InverterEngine` thermal model —
+useful for holding a fixed temperature to exercise derating / over-
+temperature behaviour (e.g. hold 70 °C). New `InverterState.temperature_override:
+Option<f64>` (serde `#[serde(default)]`, persists across save/load), driven by a
+new `Command::SetInverterTemperature(Option<f64>)`. When `Some(t)` the
+thermal model is skipped and `temperature_celsius` is held at `t` (clamped to
+the model's [-10, 80] °C range); `None` restores the model. Exposed via:
+
+* **GUI** — a new "Inv Temp °C" Set/Clear row in the sidebar (mirrors the
+  ARM/DSP firmware overrides), the live temperature readout beside it, and a
+  `🌡️` badge in the override indicator banner. New Tauri command
+  `set_inverter_temperature` + REST bridge route (`POST /api/.../set_inverter_temperature`).
+* **CLI** — `giv-sim simulate --inverter-temperature <°C>` (omit for the
+  thermal model).
+
+Not wired as a Modbus write: IR 41 (`ge_ir_inverter_temperature`) is
+input/read-only on real hardware, so there is no HR write route (consistent
+with the ARM/DSP firmware overrides). `PlantStateDto` now also exposes
+`inverter_temperature_celsius` + `inverter_temperature_override`. 5 new
+`sim-core` unit tests.
 
 ## Common Gotchas
 
@@ -176,6 +218,12 @@ When `Some(w)`, the SolarEngine/LoadEngine uses the fixed value instead of compu
 Set to `None` to restore engine control. Commands: `SetSolarOverride`, `SetLoadOverride`.
 Survive serialization via `#[serde(default)]`.
 
+`InverterState.temperature_override: Option<f64>` works the same way for the
+inverter thermal model: `Some(t)` pins `temperature_celsius` (clamped to
+[-10, 80] °C) and skips the heat/cool integration; `None` restores it.
+Command: `SetInverterTemperature`. GUI sidebar "Inv Temp" row + CLI
+`--inverter-temperature`. Not Modbus-writable (IR 41 is read-only).
+
 ### Solar override applies before night check
 Override is checked at the top of `SolarEngine::update()`, before the night-time zeroing.
 This means `solar_override = Some(3000)` works at midnight.
@@ -258,6 +306,35 @@ Set `state.weather = "Overcast".to_string()` to change weather.
 ### Schedule slots use HHMM encoding, disabled = 60
 Charge/discharge slot registers use HHMM format (e.g. 1600 = 16:00, 630 = 06:30).
 Value 60 is the "disabled" sentinel (minutes > 59 is invalid).
+
+### Timed Discharge = battery PAUSE window (HR 318-320), wraps midnight
+HR 318-320 is the **battery pause** register set (givenergy-modbus
+`battery_pause_mode` + single `battery_pause_slot_1` start/end). It is **one**
+slot — which is exactly why the portal gives "Timed Discharge" a single window
+while Charge/Export get up to 10.
+
+- **HR 318 mode** (0-3): `0`=Disabled, `1`=PauseCharge, `2`=PauseDischarge,
+  `3`=PauseBoth (GivTCP `GivLUT.battery_pause_mode`).
+- **HR 319/320** = pause-window start/end (HHMM, valid 0-2359).
+
+The portal implements "Timed Discharge HH:MM-HH:MM" as `mode=2` with the pause
+window set to the **complement/inverse** of the slot, which **wraps midnight**
+(`start > end`). E.g. "Timed Discharge 03:00-04:00" is written as
+`mode=2, start=400 (04:00), end=300 (03:00)` → pause everywhere *except*
+03:00-04:00, so the battery only discharges in that window.
+
+`BatteryEngine::update` must therefore honour both window shapes:
+- `start < end` (normal): pause when `hour ∈ [start, end)`
+- `start > end` (wrap-around): pause when `hour >= start || hour < end`
+  (i.e. `[start, 24:00) ∪ [00:00, end)`)
+- `start == end`: disabled / empty window (covers our `60` sentinel and
+  givenergy-modbus's `0`). givenergy-modbus's valid range is `(0, 2359)` and
+  it uses `0` to disable; our internal PlantState defaults use `60`.
+
+Modbus writes to HR 318/319/320 are reconciled into one `SetBatteryPause`
+command that preserves whichever fields weren't written this cycle (Tauri:
+`commands.rs` write loop; CLI: `enqueue_pause_slot_update`). A lone HR 318 write
+must NOT clobber the start/end window.
 
 ### Time sync from Modbus writes (HR 35-40)
 Clients write year/month/day/hour/min/sec one register at a time.

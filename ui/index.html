@@ -610,6 +610,15 @@
           <input type="number" id="override-dsp-fw" placeholder="449" min="0" max="9999" style="flex:1">
           <button id="btn-apply-dsp-fw" class="btn-mini">Set</button>
         </div>
+        <div class="row" style="gap:4px;align-items:center;margin-top:6px">
+          <label style="font-size:11px;min-width:54px">Inv Temp °C</label>
+          <input type="number" id="override-inv-temp" placeholder="auto" min="-10" max="80" step="1" style="flex:1">
+          <button id="btn-apply-inv-temp" class="btn-mini">Set</button>
+          <button id="btn-clear-inv-temp" class="btn-mini">Clear</button>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+          Live: <span id="inv-temp-live">—</span> · pins inverter temp (empty = thermal model)
+        </div>
 
         <label style="margin-top:8px" id="grid-export-limit-label">
           Grid Export Limit (W)
@@ -1256,6 +1265,12 @@
       else el('override-solar').value = '';
       if (s.load_override !== null && s.load_override !== undefined) el('override-load').value = s.load_override;
       else el('override-load').value = '';
+      // Inverter temperature override + live readout
+      if (s.inverter_temperature_override !== null && s.inverter_temperature_override !== undefined) {
+        el('override-inv-temp').value = s.inverter_temperature_override;
+      } else {
+        el('override-inv-temp').value = '';
+      }
       // CT meter checkbox
       // CT meter dropdown
       if (s.ct_meter_installed !== undefined) el('ct-meter-select').value = s.ct_meter_installed ? 'installed' : 'none';
@@ -1331,6 +1346,8 @@
 
       el('val-load').textContent = fmt(s.load_demand_w);
       el('val-temp').textContent = `${s.battery_temperature_celsius.toFixed(1)}°C`;
+      el('inv-temp-live').textContent =
+        (s.inverter_temperature_celsius !== undefined ? s.inverter_temperature_celsius.toFixed(1) : '—') + '°C';
 
       // Battery module detail panel
       updateBatteryDisplay(s.battery_modules);
@@ -1396,6 +1413,7 @@
       const overrideParts = [];
       if (s.solar_override !== null && s.solar_override !== undefined) overrideParts.push('☀️ PV override ' + s.solar_override + 'W');
       if (s.load_override !== null && s.load_override !== undefined) overrideParts.push('🏠 override ' + s.load_override + 'W');
+      if (s.inverter_temperature_override !== null && s.inverter_temperature_override !== undefined) overrideParts.push('🌡️ inv temp ' + s.inverter_temperature_override + '°C');
       el('override-indicator').textContent = overrideParts.join(' | ');
 
             // Schedule display — all slots
@@ -1445,9 +1463,16 @@
       // and three-phase/HV register-bank families (40xx/41xx/81xx/82xx) use a
       // different slot bank and must not show it.
       const _dtc = (INVERTER_PRESETS[s.inverter_type] || {}).dtc;
+      // ARM firmware century (fw/100) picks the generation on the shared
+      // 0x2001 family code: 2=Gen1, 3=Gen3, 8/9=Gen2.
+      const _fwCentury = Math.floor((s.arm_firmware_version || 0) / 100);
       const showTimedDischarge = _dtc === 0x3001 || _dtc === 0x3002
         || (_dtc >> 8) === 0x60
-        || (_dtc >> 8) === 0x80;
+        || (_dtc >> 8) === 0x80
+        // Gen3 Hybrid (0x2001, ARM FW 3xx) physically serves HR 318-320 --
+        // verified against a real inverter. Gen1 (FW2xx)/Gen2 (FW8xx) stay
+        // hidden pending confirmation.
+        || (_dtc === 0x2001 && _fwCentury === 3);
       const pctOrDefault = (v) => (v === undefined || v === null || Number(v) <= 0) ? 100 : Number(v);
       const chargeLimit = pctOrDefault(s.charge_power_limit_percent);
       const dischargeLimit = pctOrDefault(s.discharge_power_limit_percent);
@@ -1768,6 +1793,25 @@
         await invoke('set_dsp_firmware', { version: v });
         el('footer-info').textContent = `DSP firmware set to ${v}`;
       } catch (e) { console.error('set dsp fw failed:', e); }
+    });
+    // ---- Inverter temperature override ----
+    el('btn-apply-inv-temp').addEventListener('click', async () => {
+      const v = parseFloat(el('override-inv-temp').value);
+      if (Number.isNaN(v) || v < -10 || v > 80) {
+        el('footer-info').textContent = 'Inverter temp must be -10–80 °C';
+        return;
+      }
+      try {
+        await invoke('set_inverter_temperature', { celsius: v });
+        el('footer-info').textContent = `Inverter temperature pinned to ${v} °C`;
+      } catch (e) { console.error('set inverter temp failed:', e); }
+    });
+    el('btn-clear-inv-temp').addEventListener('click', async () => {
+      try {
+        el('override-inv-temp').value = '';
+        await invoke('set_inverter_temperature', { celsius: null });
+        el('footer-info').textContent = 'Inverter temperature override cleared (thermal model active)';
+      } catch (e) { console.error('clear inverter temp failed:', e); }
     });
 
     // ---- Dongle Misbehaviour ----

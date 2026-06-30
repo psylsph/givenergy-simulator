@@ -60,10 +60,17 @@ const mockTauriScript = `
           const isEms = invType === 'EMS' || invType === 'EmsCommercial' || invType === 'Gateway12kW';
           const maxOutputW = isThreePhase ? 11000 : isEms ? 5000 : 5000;
           const exportLimitW = isThreePhase || isEms ? 6500 : 5000;
+          // ARM firmware per generation on the shared 0x2001 family code
+          // (century = fw/100: 2=Gen1, 3=Gen3, 8=Gen2). Drives the Timed
+          // Discharge visibility test, which gates HR 318-320 on 0x2001 + FW3xx.
+          const armFw = { Gen1Hybrid: 252, Gen2Hybrid: 852, Gen3Hybrid: 318 }[invType] || 0;
           return {
             timestamp: '2025-06-01T12:00:00', inverter_mode: 'Eco', battery_mode: 'Eco',
             inverter_type: invType, inverter_ac_power_w: 3000,
+            arm_firmware_version: armFw, dsp_firmware_version: 0,
             inverter_max_output_w: maxOutputW,
+            inverter_temperature_celsius: 35.0,
+            inverter_temperature_override: null,
             export_limit_w: exportLimitW,
             aggregate_soc: 75.0, battery_power_kw: 2.5, battery_temperature_celsius: 28.0,
             battery_module_count: 1,
@@ -210,6 +217,7 @@ async function createPlantAndWaitForSchedule(page, type) {
 const VISIBLE_TYPES = [
   ['ACCoupled', 'AC-coupled (0x3001)'],
   ['ACCoupled2', 'AC-coupled Mk2 (0x3002)'],
+  ['Gen3Hybrid', 'Gen3 Hybrid (0x2001, FW318)'],
   ['AllInOne6', 'residential All-in-One (0x8001)'],
   ['AllInOne', 'residential All-in-One (0x8002)'],
   ['AllInOne5', 'residential All-in-One (0x8003)'],
@@ -223,8 +231,7 @@ for (const [type, label] of VISIBLE_TYPES) {
 }
 
 const HIDDEN_TYPES = [
-  ['Gen1Hybrid', 'DC hybrid (0x2001)'],
-  ['Gen3Hybrid', 'DC hybrid Gen3 (0x2001)'],
+  ['Gen1Hybrid', 'Gen1 Hybrid (0x2001, FW252)'],
   ['Gen3Plus6kW', 'DC hybrid Gen3+ (0x2201)'],
   ['ThreePhase', 'three-phase (0x4001)'],
   ['AIO8kW', 'HV Gen3 AIO (0x8102)'],
@@ -298,6 +305,35 @@ test('clear overrides sends null', async ({ page }) => {
   expect(p(s).watts).toBeNull();
   expect(l).toBeTruthy();
   expect(p(l).watts).toBeNull();
+});
+
+test('inverter temperature override pins value', async ({ page }) => {
+  await setupPage(page);
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  // The sidebar shows the live inverter temperature readout.
+  await expect(page.locator('#inv-temp-live')).toContainText('°C');
+  await page.fill('#override-inv-temp', '70');
+  await page.click('#btn-apply-inv-temp');
+  await page.waitForTimeout(300);
+
+  const calls = await getCalls(page);
+  const c = calls.find(x => x.cmd === 'set_inverter_temperature');
+  expect(c).toBeTruthy();
+  expect(p(c).celsius).toBe(70);
+});
+
+test('clear inverter temperature sends null', async ({ page }) => {
+  await setupPage(page);
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  await page.click('#btn-clear-inv-temp');
+  await page.waitForTimeout(300);
+
+  const calls = await getCalls(page);
+  const c = calls.find(x => x.cmd === 'set_inverter_temperature');
+  expect(c).toBeTruthy();
+  expect(p(c).celsius).toBeNull();
 });
 
 // ===== Faults =====

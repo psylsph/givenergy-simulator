@@ -84,13 +84,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     visible after the next refresh.
   - The schedule card (renamed **"Pause Slot" → "Timed Discharge"**) had
     an inverted visibility rule — it appeared for everything *except*
-    AC-coupled inverters. It now renders only for the AC-output families
-    that actually serve the HR 318-320 block: AC-coupled (0x3001/0x3002),
-    AC three-phase (0x60xx) and residential All-in-One (0x80xx). DC
-    hybrids (20xx/21xx/22xx), three-phase/HV register-bank families
-    (40xx/41xx/81xx/82xx), and others are hidden. Covered by new Rust
-    unit tests (`ScheduleDto` pause slot) and 13 Playwright tests across
-    inverter families.
+    AC-coupled inverters. It now renders only for inverter families that
+    actually serve the HR 318-320 block: AC-coupled (0x3001/0x3002),
+    AC three-phase (0x60xx), residential All-in-One (0x80xx), **and the
+    Gen3 Hybrid (0x2001 with ARM FW 3xx)** — confirmed by reading the raw
+    HR registers on a physical Gen3 Hybrid (FW 318) after toggling the
+    portal's Timed Discharge preset, and consistent with givenergy-modbus,
+    which declares `battery_pause_mode` (HR 318) in the single-phase
+    inverter getter. Gen1 (0x2001, FW 2xx) and Gen2 (0x2001, FW 8xx)
+    stay hidden pending confirmation; three-phase/HV register-bank
+    families (40xx/41xx/81xx/82xx) and others are hidden. Covered by new
+    Rust unit tests (`ScheduleDto` pause slot) and 13 Playwright tests
+    across inverter families.
 
 ## [0.14.4] - 2026-06-06
 

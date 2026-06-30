@@ -374,6 +374,10 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, (u16
             let version = flat!(args, "version");
             ok(c::set_arm_firmware(state, version).await)
         }
+        "set_inverter_temperature" => {
+            let celsius = flat!(args, "celsius");
+            ok(c::set_inverter_temperature(app.clone(), state, celsius).await)
+        }
 
         other => Err((404, format!("unknown command: {other}"))),
     }

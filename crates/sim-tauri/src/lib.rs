@@ -77,6 +77,7 @@ pub fn run() {
             commands::get_evc_port,
             commands::set_dsp_firmware,
             commands::set_arm_firmware,
+            commands::set_inverter_temperature,
             commands::set_ct_meter,
             commands::get_grid_port_max_power,
             commands::set_grid_port_max_power,
