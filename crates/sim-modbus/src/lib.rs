@@ -503,18 +503,18 @@ pub async fn run_modbus_server(
                                 }
                             }
 
-                            // The three-phase holding control bank (HR 1000-1124) only
-                            // exists on three-phase inverters. On other devices (e.g.
-                            // Gateway12kW) the bank is absent, so reads into it must
-                            // return EC_ILLEGAL_DATA_ADDRESS instead of phantom zeros —
-                            // otherwise clients (e.g. HEM polling the three-phase config
-                            // block for a gateway) keep getting plausible-looking junk.
-                            if inner_func == FC_READ_HOLDING
-                                && (start_addr as u32) < 1125
-                                && (start_addr as u32 + count as u32) > 1000
-                            {
-                                let is_tph = store.lock().await.is_three_phase_device();
-                                if !is_tph {
+                            // Some holding-register banks are model-specific. If the
+                            // configured device lacks the bank, return an exception
+                            // instead of phantom zeros so clients fall back to the right
+                            // capability set. Examples: HR 1000-1124 only exists on
+                            // three-phase inverters; HR 318-320 battery pause is absent
+                            // on single-phase AC Coupled inverters per giv_tcp Model.AC.
+                            if inner_func == FC_READ_HOLDING {
+                                let absent = store
+                                    .lock()
+                                    .await
+                                    .holding_range_absent_for_device(start_addr, count);
+                                if absent {
                                     let resp = build_error_response(
                                         &serial,
                                         slave,

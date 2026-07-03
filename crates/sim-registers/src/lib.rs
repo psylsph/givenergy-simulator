@@ -158,6 +158,10 @@ fn is_three_phase_inverter(inverter_type: &str) -> bool {
     inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase"
 }
 
+fn is_ac_coupled_inverter(inverter_type: &str) -> bool {
+    matches!(inverter_type, "ACCoupled" | "ACCoupled2")
+}
+
 /// Returns true for GivEnergy Gateway device types.
 ///
 /// A Gateway is an AC aggregation/transfer hub (not an inverter) that sits in
@@ -203,14 +207,17 @@ impl RegisterStore {
     /// Device-type gating (returns `false` → caller emits EC_ILLEGAL_DATA_ADDRESS):
     /// - HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
     ///   inverters — they don't have EMS capability.
+    /// - HR 318-320 (battery pause mode/slot) are not present on single-phase
+    ///   AC Coupled inverters, matching giv_tcp's Model.AC handling.
     /// - The three-phase control bank (HR 1000-1124) only exists on real
     ///   three-phase inverters. A Gateway (and any other non-three-phase
     ///   device) has no registers there, so writes must be rejected —
     ///   mirroring real hardware, which ACKs no writes into that bank.
     pub fn write(&mut self, address: u16, value: u16) -> bool {
-        if address == 2071
-            && (self.inverter_type == "ACCoupled" || self.inverter_type == "ACCoupled2")
-        {
+        if address == 2071 && is_ac_coupled_inverter(&self.inverter_type) {
+            return false;
+        }
+        if (318..=320).contains(&address) && is_ac_coupled_inverter(&self.inverter_type) {
             return false;
         }
         if (1000..=1124).contains(&address) && !is_three_phase_inverter(&self.inverter_type) {
@@ -242,6 +249,18 @@ impl RegisterStore {
     /// devices that lack it (e.g. Gateway12kW), mirroring real hardware.
     pub fn is_three_phase_device(&self) -> bool {
         is_three_phase_inverter(&self.inverter_type)
+    }
+
+    /// Returns true when a holding-register read overlaps a model-specific
+    /// bank that is absent on the configured inverter type.
+    pub fn holding_range_absent_for_device(&self, start: u16, count: u16) -> bool {
+        let end = start as u32 + count as u32;
+        let overlaps = |range_start: u32, range_end_exclusive: u32| {
+            (start as u32) < range_end_exclusive && end > range_start
+        };
+
+        (overlaps(318, 321) && is_ac_coupled_inverter(&self.inverter_type))
+            || (overlaps(1000, 1125) && !is_three_phase_inverter(&self.inverter_type))
     }
 
     /// Save the current EMS plant holding block (HR 2040-2075) so it can be
@@ -8493,6 +8512,31 @@ mod tests {
         assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(319, RegisterSpace::Holding), Some(60));
         assert_eq!(store.read_by_space(320, RegisterSpace::Holding), Some(60));
+    }
+
+    #[test]
+    fn ac_coupled_has_no_battery_pause_register_bank() {
+        let mut state = make_state();
+        state.config.inverter_type = "ACCoupled".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert!(store.holding_range_absent_for_device(318, 3));
+        assert!(store.holding_range_absent_for_device(319, 1));
+        assert!(!store.write(318, 1));
+        assert!(!store.write(319, 1200));
+        assert!(!store.write(320, 1300));
+    }
+
+    #[test]
+    fn non_ac_coupled_keeps_battery_pause_register_bank() {
+        let state = make_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert!(!store.holding_range_absent_for_device(318, 3));
+        assert!(store.write(318, 2));
+        assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(2));
     }
 
     #[test]

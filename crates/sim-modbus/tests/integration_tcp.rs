@@ -11,7 +11,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, sleep};
 
 use sim_modbus::{
-    FC_READ_HOLDING, FC_READ_INPUT, FC_WRITE_SINGLE, HEADER_SIZE, ModbusCommand, SERIAL_LEN, crc16,
+    EC_ILLEGAL_DATA_ADDRESS, FC_READ_HOLDING, FC_READ_INPUT, FC_WRITE_SINGLE, HEADER_SIZE,
+    ModbusCommand, SERIAL_LEN, crc16,
 };
 use sim_models::{BatteryState, PlantState};
 use sim_registers::{RegisterStore, default_register_catalogue};
@@ -431,6 +432,43 @@ async fn hv_battery_cluster_discovery_serves_bms_bcu_and_bmus() {
             "slave {slave:#04x} serial must be non-blank"
         );
     }
+}
+
+#[tokio::test]
+async fn ac_coupled_battery_pause_bank_rejected_on_wire() {
+    // giv_tcp treats single-phase AC Coupled (Model.AC) as not having the
+    // battery pause mode/slot registers (HR 318-320). The simulator should
+    // therefore reject reads and writes to that bank instead of ACKing a
+    // capability that the real device family does not expose.
+    let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let mut state = PlantState::new(ts);
+    state.config.inverter_type = "ACCoupled".to_string();
+    state.sync_battery_from_vec();
+
+    let (addr, _store, _rx) = start_server(&state).await;
+    let serial = serial_arr();
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 318, 3);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, payload) = decode_response(&raw);
+    assert_eq!(func, FC_READ_HOLDING | 0x80);
+    assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
+
+    let req = build_write_request(&serial, 0x11, 318, 2);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, payload) = decode_response(&raw);
+    assert_eq!(func, FC_WRITE_SINGLE | 0x80);
+    assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
+
+    // Other AC-coupled control registers in the same HR 300 block still work.
+    let req = build_write_request(&serial, 0x11, 314, 50);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(func, FC_WRITE_SINGLE);
 }
 
 #[tokio::test]
