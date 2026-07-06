@@ -216,6 +216,28 @@ enum Commands {
         /// threshold). Omit to let the thermal model vary it with load.
         #[arg(long)]
         inverter_temperature: Option<f64>,
+        /// Enable the GivEVC wallbox and serve it on the EVC Modbus port
+        /// (--evc-port, default 5020). The wallbox stays Idle until you also
+        /// plug the cable (--evc-cable) and start a charge (--evc-start).
+        #[arg(long, default_value_t = false)]
+        evc_enabled: bool,
+        /// Plug the EV charging cable (connection_status = Connected).
+        #[arg(long, default_value_t = false)]
+        evc_cable: bool,
+        /// Start charging (charge_control = Start). Requires --evc-enabled
+        /// and --evc-cable to actually draw power.
+        #[arg(long, default_value_t = false)]
+        evc_start: bool,
+        /// EV charge current limit in amps (clamped 6–32). Default 32 A.
+        #[arg(long, default_value_t = 32.0)]
+        evc_charge_current: f64,
+        /// Seed the charge session energy / HR 72 in kWh (clamped 0–6553.5).
+        /// Projected on the wire as kWh×10 (deci-kWh). Default 0.
+        #[arg(long, default_value_t = 0.0)]
+        evc_session_energy: f64,
+        /// EVC Modbus TCP port (standard Modbus, no envelope). Default 5020.
+        #[arg(long, default_value_t = 5020)]
+        evc_port: u16,
     },
     /// Run a scenario YAML file.
     Run {
@@ -614,6 +636,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fast,
             dongle_misbehaviour,
             inverter_temperature,
+            evc_enabled,
+            evc_cable,
+            evc_start,
+            evc_charge_current,
+            evc_session_energy,
+            evc_port,
         } => {
             simulate(
                 &inverter,
@@ -633,6 +661,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fast,
                 &dongle_misbehaviour,
                 inverter_temperature,
+                evc_enabled,
+                evc_cable,
+                evc_start,
+                evc_charge_current,
+                evc_session_energy,
+                evc_port,
             )
             .await
         }
@@ -711,6 +745,12 @@ async fn simulate(
     fast: bool,
     dongle_misbehaviour: &str,
     inverter_temperature: Option<f64>,
+    evc_enabled: bool,
+    evc_cable: bool,
+    evc_start: bool,
+    evc_charge_current: f64,
+    evc_session_energy: f64,
+    evc_port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let battery_count = battery_count.clamp(1, 6);
     let soc = soc.clamp(0.0, 100.0);
@@ -767,6 +807,24 @@ async fn simulate(
         state.inverter.temperature_override = Some(t);
         state.inverter.temperature_celsius = t.clamp(-10.0, 80.0);
     }
+
+    // Configure the GivEVC wallbox from CLI flags. The EVC Modbus server
+    // (started below) shares this state; EvcEngine advances the state
+    // machine and accumulates session energy each tick.
+    state.evc.enabled = evc_enabled;
+    if evc_cable {
+        state.evc.connection_status = 1; // Connected
+    }
+    if evc_start {
+        state.evc.charge_control = 1; // Start
+        // Jump straight into Charging so the session is immediately active.
+        // This also skips the Idle→Connected→Starting transitions, whose
+        // Starting→Charging step calls start_charging() and would reset a
+        // seeded --evc-session-energy back to 0.
+        state.evc.charging_state = 4; // Charging
+    }
+    state.evc.charge_current_limit = (evc_charge_current.clamp(6.0, 32.0) * 10.0) as u16;
+    state.evc.session_energy_kwh = evc_session_energy.clamp(0.0, 6553.5);
 
     let load_profile = parse_profile(load_profile);
 
@@ -849,6 +907,19 @@ async fn simulate(
     if let Some(t) = inverter_temperature {
         tracing::info!("  Inv temp:       {t:.0}°C (pinned, thermal model off)");
     }
+    if evc_enabled {
+        tracing::info!(
+            "  EVC:            enabled, {:.0}A, cable {}, charge {}",
+            evc_charge_current.clamp(6.0, 32.0),
+            if evc_cable { "plugged" } else { "unplugged" },
+            if evc_start { "Start" } else { "Ready" }
+        );
+        if evc_session_energy > 0.0 {
+            tracing::info!("  EVC session:    {evc_session_energy:.1} kWh seeded (HR 72)");
+        }
+    } else {
+        tracing::info!("  EVC:            disabled (server still listens on {evc_port})");
+    }
     tracing::info!("  Modbus server:  {modbus_addr}");
 
     // Initial register projection
@@ -876,6 +947,19 @@ async fn simulate(
         }
     });
     tracing::info!("Modbus TCP server running on {modbus_addr}");
+
+    // Start the GivEVC wallbox standard Modbus TCP server. It shares the
+    // engine's EVC state so Modbus reads see live session/power values and
+    // Modbus writes (HR 91/93/95) feed back into the engine each tick (see
+    // the EVC sync in the tick loop below).
+    let evc_state = Arc::new(tokio::sync::Mutex::new(engine.state.evc.clone()));
+    let evc_server_state = evc_state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = sim_modbus::run_evc_modbus_server(evc_server_state, evc_port).await {
+            tracing::error!("EVC Modbus server error: {e}");
+        }
+    });
+    tracing::info!("EVC Modbus server running on 0.0.0.0:{evc_port}");
     tracing::info!("Simulation running... Press Ctrl+C to stop.");
 
     let mut tick_count: u64 = 0;
@@ -902,6 +986,16 @@ async fn simulate(
             enqueue_pause_slot_update(&mut engine, &sched_updates);
         }
 
+        // Sync EVC command inputs (Modbus writes to HR 91/93/95) into the
+        // engine before the tick.
+        if let Ok(evc) = evc_state.try_lock() {
+            engine.state.evc.charge_control = evc.charge_control;
+            engine.state.evc.charge_current_limit = evc.charge_current_limit;
+            engine.state.evc.plug_and_go = evc.plug_and_go;
+            engine.state.evc.enabled = evc.enabled;
+            engine.state.evc.connection_status = evc.connection_status;
+        }
+
         engine.tick();
         tick_count += 1;
 
@@ -915,6 +1009,11 @@ async fn simulate(
         // Update battery snapshot for Modbus BMS reads
         if let Ok(mut bs) = battery_shared.try_lock() {
             *bs = engine.state.batteries.clone();
+        }
+        // Sync the full EVC state back out so Modbus reads see the engine's
+        // state-machine transitions, power, and accumulated session energy.
+        if let Ok(mut evc) = evc_state.try_lock() {
+            *evc = engine.state.evc.clone();
         }
 
         recording.push(RecordingFrame {

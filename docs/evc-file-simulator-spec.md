@@ -288,7 +288,7 @@ ones for packing:
 | `meter_energy_kwh` (kWh) | 29 | `round(kWh × 10)` |
 | `charge_limit_a` (A) | 36 | `round(A × 10)` |
 | `active_power_w.*` (W) | 13 / 17 / 20 / 24 | `round(W)` (no scale) |
-| `session_energy_kwh` (kWh) | 72 | `int(kWh)` (truncated) |
+| `session_energy_kwh` (kWh) | 72 | `kWh×10` (deci-kWh) |
 | `session_duration_s` (s) | 79 | `s & 0xFFFF` (low 16 bits) |
 | `serial_number` (string) | 38–68 | one ASCII char per register, NUL-padded |
 | enum/int fields | 0/2/4/32/34/91/93/94/95 | value as-is |
@@ -460,7 +460,7 @@ in real units is multiplied by 10 before storage; "÷10 Amps" means raw÷10 = Am
 | 37 | _reserved_ | R | 0 | — | |
 | 38–68 | `serial_number` | R | ASCII, **one char per register** (31 chars) | string | stop decoding at first 0x00 |
 | 69–71 | _reserved_ | R | 0 | — | |
-| 72 | `charge_session_energy` | R | integer kWh (`as u16`) | kWh | session total (see §9 limits) |
+| 72 | `charge_session_energy` | R | ÷10 kWh (raw = kWh×10) | kWh | session total (see §9 limits) |
 | 73–78 | _reserved_ | R | 0 | — | |
 | 79 | `charge_session_duration` | R | seconds, **low 16 bits** (`& 0xFFFF`) | s | wraps at 65535 s (see §9) |
 | 80–90 | _reserved_ | R | 0 | — | |
@@ -558,7 +558,7 @@ friendly fields, or for test fixtures.
 | `evse_max_current_a` | int | A | 32 | as-is |
 | `evse_min_current_a` | int | A | 34 | as-is |
 | `charge_limit_a` | number | A | 36 | ×10 |
-| `session_energy_kwh` | number | kWh | 72 | truncate to int |
+| `session_energy_kwh` | number | kWh | 72 | ×10 (deci-kWh) |
 | `session_duration_s` | int | s | 79 | `& 0xFFFF` (low word) |
 | `plug_and_go_enabled` | bool | — | 93 | true→0, false→1 |
 | `charge_control` | int 0/1/2 | enum | 94 | as-is (reported state) |
@@ -603,7 +603,7 @@ HR 13 = 7712    (W)
 HR 29 = 12345   (1234.5 kWh)
 HR 36 = 320     (32.0 A)
 HR 38..68 = "11288853538258" + zeros
-HR 72 = 12      (12.7 → truncated integer kWh; see §9)
+HR 72 = 127     (12.7 kWh × 10; client decodes ÷10; see §9)
 HR 79 = 4530
 HR 91 = 320
 HR 93 = 0       (plug-and-go enabled)
@@ -738,10 +738,10 @@ server never reads a half-written file.
 These are inherited from the proven in-repo implementation; replicate them rather
 than "fixing" them silently, or a real client may decode differently:
 
-* **`session_energy_kwh` (HR 72) is integer kWh** — the fractional part is
-  truncated when projected. If you need 0.1 kWh resolution, encode it yourself
-  via the `registers` override (e.g. put `kwh*10` at HR 72 and document it), but
-  be aware the standard GivEVC decode treats HR 72 as integer kWh.
+* **`session_energy_kwh` (HR 72) is deci-kWh (raw = kWh×10)** — matches the
+  real GivEVC wire encoding and GivTCP's decode (`value ÷ 10`). Encoded as `u16`
+  (×10), giving 0.1 kWh resolution across a 0–6553.5 kWh range. This mirrors
+  `meter_energy_kwh` (HR 29, ÷10) and `charge_limit` (HR 36, ÷10).
 * **`session_duration_s` (HR 79) is a single 16-bit word** — it wraps at 65 535 s
   (~18.2 h). The reference only serves the low word.
 * **All scalars are `u16`** — `active_power_w` caps at 65 535 W, currents at

@@ -2231,6 +2231,25 @@ pub async fn set_evc_charge_current(
     Ok(())
 }
 
+/// Set the charge session energy (HR 72) directly, in kWh. Useful for
+/// seeding a session to a known value — e.g. to exercise a client's
+/// "session in progress" display without waiting for energy to accumulate.
+/// Clamped to [0, 6553.5] kWh (the u16 ÷10 wire range). Projected on the
+/// wire as kWh×10 (deci-kWh) to match the real GivEVC / GivTCP decode.
+#[tauri::command]
+pub async fn set_evc_session_energy(state: State<'_, AppState>, kwh: f64) -> Result<(), String> {
+    let kwh = kwh.clamp(0.0, 6553.5);
+    {
+        let mut evc = state.evc_state.lock().await;
+        evc.session_energy_kwh = kwh;
+    }
+    let mut eng = state.engine.lock().await;
+    if let Some(e) = eng.as_mut() {
+        e.state.evc.session_energy_kwh = kwh;
+    }
+    Ok(())
+}
+
 /// Simulate plugging / unplugging the charging cable.
 /// Sets connection_status (0=Not Connected, 1=Connected) and drives the
 /// charging state machine via EvcEngine.

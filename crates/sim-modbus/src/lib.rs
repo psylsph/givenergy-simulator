@@ -807,8 +807,8 @@ fn evc_state_to_registers(evc: &sim_models::EvcState) -> Vec<u16> {
     for (i, &b) in serial_bytes.iter().take(31).enumerate() {
         regs[38 + i] = b as u16;
     }
-    // HR 72: Charge_Session_Energy (kWh)
-    regs[72] = evc.session_energy_kwh as u16;
+    // HR 72: Charge_Session_Energy (÷10 kWh, raw = kWh×10)
+    regs[72] = (evc.session_energy_kwh * 10.0) as u16;
     // HR 79: Charge_Session_Duration (seconds)
     regs[79] = (evc.session_duration_secs & 0xFFFF) as u16;
     // HR 93: Plug_and_Go (0=enable, 1=disable)
@@ -1020,4 +1020,56 @@ fn build_evc_error(trans_id: u16, unit_id: u8, func: u8, code: u8) -> Vec<u8> {
     resp.push(func | 0x80);
     resp.push(code);
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evc_state_to_registers;
+    use sim_models::EvcState;
+
+    fn evc_with_session_energy(kwh: f64) -> EvcState {
+        EvcState {
+            session_energy_kwh: kwh,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hr72_session_energy_is_deci_kwh_times_10() {
+        // HR 72 must be encoded as kWh×10 (deci-kWh) on the wire so that
+        // clients which decode HR 72 as value÷10 (GivTCP / HEM) read the
+        // correct session energy: 12.7 kWh → raw 127.
+        let regs = evc_state_to_registers(&evc_with_session_energy(12.7));
+        assert_eq!(regs[72], 127, "12.7 kWh must project to HR72 = 127 (÷10)");
+    }
+
+    #[test]
+    fn hr72_session_energy_resolution_and_truncation() {
+        // Fresh session reads 0.
+        assert_eq!(evc_state_to_registers(&evc_with_session_energy(0.0))[72], 0);
+        // Sub-kWh resolution survives: 0.1 kWh → raw 1 (the point of ×10).
+        assert_eq!(evc_state_to_registers(&evc_with_session_energy(0.1))[72], 1);
+        // Deci-kWh truncation: 12.749 × 10 = 127.49 → as u16 → 127.
+        assert_eq!(
+            evc_state_to_registers(&evc_with_session_energy(12.749))[72],
+            127
+        );
+    }
+
+    #[test]
+    fn hr72_matches_sibling_deci_scales() {
+        // HR 72 (×10) follows the same deci encoding as HR 29 (meter energy)
+        // and HR 36 (charge limit), confirming the convention is uniform
+        // across EVC energy/current registers.
+        let evc = EvcState {
+            session_energy_kwh: 12.7,
+            meter_energy_kwh: 12.7,
+            charge_limit: 32.0,
+            ..Default::default()
+        };
+        let regs = evc_state_to_registers(&evc);
+        assert_eq!(regs[72], 127); // session energy ×10
+        assert_eq!(regs[29], 127); // meter energy ×10
+        assert_eq!(regs[36], 320); // charge limit ×10
+    }
 }

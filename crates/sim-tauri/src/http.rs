@@ -354,6 +354,10 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, (u16
             let deci_amps = flat!(args, "deciAmps");
             ok(c::set_evc_charge_current(state, deci_amps).await)
         }
+        "set_evc_session_energy" => {
+            let kwh = flat!(args, "kwh");
+            ok(c::set_evc_session_energy(state, kwh).await)
+        }
         "set_evc_cable_status" => {
             let status = flat!(args, "status");
             ok(c::set_evc_cable_status(state, status).await)

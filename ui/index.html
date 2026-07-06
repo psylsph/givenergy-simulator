@@ -794,6 +794,14 @@
             <span id="evc-current-label" style="min-width:36px;text-align:right">32 A</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <label style="min-width:52px">Session</label>
+            <input type="number" id="evc-session-input" min="0" max="6553.5" step="0.1" value="0"
+              style="width:64px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:12px">
+            <span style="color:var(--text-muted);font-size:11px">kWh</span>
+            <button id="evc-session-set" class="btn-mini" style="width:40px">Set</button>
+            <span id="evc-session-status" style="color:var(--text-muted);font-size:11px"></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
             <label style="min-width:52px">Port</label>
             <input type="number" id="evc-port-input" min="1" max="65535" value="5020"
               style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 6px;font-size:12px">
@@ -1899,6 +1907,22 @@
       } catch (e) { console.error('evc current failed:', e); }
       if (evcSlideTimer) clearTimeout(evcSlideTimer);
       evcSliding = false;
+    });
+
+    // EVC session energy override (HR 72)
+    el('evc-session-set').addEventListener('click', async () => {
+      const kwh = parseFloat(el('evc-session-input').value);
+      if (Number.isNaN(kwh) || kwh < 0 || kwh > 6553.5) {
+        el('evc-session-status').textContent = 'Invalid';
+        return;
+      }
+      try {
+        await invoke('set_evc_session_energy', { kwh });
+        el('evc-session-status').textContent = `Set ${kwh.toFixed(1)}`;
+      } catch (e) {
+        el('evc-session-status').textContent = 'Failed';
+        console.error('set_evc_session_energy failed:', e);
+      }
     });
 
     // EVC port control

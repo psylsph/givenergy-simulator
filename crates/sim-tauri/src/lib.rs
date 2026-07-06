@@ -71,6 +71,7 @@ pub fn run() {
             commands::set_evc_enabled,
             commands::set_evc_charge_control,
             commands::set_evc_charge_current,
+            commands::set_evc_session_energy,
             commands::set_evc_cable_status,
             commands::get_evc_state,
             commands::set_evc_port,
