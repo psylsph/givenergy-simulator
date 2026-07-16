@@ -6,31 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-07-16
+
 ### Added
 
-- **Grid Port Max Power Output sidebar control** — a new "Grid Port Max
-  Power Output" group in the Controls sidebar that auto-detects the
-  relevant wire register from the inverter family (per a manual audit
-  of the giv_tcp `model/{baseinverter,threephase,ems,gateway}.py`
-  register maps cross-checked against givenergy-modbus):
-  - **Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+** —
-    **read-only display** of `ge_hr_grid_port_max_power_output` (HR 26).
-    The Set button is disabled because givenergy-modbus defines HR 26
-    with no setter. The displayed value comes from
-    `PlantState.config.max_ac_watts` (the plant configuration cap).
-  - **Three-phase / HV / ACThreePhase** — **read + write** of
-    `p_export_limit` (HR 1063, `C.deci` / ×0.1 encoding). The GUI shows
-    user-friendly watts; the simulator multiplies by 10 on the way to
-    the register (clamped to 65535 dW = 6553.5 W). Backend clamps to
-    6500 W (givenergy-modbus `max=6500`) before the encoding step.
-  - **EMS / EmsCommercial / Gateway** — **read + write** of
-    `ems_export_power_limit` (HR 2071, raw `C.uint16`).
-  Two new Tauri commands, `get_grid_port_max_power` and
-  `set_grid_port_max_power`, route the user-friendly watt value to the
-  correct register via a `GridPortPowerFamily` classifier (3 variants:
-  `SinglePhase`, `ThreePhase`, `Ems`). The classifier is mirrored in
-  JavaScript so the sidebar label, register hint, and Set-button
-  enabled-state follow the inverter type without an extra round trip.
+- **Grid Export Limit display** — the sidebar now shows the live export limit
+  and explains the family-specific wire register: HR 102/26 for single-phase,
+  HR 1063 for three-phase, and HR 2071 for EMS/Gateway. The GUI display is
+  read-only; Modbus writes and backend commands remain available for clients
+  that need a non-default limit.
 
 - **Register projections** — three new register defs / projection branches
   in `sim-registers`:
@@ -57,6 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Schedule Modbus handling is centralized** in `sim-models`, removing the
+  duplicated Tauri and CLI update paths. Schedule enable flags now gate the
+  configured windows instead of being inferred from whether times are present.
+- **Simulation accounting corrections** cover force-charge AC flow, island-mode
+  surplus, PV1/PV2 override splitting, and seeded totals at high minimum SOC.
+- **Shared inverter capability tables** now provide battery limits, AC limits,
+  and DSP firmware defaults to both GUI and CLI paths.
+- **Persistence/export writes are atomic**, and the HTTP bridge rejects
+  oversized request bodies and arbitrary server-side scenario paths.
 - **`is_schedule_register`** in `sim-tauri::commands` and `sim-api::main`
   no longer matches HR 2071. The schedule accumulator would otherwise
   race the new direct-projection path. The address mapping
@@ -74,6 +67,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Charge/discharge schedule enable registers (issue #2).** HR 96
+  (`ENABLE_CHARGE`) and HR 59 (`ENABLE_DISCHARGE`) now toggle schedule execution
+  without modifying HR 94-95 or HR 56-57. Disabled schedules remain disabled
+  across subsequent projections, configured times survive disable/re-enable
+  cycles, and arbitrary raw `u16` slot values are preserved exactly across
+  ticks and save/load rather than normalized to `00:60`.
+- **Partial battery-pause writes** to HR 318-320 preserve untouched live fields,
+  so a mode-only write no longer clobbers the configured pause window.
+- **Modbus register-range overflow validation** now rejects ranges beyond the
+  16-bit address space while still allowing a one-register read at HR 65535.
 - **Timed Discharge (HR 318-320 battery-pause slot) GUI.** Two display
   bugs:
   - `ScheduleDto::from_state` hard-coded the pause-slot fields

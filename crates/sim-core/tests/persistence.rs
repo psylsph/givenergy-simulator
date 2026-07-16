@@ -86,6 +86,7 @@ fn test_schedule() -> Schedule {
         discharge_target_soc_10: 10.0,
         enable_charge: false,
         enable_discharge: false,
+        raw_time_registers: std::collections::BTreeMap::new(),
         export_start_1: 0.0,
         export_end_1: 0.0,
         export_target_soc_1: 50.0,
@@ -276,6 +277,7 @@ fn schedule_roundtrip_preserves_all_fields() {
         discharge_target_soc_10: 10.0,
         enable_charge: true,
         enable_discharge: true,
+        raw_time_registers: [(94, 2360), (95, u16::MAX)].into(),
         export_start_1: 0.0,
         export_end_1: 0.0,
         export_target_soc_1: 50.0,
@@ -310,6 +312,8 @@ fn schedule_roundtrip_preserves_all_fields() {
         restored.enable_discharge,
         "Roundtrip should preserve enable_discharge"
     );
+    assert_eq!(restored.raw_time_registers.get(&94), Some(&2360));
+    assert_eq!(restored.raw_time_registers.get(&95), Some(&u16::MAX));
 }
 
 // ===========================================================================

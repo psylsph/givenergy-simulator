@@ -31,6 +31,10 @@ pub struct AppState {
     pub battery_snapshot: Arc<tokio::sync::Mutex<Vec<sim_models::BatteryState>>>,
     /// Accumulated time register writes from Modbus (HR 35-40), persists across drain cycles.
     pub pending_time_regs: Arc<std::sync::Mutex<[Option<u16>; 6]>>,
+    /// Scratch buffer used while reconciling independent HR 318-320 writes.
+    /// Missing fields are filled from live state so each write can take effect
+    /// immediately without clobbering the rest of the pause configuration.
+    pub pending_pause_regs: Arc<std::sync::Mutex<[Option<u16>; 3]>>,
     /// EVC (Electric Vehicle Charger) state, shared with standard Modbus TCP server.
     pub evc_state: Arc<tokio::sync::Mutex<sim_models::EvcState>>,
     /// EVC Modbus TCP port (default 5020).
@@ -53,6 +57,7 @@ impl Default for AppState {
             modbus_cmds: Arc::new(std::sync::Mutex::new(Vec::new())),
             battery_snapshot: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             pending_time_regs: Arc::new(std::sync::Mutex::new([None; 6])),
+            pending_pause_regs: Arc::new(std::sync::Mutex::new([None; 3])),
             evc_state: Arc::new(tokio::sync::Mutex::new(sim_models::EvcState::default())),
             evc_port: Arc::new(std::sync::Mutex::new(5020)),
             dongle_misbehaviour: Arc::new(std::sync::Mutex::new(
@@ -237,6 +242,9 @@ impl ScheduleDto {
             }
             h * 100 + m
         };
+        let raw_or = |address: u16, derived: u16| {
+            schedule.map_or(derived, |s| s.raw_time_or(address, derived))
+        };
 
         let (
             cs,
@@ -372,26 +380,10 @@ impl ScheduleDto {
         };
 
         Self {
-            enable_charge: cs > 0.0 && cs != ce
-                || cs2 > 0.0 && cs2 != ce2
-                || cs3 > 0.0 && cs3 != ce3
-                || cs4 > 0.0 && cs4 != ce4
-                || cs5 > 0.0 && cs5 != ce5
-                || cs6 > 0.0 && cs6 != ce6
-                || cs7 > 0.0 && cs7 != ce7
-                || cs8 > 0.0 && cs8 != ce8
-                || cs9 > 0.0 && cs9 != ce9
-                || cs10 > 0.0 && cs10 != ce10,
-            enable_discharge: ds > 0.0 && ds != de
-                || ds2 > 0.0 && ds2 != de2
-                || ds3 > 0.0 && ds3 != de3
-                || ds4 > 0.0 && ds4 != de4
-                || ds5 > 0.0 && ds5 != de5
-                || ds6 > 0.0 && ds6 != de6
-                || ds7 > 0.0 && ds7 != de7
-                || ds8 > 0.0 && ds8 != de8
-                || ds9 > 0.0 && ds9 != de9
-                || ds10 > 0.0 && ds10 != de10,
+            // HR 96/59 are independent controls. Do not infer them from
+            // configured windows: disabled schedules retain their slot values.
+            enable_charge: schedule.is_some_and(|s| s.enable_charge),
+            enable_discharge: schedule.is_some_and(|s| s.enable_discharge),
             soc_reserve: state.min_aggregate_soc(),
             charge_target_soc: ct1,
             charge_target_soc_2: ct2,
@@ -413,46 +405,46 @@ impl ScheduleDto {
             discharge_target_soc_8: dt8,
             discharge_target_soc_9: dt9,
             discharge_target_soc_10: dt10,
-            charge_slot_1_start: hhmm(cs),
-            charge_slot_1_end: hhmm(ce),
-            charge_slot_2_start: hhmm(cs2),
-            charge_slot_2_end: hhmm(ce2),
-            charge_slot_3_start: hhmm(cs3),
-            charge_slot_3_end: hhmm(ce3),
-            charge_slot_4_start: hhmm(cs4),
-            charge_slot_4_end: hhmm(ce4),
-            charge_slot_5_start: hhmm(cs5),
-            charge_slot_5_end: hhmm(ce5),
-            charge_slot_6_start: hhmm(cs6),
-            charge_slot_6_end: hhmm(ce6),
-            charge_slot_7_start: hhmm(cs7),
-            charge_slot_7_end: hhmm(ce7),
-            charge_slot_8_start: hhmm(cs8),
-            charge_slot_8_end: hhmm(ce8),
-            charge_slot_9_start: hhmm(cs9),
-            charge_slot_9_end: hhmm(ce9),
-            charge_slot_10_start: hhmm(cs10),
-            charge_slot_10_end: hhmm(ce10),
-            discharge_slot_1_start: hhmm(ds),
-            discharge_slot_1_end: hhmm(de),
-            discharge_slot_2_start: hhmm(ds2),
-            discharge_slot_2_end: hhmm(de2),
-            discharge_slot_3_start: hhmm(ds3),
-            discharge_slot_3_end: hhmm(de3),
-            discharge_slot_4_start: hhmm(ds4),
-            discharge_slot_4_end: hhmm(de4),
-            discharge_slot_5_start: hhmm(ds5),
-            discharge_slot_5_end: hhmm(de5),
-            discharge_slot_6_start: hhmm(ds6),
-            discharge_slot_6_end: hhmm(de6),
-            discharge_slot_7_start: hhmm(ds7),
-            discharge_slot_7_end: hhmm(de7),
-            discharge_slot_8_start: hhmm(ds8),
-            discharge_slot_8_end: hhmm(de8),
-            discharge_slot_9_start: hhmm(ds9),
-            discharge_slot_9_end: hhmm(de9),
-            discharge_slot_10_start: hhmm(ds10),
-            discharge_slot_10_end: hhmm(de10),
+            charge_slot_1_start: raw_or(94, hhmm(cs)),
+            charge_slot_1_end: raw_or(95, hhmm(ce)),
+            charge_slot_2_start: raw_or(243, raw_or(31, hhmm(cs2))),
+            charge_slot_2_end: raw_or(244, raw_or(32, hhmm(ce2))),
+            charge_slot_3_start: raw_or(246, hhmm(cs3)),
+            charge_slot_3_end: raw_or(247, hhmm(ce3)),
+            charge_slot_4_start: raw_or(249, hhmm(cs4)),
+            charge_slot_4_end: raw_or(250, hhmm(ce4)),
+            charge_slot_5_start: raw_or(252, hhmm(cs5)),
+            charge_slot_5_end: raw_or(253, hhmm(ce5)),
+            charge_slot_6_start: raw_or(255, hhmm(cs6)),
+            charge_slot_6_end: raw_or(256, hhmm(ce6)),
+            charge_slot_7_start: raw_or(258, hhmm(cs7)),
+            charge_slot_7_end: raw_or(259, hhmm(ce7)),
+            charge_slot_8_start: raw_or(261, hhmm(cs8)),
+            charge_slot_8_end: raw_or(262, hhmm(ce8)),
+            charge_slot_9_start: raw_or(264, hhmm(cs9)),
+            charge_slot_9_end: raw_or(265, hhmm(ce9)),
+            charge_slot_10_start: raw_or(267, hhmm(cs10)),
+            charge_slot_10_end: raw_or(268, hhmm(ce10)),
+            discharge_slot_1_start: raw_or(56, hhmm(ds)),
+            discharge_slot_1_end: raw_or(57, hhmm(de)),
+            discharge_slot_2_start: raw_or(44, hhmm(ds2)),
+            discharge_slot_2_end: raw_or(45, hhmm(de2)),
+            discharge_slot_3_start: raw_or(276, hhmm(ds3)),
+            discharge_slot_3_end: raw_or(277, hhmm(de3)),
+            discharge_slot_4_start: raw_or(279, hhmm(ds4)),
+            discharge_slot_4_end: raw_or(280, hhmm(de4)),
+            discharge_slot_5_start: raw_or(282, hhmm(ds5)),
+            discharge_slot_5_end: raw_or(283, hhmm(de5)),
+            discharge_slot_6_start: raw_or(285, hhmm(ds6)),
+            discharge_slot_6_end: raw_or(286, hhmm(de6)),
+            discharge_slot_7_start: raw_or(288, hhmm(ds7)),
+            discharge_slot_7_end: raw_or(289, hhmm(de7)),
+            discharge_slot_8_start: raw_or(291, hhmm(ds8)),
+            discharge_slot_8_end: raw_or(292, hhmm(de8)),
+            discharge_slot_9_start: raw_or(294, hhmm(ds9)),
+            discharge_slot_9_end: raw_or(295, hhmm(de9)),
+            discharge_slot_10_start: raw_or(297, hhmm(ds10)),
+            discharge_slot_10_end: raw_or(298, hhmm(de10)),
             battery_pause_mode: state.battery_pause_mode,
             pause_slot_start: state.battery_pause_slot_start,
             pause_slot_end: state.battery_pause_slot_end,
@@ -623,6 +615,7 @@ mod tests {
             discharge_start: 17.0,
             discharge_end: 21.0,
             discharge_target_soc: 25.0,
+            enable_discharge: true,
             ..Default::default()
         };
 
@@ -632,6 +625,24 @@ mod tests {
         assert_eq!(dto.discharge_slot_1_start, 1700);
         assert_eq!(dto.discharge_slot_1_end, 2100);
         assert_eq!(dto.discharge_target_soc, 25.0);
+    }
+
+    #[test]
+    fn schedule_dto_keeps_disabled_flag_and_stored_raw_times_independent() {
+        let state = PlantState::new(ts());
+        let mut schedule = sim_core::Schedule {
+            charge_start: 1.0,
+            charge_end: 4.0,
+            enable_charge: false,
+            ..Default::default()
+        };
+        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX)].into());
+
+        let dto = ScheduleDto::from_state(&state, Some(&schedule));
+
+        assert!(!dto.enable_charge);
+        assert_eq!(dto.charge_slot_1_start, 2360);
+        assert_eq!(dto.charge_slot_1_end, u16::MAX);
     }
 
     #[test]

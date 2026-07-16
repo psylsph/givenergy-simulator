@@ -4,6 +4,7 @@
 //! to avoid a proc-macro namespace collision (E0255) in lib targets.
 
 use crate::app_state::{AppState, PlantStateDto};
+use crate::atomic_write;
 use sim_core::{
     BatteryEngine, Command, EnergyTracker, EvcEngine, InverterEngine, InverterMode, LoadEngine,
     LoadProfile, ScheduleEngine, SimulationEngine, SolarEngine, WeatherCondition,
@@ -71,49 +72,10 @@ pub async fn create_plant(
 
     let inv_type = params.inverter_type.as_deref().unwrap_or("Gen3Hybrid");
 
-    // Max battery charge/discharge power per inverter type (watts)
-    // Source: official GivEnergy datasheets
-    let max_batt_w = match inv_type {
-        // Gen 1 Hybrid 5.0: 2500W charge/discharge
-        "Gen1Hybrid" => 2500.0,
-        // Gen2 Hybrid 5.0: 3600W charge/discharge (same DC limit as Gen3)
-        "Gen2Hybrid" => 3600.0,
-        // Gen3 Hybrid 3.6/5.0: charge 3300W, discharge 3600W. Use 3600 as the DC battery limit.
-        "Gen3Hybrid" => 3600.0,
-        // Gen3 Hybrid 8.0: charge 8000W, discharge 8500W
-        "Gen3Hybrid8kW" => 8000.0,
-        // Gen3 Hybrid 10.0: charge 10000W, discharge 10500W
-        "Gen3Hybrid10kW" => 10000.0,
-        // Gen3 Plus variants
-        "Gen3Plus6kW" => 2600.0,
-        "Gen3Plus4600" => 2600.0,
-        "Gen3Plus3600" => 2600.0,
-        "Gen3Plus6kW2" => 2600.0,
-        // AC Coupled / Mk2: 3000W charge/discharge
-        "ACCoupled" | "ACCoupled2" => 3000.0,
-        // All-in-One 6kW: 6000W continuous
-        "AllInOne6" => 6000.0,
-        // All-in-One (original 0x8002): 6kW continuous (7.2kW peak off-grid)
-        "AllInOne" => 6000.0,
-        // All-in-One 5kW variant
-        "AllInOne5" => 5000.0,
-        // AIO 8kW
-        "AIO8kW" => 8000.0,
-        // AIO 10kW
-        "AIO10kW" => 10000.0,
-        // AIO Hybrid variants
-        "AIOHybrid6kW" => 6000.0,
-        "AIOHybrid8kW" => 8000.0,
-        "AIOHybrid10kW" => 10000.0,
-        // 3-Phase 6kW: charge/discharge 6000W
-        "ThreePhase" => 6000.0,
-        "ThreePhase8kW" => 8000.0,
-        "ThreePhase10kW" => 10000.0,
-        "ThreePhase11kW" => 11000.0,
-        // Gateway: aggregates an All-in-One (6kW continuous) behind it.
-        "Gateway12kW" => 6000.0,
-        _ => 3600.0,
-    };
+    // Max battery charge/discharge power per inverter type (watts). The
+    // authoritative table now lives in `sim_models::max_batt_w_for_inverter`
+    // (single source of truth) so sim-tauri and sim-api stay in sync.
+    let max_batt_w = sim_models::max_batt_w_for_inverter(inv_type);
     let max_batt_kw = max_batt_w / 1000.0;
 
     let now = chrono::Local::now().naive_local();
@@ -224,48 +186,13 @@ pub async fn create_plant(
     if inv_type.starts_with("Gateway") {
         plant_state.config.parallel_aio_num = 1;
     }
-    // Default DSP firmware per inverter type. Matches typical real-world values.
-    plant_state.inverter.dsp_firmware_version = match inv_type {
-        "Gen1Hybrid" => 110,
-        "Gen2Hybrid" => 230,
-        "Gen3Hybrid" => 449,
-        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
-        "ACCoupled" | "ACCoupled2" => 305,
-        "ThreePhase" => 612,
-        "ThreePhase8kW" | "ThreePhase10kW" => 612,
-        "ThreePhase11kW" => 11043,
-        "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
-        "AIO8kW" | "AIO10kW" => 1010,
-        "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
-        _ => 449,
-    };
-    plant_state.config.max_ac_watts = match plant_state.config.inverter_type.as_str() {
-        "Gen3Hybrid8kW" => 8000.0,
-        "Gen3Hybrid10kW" => 10000.0,
-        "Gen3Plus6kW" => 5000.0,
-        "Gen3Plus4600" => 4600.0,
-        "Gen3Plus3600" => 3600.0,
-        "Gen3Plus6kW2" => 6000.0,
-        "AllInOne6" => 6000.0,
-        "AIO8kW" => 8000.0,
-        "AIO10kW" => 10000.0,
-        "AIOHybrid6kW" => 6000.0,
-        "AIOHybrid8kW" => 8000.0,
-        "AIOHybrid10kW" => 10000.0,
-        "ThreePhase" => 6000.0,
-        "ThreePhase8kW" => 8000.0,
-        "ThreePhase10kW" => 10000.0,
-        "ThreePhase11kW" => 11000.0,
-        "ACCoupled" | "ACCoupled2" => 3000.0,
-        "AllInOne" => 6000.0,
-        "AllInOne5" => 5000.0,
-        "Gen1Hybrid" => 5000.0,
-        "Gen2Hybrid" => 5000.0,
-        "Gen3Hybrid" => 5000.0,
-        // Gateway: aggregates an All-in-One (6kW AC) behind it.
-        "Gateway12kW" => 6000.0,
-        _ => 5000.0,
-    };
+    // Default DSP firmware per inverter type. Authoritative table lives in
+    // `sim_models::dsp_firmware_for_inverter` so this and the CLI agree.
+    plant_state.inverter.dsp_firmware_version = sim_models::dsp_firmware_for_inverter(inv_type);
+    // Use the authoritative inverter-type table from sim_models so the
+    // simulator and Tauri/CLI entry points stay in sync.
+    plant_state.config.max_ac_watts =
+        sim_models::max_ac_watts_for(&plant_state.config.inverter_type);
     // Seed the export limit at the standard UK EREC G98 default for this
     // inverter family: 3680 W (16 A × 230 V) for single-phase Micro-
     // generators, 6500 W for three-phase (the wire ceiling on HR 1063),
@@ -387,7 +314,7 @@ pub async fn create_plant(
     let path = data_dir.join("plant_state.json");
     let json =
         serde_json::to_string_pretty(&persisted).map_err(|e| format!("Serialize error: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))?;
+    atomic_write::write(&path, json.as_bytes()).map_err(|e| format!("Write error: {e}"))?;
     tracing::info!("Auto-saved plant to {}", path.display());
 
     // Reset dongle misbehaviour to Off on new plant creation.
@@ -428,6 +355,9 @@ pub async fn load_scenario(
     _state: State<'_, AppState>,
     params: LoadScenarioParams,
 ) -> Result<ScenarioInfo, String> {
+    // The desktop file picker intentionally permits user-selected files from
+    // anywhere. The HTTP bridge never forwards an arbitrary client path; its
+    // upload endpoint writes to a server-controlled temporary file first.
     let yaml = std::fs::read_to_string(&params.path).map_err(|e| e.to_string())?;
     let scenario = sim_scenarios::parse_named_scenario(&yaml).map_err(|e| e.to_string())?;
 
@@ -554,20 +484,6 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
     }
 }
 
-/// Convert HHMM register value (e.g. 530 = 05:30) to decimal hours.
-/// Returns None if the value is the disabled sentinel (60) or invalid.
-fn hhmm_to_hours(val: u16) -> Option<f64> {
-    if val == 60 {
-        return None; // disabled
-    }
-    let hours = val / 100;
-    let mins = val % 100;
-    if mins > 59 || hours > 23 {
-        return None; // invalid
-    }
-    Some(hours as f64 + mins as f64 / 60.0)
-}
-
 /// Check if a register address is a schedule-related holding register.
 ///
 /// HR 2071 (`ems_export_power_limit`) was previously in this list because the
@@ -645,6 +561,7 @@ pub async fn start_simulation(
     let modbus_cmds = state.modbus_cmds.clone();
     let battery_snapshot = state.battery_snapshot.clone();
     let pending_time_regs = state.pending_time_regs.clone();
+    let pending_pause_regs = state.pending_pause_regs.clone();
     let evc_arc = state.evc_state.clone();
     let schedule_arc = state.schedule.clone();
     let save_dir = app.path().app_data_dir().ok();
@@ -723,389 +640,94 @@ pub async fn start_simulation(
                         let mut sched_dirty = false;
                         let mut sched_updates: std::collections::HashMap<u16, u16> =
                             std::collections::HashMap::new();
+                        // Collect pause-slot writes while the synchronous command
+                        // guards are held. Missing fields are filled from live state
+                        // before emitting SetBatteryPause below.
+                        let mut pause_mode: Option<u16> = None;
+                        let mut pause_start: Option<u16> = None;
+                        let mut pause_end: Option<u16> = None;
+                        let mut pause_ready = false;
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                    for cmd in cmds.drain(..) {
-                                        match cmd.address {
-                                            35 => time_buf[0] = Some(cmd.value),
-                                            36 => time_buf[1] = Some(cmd.value),
-                                            37 => time_buf[2] = Some(cmd.value),
-                                            38 => time_buf[3] = Some(cmd.value),
-                                            39 => time_buf[4] = Some(cmd.value),
-                                            40 => time_buf[5] = Some(cmd.value),
-                                            _ => {}
+                                    if let Ok(mut pause_buf) = pending_pause_regs.lock() {
+                                        for cmd in cmds.drain(..) {
+                                            match cmd.address {
+                                                35 => time_buf[0] = Some(cmd.value),
+                                                36 => time_buf[1] = Some(cmd.value),
+                                                37 => time_buf[2] = Some(cmd.value),
+                                                38 => time_buf[3] = Some(cmd.value),
+                                                39 => time_buf[4] = Some(cmd.value),
+                                                40 => time_buf[5] = Some(cmd.value),
+                                                318 => pause_mode = Some(cmd.value),
+                                                319 => pause_start = Some(cmd.value),
+                                                320 => pause_end = Some(cmd.value),
+                                                _ => {}
+                                            }
+                                            if is_schedule_register(cmd.address) {
+                                                sched_updates.insert(cmd.address, cmd.value);
+                                                sched_dirty = true;
+                                            }
+                                            // Keep pause writes in the accumulator for
+                                            // compatibility with existing consumers. The
+                                            // authoritative state update is emitted below.
+                                            if matches!(cmd.address, 318..=320) {
+                                                sched_updates.insert(cmd.address, cmd.value);
+                                            }
+                                            if let Some(sim_cmd) =
+                                                modbus_address_to_command(cmd.address, cmd.value)
+                                            {
+                                                e.enqueue(sim_cmd);
+                                            }
                                         }
-                                        if is_schedule_register(cmd.address) {
-                                            sched_updates.insert(cmd.address, cmd.value);
-                                            sched_dirty = true;
+                                        // Apply time registers
+                                        if time_buf.iter().all(|r| r.is_some()) {
+                                            let y = time_buf[0].unwrap() as i32;
+                                            let m = time_buf[1].unwrap() as u32;
+                                            let d = time_buf[2].unwrap() as u32;
+                                            let h = time_buf[3].unwrap() as u32;
+                                            let min = time_buf[4].unwrap() as u32;
+                                            let s = time_buf[5].unwrap() as u32;
+                                            if let Some(dt) =
+                                                chrono::NaiveDate::from_ymd_opt(y, m, d)
+                                                    .and_then(|date| date.and_hms_opt(h, min, s))
+                                            {
+                                                e.enqueue(Command::SetSimulationTime(dt));
+                                            }
+                                            *time_buf = [None; 6];
                                         }
-                                        // Also collect pause slot registers
-                                        if matches!(cmd.address, 318..=320) {
-                                            sched_updates.insert(cmd.address, cmd.value);
-                                        }
-                                        if let Some(sim_cmd) =
-                                            modbus_address_to_command(cmd.address, cmd.value)
+                                        // Apply any pause-register write immediately while
+                                        // preserving fields the client did not write. A lone
+                                        // HR 318 mode toggle must not wait indefinitely for
+                                        // HR 319/320 or reset the existing window.
+                                        if pause_mode.is_some()
+                                            || pause_start.is_some()
+                                            || pause_end.is_some()
                                         {
-                                            e.enqueue(sim_cmd);
+                                            pause_mode.get_or_insert(e.state.battery_pause_mode);
+                                            pause_start
+                                                .get_or_insert(e.state.battery_pause_slot_start);
+                                            pause_end.get_or_insert(e.state.battery_pause_slot_end);
+                                            *pause_buf = [None; 3];
+                                            pause_ready = true;
                                         }
-                                    }
-                                    // Apply time registers
-                                    if time_buf.iter().all(|r| r.is_some()) {
-                                        let y = time_buf[0].unwrap() as i32;
-                                        let m = time_buf[1].unwrap() as u32;
-                                        let d = time_buf[2].unwrap() as u32;
-                                        let h = time_buf[3].unwrap() as u32;
-                                        let min = time_buf[4].unwrap() as u32;
-                                        let s = time_buf[5].unwrap() as u32;
-                                        if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
-                                            .and_then(|date| date.and_hms_opt(h, min, s))
-                                        {
-                                            e.enqueue(Command::SetSimulationTime(dt));
-                                        }
-                                        *time_buf = [None; 6];
                                     }
                                 }
                             }
                         }
-                        // Handle pause slot updates (HR 318-320) after MutexGuards dropped
-                        if let Some(&mode) = sched_updates.get(&318) {
+                        // Flush a complete command assembled from this cycle's writes
+                        // and the live values of any untouched fields.
+                        if pause_ready {
                             e.enqueue(Command::SetBatteryPause {
-                                mode,
-                                start: sched_updates
-                                    .get(&319)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates
-                                    .get(&320)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_end),
-                            });
-                        } else if sched_updates.contains_key(&319)
-                            || sched_updates.contains_key(&320)
-                        {
-                            e.enqueue(Command::SetBatteryPause {
-                                mode: e.state.battery_pause_mode,
-                                start: sched_updates
-                                    .get(&319)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates
-                                    .get(&320)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_end),
+                                mode: pause_mode.unwrap(),
+                                start: pause_start.unwrap(),
+                                end: pause_end.unwrap(),
                             });
                         }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
-                            // Charge slot 1 (HR 94-95) — primary
-                            if let Some(&v) = sched_updates.get(&94) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&95) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
-                            if let Some(&v) =
-                                sched_updates.get(&31).or_else(|| sched_updates.get(&243))
-                            {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) =
-                                sched_updates.get(&32).or_else(|| sched_updates.get(&244))
-                            {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Discharge slot 1 (HR 56-57) — primary
-                            if let Some(&v) = sched_updates.get(&56) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&57) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Discharge slot 2 (HR 44-45)
-                            if let Some(&v) = sched_updates.get(&44) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&45) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
-                            if let Some(&v) = sched_updates.get(&116) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // Charge target SOC slot 1 per-slot (HR 242)
-                            if let Some(&v) = sched_updates.get(&242) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // Charge target SOC slot 2 per-slot (HR 245)
-                            if let Some(&v) = sched_updates.get(&245) {
-                                sched.charge_target_soc_2 = v as f64;
-                            }
-                            // Discharge target SOC slot 1 per-slot (HR 272)
-                            if let Some(&v) = sched_updates.get(&272) {
-                                sched.discharge_target_soc = v as f64;
-                            }
-                            // Discharge target SOC slot 2 per-slot (HR 275)
-                            if let Some(&v) = sched_updates.get(&275) {
-                                sched.discharge_target_soc_2 = v as f64;
-                            }
-                            // Charge slot 3-10 (HR 246-268, alternating start/end)
-                            if let Some(&v) = sched_updates.get(&246) {
-                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&247) {
-                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&248) {
-                                sched.charge_target_soc_3 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&249) {
-                                sched.charge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&250) {
-                                sched.charge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&251) {
-                                sched.charge_target_soc_4 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&252) {
-                                sched.charge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&253) {
-                                sched.charge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&254) {
-                                sched.charge_target_soc_5 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&255) {
-                                sched.charge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&256) {
-                                sched.charge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&257) {
-                                sched.charge_target_soc_6 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&258) {
-                                sched.charge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&259) {
-                                sched.charge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&260) {
-                                sched.charge_target_soc_7 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&261) {
-                                sched.charge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&262) {
-                                sched.charge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&263) {
-                                sched.charge_target_soc_8 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&264) {
-                                sched.charge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&265) {
-                                sched.charge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&266) {
-                                sched.charge_target_soc_9 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&267) {
-                                sched.charge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&268) {
-                                sched.charge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&269) {
-                                sched.charge_target_soc_10 = v as f64;
-                            }
-                            // Discharge slot 3-10 (HR 276-298, alternating start/end)
-                            if let Some(&v) = sched_updates.get(&276) {
-                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&277) {
-                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&278) {
-                                sched.discharge_target_soc_3 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&279) {
-                                sched.discharge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&280) {
-                                sched.discharge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&281) {
-                                sched.discharge_target_soc_4 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&282) {
-                                sched.discharge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&283) {
-                                sched.discharge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&284) {
-                                sched.discharge_target_soc_5 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&285) {
-                                sched.discharge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&286) {
-                                sched.discharge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&287) {
-                                sched.discharge_target_soc_6 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&288) {
-                                sched.discharge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&289) {
-                                sched.discharge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&290) {
-                                sched.discharge_target_soc_7 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&291) {
-                                sched.discharge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&292) {
-                                sched.discharge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&293) {
-                                sched.discharge_target_soc_8 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&294) {
-                                sched.discharge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&295) {
-                                sched.discharge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&296) {
-                                sched.discharge_target_soc_9 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&297) {
-                                sched.discharge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&298) {
-                                sched.discharge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&299) {
-                                sched.discharge_target_soc_10 = v as f64;
-                            }
-                            // EMS discharge slots 1-3 (HR 2044-2052)
-                            if let Some(&v) = sched_updates.get(&2044) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2045) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2046) {
-                                sched.discharge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2047) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2048) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2049) {
-                                sched.discharge_target_soc_2 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2050) {
-                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2051) {
-                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2052) {
-                                sched.discharge_target_soc_3 = v as f64;
-                            }
-                            // EMS charge slots 1-3 (HR 2053-2061)
-                            if let Some(&v) = sched_updates.get(&2053) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2054) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2055) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2056) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2057) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2058) {
-                                sched.charge_target_soc_2 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2059) {
-                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2060) {
-                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2061) {
-                                sched.charge_target_soc_3 = v as f64;
-                            }
-
-                            // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
-                            if let Some(&v) = sched_updates.get(&96) {
-                                if v == 0 {
-                                    sched.charge_start = 0.0;
-                                    sched.charge_end = 0.0;
-                                    sched.enable_charge = false;
-                                } else {
-                                    sched.enable_charge = true;
-                                }
-                            }
-                            // Enable discharge (HR 59) — 0 = disable, 1 = always-on
-                            if let Some(&v) = sched_updates.get(&59) {
-                                if v == 0 {
-                                    sched.discharge_start = 0.0;
-                                    sched.discharge_end = 0.0;
-                                    sched.enable_discharge = false;
-                                } else {
-                                    sched.enable_discharge = true;
-                                }
-                            }
-                            // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&1112) {
-                                sched.enable_charge = v != 0;
-                            }
-                            if let Some(&v) = sched_updates.get(&1113) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1114) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1115) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1116) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1118) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1119) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1120) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1121) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
+                            sched.apply_modbus_updates(&sched_updates);
                             *schedule_arc.lock().await = Some(sched.clone());
                             e.enqueue(Command::SetSchedule(Box::new(sched)));
                         }
@@ -1165,7 +787,7 @@ pub async fn start_simulation(
                         };
                         let path = dir.join("plant_state.json");
                         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-                            let _ = std::fs::write(&path, json);
+                            let _ = atomic_write::write(&path, json.as_bytes());
                         }
                     }
                 }
@@ -1184,389 +806,94 @@ pub async fn start_simulation(
                         let mut sched_dirty = false;
                         let mut sched_updates: std::collections::HashMap<u16, u16> =
                             std::collections::HashMap::new();
+                        // Collect pause-slot writes while the synchronous command
+                        // guards are held. Missing fields are filled from live state
+                        // before emitting SetBatteryPause below.
+                        let mut pause_mode: Option<u16> = None;
+                        let mut pause_start: Option<u16> = None;
+                        let mut pause_end: Option<u16> = None;
+                        let mut pause_ready = false;
                         {
                             if let Ok(mut cmds) = modbus_cmds.lock() {
                                 if let Ok(mut time_buf) = pending_time_regs.lock() {
-                                    for cmd in cmds.drain(..) {
-                                        match cmd.address {
-                                            35 => time_buf[0] = Some(cmd.value),
-                                            36 => time_buf[1] = Some(cmd.value),
-                                            37 => time_buf[2] = Some(cmd.value),
-                                            38 => time_buf[3] = Some(cmd.value),
-                                            39 => time_buf[4] = Some(cmd.value),
-                                            40 => time_buf[5] = Some(cmd.value),
-                                            _ => {}
+                                    if let Ok(mut pause_buf) = pending_pause_regs.lock() {
+                                        for cmd in cmds.drain(..) {
+                                            match cmd.address {
+                                                35 => time_buf[0] = Some(cmd.value),
+                                                36 => time_buf[1] = Some(cmd.value),
+                                                37 => time_buf[2] = Some(cmd.value),
+                                                38 => time_buf[3] = Some(cmd.value),
+                                                39 => time_buf[4] = Some(cmd.value),
+                                                40 => time_buf[5] = Some(cmd.value),
+                                                318 => pause_mode = Some(cmd.value),
+                                                319 => pause_start = Some(cmd.value),
+                                                320 => pause_end = Some(cmd.value),
+                                                _ => {}
+                                            }
+                                            if is_schedule_register(cmd.address) {
+                                                sched_updates.insert(cmd.address, cmd.value);
+                                                sched_dirty = true;
+                                            }
+                                            // Keep pause writes in the accumulator for
+                                            // compatibility with existing consumers. The
+                                            // authoritative state update is emitted below.
+                                            if matches!(cmd.address, 318..=320) {
+                                                sched_updates.insert(cmd.address, cmd.value);
+                                            }
+                                            if let Some(sim_cmd) =
+                                                modbus_address_to_command(cmd.address, cmd.value)
+                                            {
+                                                e.enqueue(sim_cmd);
+                                            }
                                         }
-                                        if is_schedule_register(cmd.address) {
-                                            sched_updates.insert(cmd.address, cmd.value);
-                                            sched_dirty = true;
+                                        // Apply time registers
+                                        if time_buf.iter().all(|r| r.is_some()) {
+                                            let y = time_buf[0].unwrap() as i32;
+                                            let m = time_buf[1].unwrap() as u32;
+                                            let d = time_buf[2].unwrap() as u32;
+                                            let h = time_buf[3].unwrap() as u32;
+                                            let min = time_buf[4].unwrap() as u32;
+                                            let s = time_buf[5].unwrap() as u32;
+                                            if let Some(dt) =
+                                                chrono::NaiveDate::from_ymd_opt(y, m, d)
+                                                    .and_then(|date| date.and_hms_opt(h, min, s))
+                                            {
+                                                e.enqueue(Command::SetSimulationTime(dt));
+                                            }
+                                            *time_buf = [None; 6];
                                         }
-                                        // Also collect pause slot registers
-                                        if matches!(cmd.address, 318..=320) {
-                                            sched_updates.insert(cmd.address, cmd.value);
-                                        }
-                                        if let Some(sim_cmd) =
-                                            modbus_address_to_command(cmd.address, cmd.value)
+                                        // Apply any pause-register write immediately while
+                                        // preserving fields the client did not write. A lone
+                                        // HR 318 mode toggle must not wait indefinitely for
+                                        // HR 319/320 or reset the existing window.
+                                        if pause_mode.is_some()
+                                            || pause_start.is_some()
+                                            || pause_end.is_some()
                                         {
-                                            e.enqueue(sim_cmd);
+                                            pause_mode.get_or_insert(e.state.battery_pause_mode);
+                                            pause_start
+                                                .get_or_insert(e.state.battery_pause_slot_start);
+                                            pause_end.get_or_insert(e.state.battery_pause_slot_end);
+                                            *pause_buf = [None; 3];
+                                            pause_ready = true;
                                         }
-                                    }
-                                    // Apply time registers
-                                    if time_buf.iter().all(|r| r.is_some()) {
-                                        let y = time_buf[0].unwrap() as i32;
-                                        let m = time_buf[1].unwrap() as u32;
-                                        let d = time_buf[2].unwrap() as u32;
-                                        let h = time_buf[3].unwrap() as u32;
-                                        let min = time_buf[4].unwrap() as u32;
-                                        let s = time_buf[5].unwrap() as u32;
-                                        if let Some(dt) = chrono::NaiveDate::from_ymd_opt(y, m, d)
-                                            .and_then(|date| date.and_hms_opt(h, min, s))
-                                        {
-                                            e.enqueue(Command::SetSimulationTime(dt));
-                                        }
-                                        *time_buf = [None; 6];
                                     }
                                 }
                             }
                         }
-                        // Handle pause slot updates (HR 318-320) after MutexGuards dropped
-                        if let Some(&mode) = sched_updates.get(&318) {
+                        // Flush a complete command assembled from this cycle's writes
+                        // and the live values of any untouched fields.
+                        if pause_ready {
                             e.enqueue(Command::SetBatteryPause {
-                                mode,
-                                start: sched_updates
-                                    .get(&319)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates
-                                    .get(&320)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_end),
-                            });
-                        } else if sched_updates.contains_key(&319)
-                            || sched_updates.contains_key(&320)
-                        {
-                            e.enqueue(Command::SetBatteryPause {
-                                mode: e.state.battery_pause_mode,
-                                start: sched_updates
-                                    .get(&319)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_start),
-                                end: sched_updates
-                                    .get(&320)
-                                    .copied()
-                                    .unwrap_or(e.state.battery_pause_slot_end),
+                                mode: pause_mode.unwrap(),
+                                start: pause_start.unwrap(),
+                                end: pause_end.unwrap(),
                             });
                         }
                         // Phase 2: apply schedule updates (MutexGuards dropped, safe to .await)
                         if sched_dirty {
                             let mut sched = schedule_arc.lock().await.clone().unwrap_or_default();
-                            // Charge slot 1 (HR 94-95) — primary
-                            if let Some(&v) = sched_updates.get(&94) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&95) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
-                            if let Some(&v) =
-                                sched_updates.get(&31).or_else(|| sched_updates.get(&243))
-                            {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) =
-                                sched_updates.get(&32).or_else(|| sched_updates.get(&244))
-                            {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Discharge slot 1 (HR 56-57) — primary
-                            if let Some(&v) = sched_updates.get(&56) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&57) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Discharge slot 2 (HR 44-45)
-                            if let Some(&v) = sched_updates.get(&44) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&45) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
-                            if let Some(&v) = sched_updates.get(&116) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // Charge target SOC slot 1 per-slot (HR 242)
-                            if let Some(&v) = sched_updates.get(&242) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            // Charge target SOC slot 2 per-slot (HR 245)
-                            if let Some(&v) = sched_updates.get(&245) {
-                                sched.charge_target_soc_2 = v as f64;
-                            }
-                            // Discharge target SOC slot 1 per-slot (HR 272)
-                            if let Some(&v) = sched_updates.get(&272) {
-                                sched.discharge_target_soc = v as f64;
-                            }
-                            // Discharge target SOC slot 2 per-slot (HR 275)
-                            if let Some(&v) = sched_updates.get(&275) {
-                                sched.discharge_target_soc_2 = v as f64;
-                            }
-                            // Charge slot 3-10 (HR 246-268, alternating start/end)
-                            if let Some(&v) = sched_updates.get(&246) {
-                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&247) {
-                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&248) {
-                                sched.charge_target_soc_3 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&249) {
-                                sched.charge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&250) {
-                                sched.charge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&251) {
-                                sched.charge_target_soc_4 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&252) {
-                                sched.charge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&253) {
-                                sched.charge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&254) {
-                                sched.charge_target_soc_5 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&255) {
-                                sched.charge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&256) {
-                                sched.charge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&257) {
-                                sched.charge_target_soc_6 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&258) {
-                                sched.charge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&259) {
-                                sched.charge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&260) {
-                                sched.charge_target_soc_7 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&261) {
-                                sched.charge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&262) {
-                                sched.charge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&263) {
-                                sched.charge_target_soc_8 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&264) {
-                                sched.charge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&265) {
-                                sched.charge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&266) {
-                                sched.charge_target_soc_9 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&267) {
-                                sched.charge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&268) {
-                                sched.charge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&269) {
-                                sched.charge_target_soc_10 = v as f64;
-                            }
-                            // Discharge slot 3-10 (HR 276-298, alternating start/end)
-                            if let Some(&v) = sched_updates.get(&276) {
-                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&277) {
-                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&278) {
-                                sched.discharge_target_soc_3 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&279) {
-                                sched.discharge_start_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&280) {
-                                sched.discharge_end_4 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&281) {
-                                sched.discharge_target_soc_4 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&282) {
-                                sched.discharge_start_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&283) {
-                                sched.discharge_end_5 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&284) {
-                                sched.discharge_target_soc_5 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&285) {
-                                sched.discharge_start_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&286) {
-                                sched.discharge_end_6 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&287) {
-                                sched.discharge_target_soc_6 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&288) {
-                                sched.discharge_start_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&289) {
-                                sched.discharge_end_7 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&290) {
-                                sched.discharge_target_soc_7 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&291) {
-                                sched.discharge_start_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&292) {
-                                sched.discharge_end_8 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&293) {
-                                sched.discharge_target_soc_8 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&294) {
-                                sched.discharge_start_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&295) {
-                                sched.discharge_end_9 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&296) {
-                                sched.discharge_target_soc_9 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&297) {
-                                sched.discharge_start_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&298) {
-                                sched.discharge_end_10 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&299) {
-                                sched.discharge_target_soc_10 = v as f64;
-                            }
-                            // EMS discharge slots 1-3 (HR 2044-2052)
-                            if let Some(&v) = sched_updates.get(&2044) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2045) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2046) {
-                                sched.discharge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2047) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2048) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2049) {
-                                sched.discharge_target_soc_2 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2050) {
-                                sched.discharge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2051) {
-                                sched.discharge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2052) {
-                                sched.discharge_target_soc_3 = v as f64;
-                            }
-                            // EMS charge slots 1-3 (HR 2053-2061)
-                            if let Some(&v) = sched_updates.get(&2053) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2054) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2055) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2056) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2057) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2058) {
-                                sched.charge_target_soc_2 = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&2059) {
-                                sched.charge_start_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2060) {
-                                sched.charge_end_3 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&2061) {
-                                sched.charge_target_soc_3 = v as f64;
-                            }
-
-                            // Enable charge (HR 96) — 0 = disable slot 1, 1 = always-on
-                            if let Some(&v) = sched_updates.get(&96) {
-                                if v == 0 {
-                                    sched.charge_start = 0.0;
-                                    sched.charge_end = 0.0;
-                                    sched.enable_charge = false;
-                                } else {
-                                    sched.enable_charge = true;
-                                }
-                            }
-                            // Enable discharge (HR 59) — 0 = disable, 1 = always-on
-                            if let Some(&v) = sched_updates.get(&59) {
-                                if v == 0 {
-                                    sched.discharge_start = 0.0;
-                                    sched.discharge_end = 0.0;
-                                    sched.enable_discharge = false;
-                                } else {
-                                    sched.enable_discharge = true;
-                                }
-                            }
-                            // TPH charge target SOC (HR 1111) — same as HR 116
-                            if let Some(&v) = sched_updates.get(&1111) {
-                                sched.charge_target_soc = v as f64;
-                            }
-                            if let Some(&v) = sched_updates.get(&1112) {
-                                sched.enable_charge = v != 0;
-                            }
-                            if let Some(&v) = sched_updates.get(&1113) {
-                                sched.charge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1114) {
-                                sched.charge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1115) {
-                                sched.charge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1116) {
-                                sched.charge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1118) {
-                                sched.discharge_start = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1119) {
-                                sched.discharge_end = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1120) {
-                                sched.discharge_start_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            if let Some(&v) = sched_updates.get(&1121) {
-                                sched.discharge_end_2 = hhmm_to_hours(v).unwrap_or(0.0);
-                            }
-                            // Charge target SOC (HR 116)
+                            sched.apply_modbus_updates(&sched_updates);
                             *schedule_arc.lock().await = Some(sched.clone());
                             e.enqueue(Command::SetSchedule(Box::new(sched)));
                         }
@@ -1625,7 +952,7 @@ pub async fn start_simulation(
                         };
                         let path = dir.join("plant_state.json");
                         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-                            let _ = std::fs::write(&path, json);
+                            let _ = atomic_write::write(&path, json.as_bytes());
                         }
                     }
                 }
@@ -1870,7 +1197,7 @@ pub async fn set_battery_soc(
         let path = dir.join("plant_state.json");
         if let Ok(json) = serde_json::to_string_pretty(&persisted) {
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(&path, json);
+            let _ = atomic_write::write(&path, json.as_bytes());
         }
     }
 
@@ -2001,27 +1328,46 @@ pub async fn export_recording(
     state: State<'_, AppState>,
     params: ExportRecordingParams,
 ) -> Result<String, String> {
-    let recording = state.recording.lock().await;
-    let path = std::path::Path::new(&params.path);
+    // Desktop callers choose this path through the native save dialog. HTTP
+    // exports pass a server-controlled temporary path under the app data dir.
+    let path = std::path::PathBuf::from(&params.path);
 
+    let recording = state.recording.lock().await;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
     match params.format.as_str() {
         "csv" => {
-            let mut f = std::fs::File::create(path).map_err(|e| e.to_string())?;
-            sim_recording::write_csv(&mut f, &recording).map_err(|e| e.to_string())?;
+            // Render to a Vec first so atomic_write can perform the
+            // create-rename swap. A direct `File::create` followed by
+            // `write_all` would leave a partial file on a crash mid-write.
+            let mut buf = Vec::new();
+            sim_recording::write_csv(&mut buf, &recording).map_err(|e| e.to_string())?;
+            atomic_write::write(&path, &buf).map_err(|e| e.to_string())?;
         }
         "jsonl" => {
-            sim_storage::save_recording(path, &recording).map_err(|e| e.to_string())?;
+            // Render to a Vec first so atomic_write can perform the
+            // create-rename swap, instead of `sim_storage::save_recording`
+            // which writes directly to a `File` and would leave a partial
+            // file on a crash mid-write.
+            let mut buf = Vec::new();
+            for frame in recording.iter() {
+                sim_recording::write_frame(&mut buf, frame).map_err(|e| e.to_string())?;
+            }
+            atomic_write::write(&path, &buf).map_err(|e| e.to_string())?;
         }
         "json" => {
             let json = serde_json::to_string_pretty(&recording as &Vec<RecordingFrame>)
                 .map_err(|e| e.to_string())?;
-            std::fs::write(path, json).map_err(|e| e.to_string())?;
+            atomic_write::write(&path, json.as_bytes()).map_err(|e| e.to_string())?;
         }
         _ => return Err(format!("Unknown format: {}", params.format)),
     }
 
-    let _ = app.emit("recording_saved", params.path.clone());
-    Ok(params.path)
+    let _ = app.emit("recording_saved", path.to_string_lossy().into_owned());
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -2063,7 +1409,7 @@ pub async fn save_plant(app: AppHandle, state: State<'_, AppState>) -> Result<()
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let path = data_dir.join("plant_state.json");
     let json = serde_json::to_string_pretty(&persisted).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    atomic_write::write(&path, json.as_bytes()).map_err(|e| e.to_string())?;
     tracing::info!("Plant state saved to {}", path.display());
     Ok(())
 }
@@ -2088,9 +1434,10 @@ pub async fn export_config(
         plant: plant_state,
         schedule,
     };
+    let path = std::path::PathBuf::from(path);
     let json = serde_json::to_string_pretty(&persisted).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    tracing::info!("Plant config exported to {}", path);
+    atomic_write::write(&path, json.as_bytes()).map_err(|e| e.to_string())?;
+    tracing::info!("Plant config exported to {}", path.display());
     Ok(())
 }
 

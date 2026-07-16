@@ -140,6 +140,73 @@ pub fn max_ac_watts_for(inverter_type: &str) -> f64 {
     }
 }
 
+/// Physical battery (DC-side) power limit per inverter type, in watts.
+///
+/// This is the *hardware* cap on battery charge/discharge throughput
+/// (continuous), derived from each inverter's datasheet. Distinct from
+/// [`max_ac_watts_for`] (the AC cap) and from the user's
+/// `battery_charge_limit_percent` / `battery_discharge_limit_percent`
+/// percentage limits (HR 111/112).
+///
+/// Both `sim_tauri::commands::create_plant` and `sim_api::main::configure_inverter`
+/// previously maintained their own match tables; the tables have been
+/// merged here so the inverter catalogue has a single source of truth.
+pub fn max_batt_w_for_inverter(inverter_type: &str) -> f64 {
+    match inverter_type {
+        // Gen 1 Hybrid 5.0: 2500W charge/discharge
+        "Gen1Hybrid" => 2500.0,
+        // Gen2 Hybrid 5.0: 3600W charge/discharge (same DC limit as Gen3)
+        "Gen2Hybrid" => 3600.0,
+        // Gen3 Hybrid 3.6/5.0: charge 3300W, discharge 3600W. Use 3600 as
+        // the DC battery limit (the more conservative figure).
+        "Gen3Hybrid" => 3600.0,
+        // Gen3 Hybrid 8.0: charge 8000W, discharge 8500W
+        "Gen3Hybrid8kW" => 8000.0,
+        // Gen3 Hybrid 10.0: charge 10000W, discharge 10500W
+        "Gen3Hybrid10kW" => 10000.0,
+        // Gen3 Plus variants: 2600W (per datasheet)
+        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 2600.0,
+        // AC Coupled / Mk2: 3000W charge/discharge
+        "ACCoupled" | "ACCoupled2" => 3000.0,
+        // All-in-One variants
+        "AllInOne6" | "AllInOne" => 6000.0,
+        "AllInOne5" => 5000.0,
+        "AIO8kW" => 8000.0,
+        "AIO10kW" => 10000.0,
+        "AIOHybrid6kW" => 6000.0,
+        "AIOHybrid8kW" => 8000.0,
+        "AIOHybrid10kW" => 10000.0,
+        // Three-phase variants
+        "ThreePhase" => 6000.0,
+        "ThreePhase8kW" => 8000.0,
+        "ThreePhase10kW" => 10000.0,
+        "ThreePhase11kW" => 11000.0,
+        // Gateway: aggregates an All-in-One (6kW continuous) behind it.
+        "Gateway12kW" => 6000.0,
+        // Fallback: 3600W (the default for unlisted hybrid inverters).
+        _ => 3600.0,
+    }
+}
+
+/// DSP firmware version per inverter type, projected to HR 19. Mirrors
+/// the table previously living in both `sim_tauri::commands::create_plant`
+/// and `sim_api::main::configure_inverter`.
+pub fn dsp_firmware_for_inverter(inv_type: &str) -> u16 {
+    match inv_type {
+        "Gen1Hybrid" => 110,
+        "Gen2Hybrid" => 230,
+        "Gen3Hybrid" => 449,
+        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
+        "ACCoupled" | "ACCoupled2" => 305,
+        "ThreePhase" | "ThreePhase8kW" | "ThreePhase10kW" => 612,
+        "ThreePhase11kW" => 11043,
+        "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
+        "AIO8kW" | "AIO10kW" => 1010,
+        "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
+        _ => 449,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Calibration state
 // ---------------------------------------------------------------------------
@@ -1411,10 +1478,18 @@ pub struct Schedule {
     pub discharge_start_10: f64,
     pub discharge_end_10: f64,
     pub discharge_target_soc_10: f64,
-    /// When true, charge any time SOC < target (no window restriction).
+    /// HR 96: enables charging according to the configured charge slots.
     pub enable_charge: bool,
-    /// When true, discharge any time SOC > target (no window restriction).
+    /// HR 59: enables discharging according to the configured discharge slots.
     pub enable_discharge: bool,
+    /// Raw Modbus values for schedule time registers.
+    ///
+    /// Real inverters retain arbitrary `u16` values written to slot registers,
+    /// even when they are not valid HHMM times. The simulation uses the parsed
+    /// decimal-hour fields above for physics, while this map preserves the exact
+    /// wire values for projection, persistence, and read-after-write behaviour.
+    #[serde(default)]
+    pub raw_time_registers: std::collections::BTreeMap<u16, u16>,
     /// Export limit scheduling — 3 time windows with per-window SOC targets.
     /// Outside any export window the user-set export limit applies.
     /// Inside a window, if SOC > the window's target, export is allowed up to export_power_limit_w.
@@ -1432,6 +1507,369 @@ pub struct Schedule {
     pub export_power_limit_w: f64,
     /// When true, export limit scheduling is active.
     pub enable_export_schedule: bool,
+}
+
+impl Schedule {
+    /// Apply Modbus schedule register writes without coupling enable flags to
+    /// slot storage. Raw time values are retained exactly; invalid HHMM values
+    /// are represented as `-1.0` in the parsed physics model.
+    pub fn apply_modbus_updates(&mut self, updates: &std::collections::HashMap<u16, u16>) {
+        self.record_raw_time_writes(updates);
+        // Charge slot 1 (HR 94-95) — primary
+        if let Some(&v) = updates.get(&94) {
+            self.charge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&95) {
+            self.charge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        // Charge slot 2 (HR 31-32, GivTCP Gen3 aliases HR 243-244)
+        if let Some(&v) = updates.get(&31).or_else(|| updates.get(&243)) {
+            self.charge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&32).or_else(|| updates.get(&244)) {
+            self.charge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        // Discharge slot 1 (HR 56-57) — primary
+        if let Some(&v) = updates.get(&56) {
+            self.discharge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&57) {
+            self.discharge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        // Discharge slot 2 (HR 44-45)
+        if let Some(&v) = updates.get(&44) {
+            self.discharge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&45) {
+            self.discharge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        // Charge target SOC (HR 116)
+        if let Some(&v) = updates.get(&116) {
+            self.charge_target_soc = v as f64;
+        }
+        // Charge target SOC slot 1 per-slot (HR 242)
+        if let Some(&v) = updates.get(&242) {
+            self.charge_target_soc = v as f64;
+        }
+        // Charge target SOC slot 2 per-slot (HR 245)
+        if let Some(&v) = updates.get(&245) {
+            self.charge_target_soc_2 = v as f64;
+        }
+        // Discharge target SOC slot 1 per-slot (HR 272)
+        if let Some(&v) = updates.get(&272) {
+            self.discharge_target_soc = v as f64;
+        }
+        // Discharge target SOC slot 2 per-slot (HR 275)
+        if let Some(&v) = updates.get(&275) {
+            self.discharge_target_soc_2 = v as f64;
+        }
+        // Charge slot 3-10 (HR 246-268, alternating start/end)
+        if let Some(&v) = updates.get(&246) {
+            self.charge_start_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&247) {
+            self.charge_end_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&248) {
+            self.charge_target_soc_3 = v as f64;
+        }
+        if let Some(&v) = updates.get(&249) {
+            self.charge_start_4 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&250) {
+            self.charge_end_4 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&251) {
+            self.charge_target_soc_4 = v as f64;
+        }
+        if let Some(&v) = updates.get(&252) {
+            self.charge_start_5 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&253) {
+            self.charge_end_5 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&254) {
+            self.charge_target_soc_5 = v as f64;
+        }
+        if let Some(&v) = updates.get(&255) {
+            self.charge_start_6 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&256) {
+            self.charge_end_6 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&257) {
+            self.charge_target_soc_6 = v as f64;
+        }
+        if let Some(&v) = updates.get(&258) {
+            self.charge_start_7 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&259) {
+            self.charge_end_7 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&260) {
+            self.charge_target_soc_7 = v as f64;
+        }
+        if let Some(&v) = updates.get(&261) {
+            self.charge_start_8 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&262) {
+            self.charge_end_8 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&263) {
+            self.charge_target_soc_8 = v as f64;
+        }
+        if let Some(&v) = updates.get(&264) {
+            self.charge_start_9 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&265) {
+            self.charge_end_9 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&266) {
+            self.charge_target_soc_9 = v as f64;
+        }
+        if let Some(&v) = updates.get(&267) {
+            self.charge_start_10 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&268) {
+            self.charge_end_10 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&269) {
+            self.charge_target_soc_10 = v as f64;
+        }
+        // Discharge slot 3-10 (HR 276-298, alternating start/end)
+        if let Some(&v) = updates.get(&276) {
+            self.discharge_start_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&277) {
+            self.discharge_end_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&278) {
+            self.discharge_target_soc_3 = v as f64;
+        }
+        if let Some(&v) = updates.get(&279) {
+            self.discharge_start_4 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&280) {
+            self.discharge_end_4 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&281) {
+            self.discharge_target_soc_4 = v as f64;
+        }
+        if let Some(&v) = updates.get(&282) {
+            self.discharge_start_5 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&283) {
+            self.discharge_end_5 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&284) {
+            self.discharge_target_soc_5 = v as f64;
+        }
+        if let Some(&v) = updates.get(&285) {
+            self.discharge_start_6 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&286) {
+            self.discharge_end_6 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&287) {
+            self.discharge_target_soc_6 = v as f64;
+        }
+        if let Some(&v) = updates.get(&288) {
+            self.discharge_start_7 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&289) {
+            self.discharge_end_7 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&290) {
+            self.discharge_target_soc_7 = v as f64;
+        }
+        if let Some(&v) = updates.get(&291) {
+            self.discharge_start_8 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&292) {
+            self.discharge_end_8 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&293) {
+            self.discharge_target_soc_8 = v as f64;
+        }
+        if let Some(&v) = updates.get(&294) {
+            self.discharge_start_9 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&295) {
+            self.discharge_end_9 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&296) {
+            self.discharge_target_soc_9 = v as f64;
+        }
+        if let Some(&v) = updates.get(&297) {
+            self.discharge_start_10 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&298) {
+            self.discharge_end_10 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&299) {
+            self.discharge_target_soc_10 = v as f64;
+        }
+        // EMS discharge slots 1-3 (HR 2044-2052)
+        if let Some(&v) = updates.get(&2044) {
+            self.discharge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2045) {
+            self.discharge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2046) {
+            self.discharge_target_soc = v as f64;
+        }
+        if let Some(&v) = updates.get(&2047) {
+            self.discharge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2048) {
+            self.discharge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2049) {
+            self.discharge_target_soc_2 = v as f64;
+        }
+        if let Some(&v) = updates.get(&2050) {
+            self.discharge_start_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2051) {
+            self.discharge_end_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2052) {
+            self.discharge_target_soc_3 = v as f64;
+        }
+        // EMS charge slots 1-3 (HR 2053-2061)
+        if let Some(&v) = updates.get(&2053) {
+            self.charge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2054) {
+            self.charge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2055) {
+            self.charge_target_soc = v as f64;
+        }
+        if let Some(&v) = updates.get(&2056) {
+            self.charge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2057) {
+            self.charge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2058) {
+            self.charge_target_soc_2 = v as f64;
+        }
+        if let Some(&v) = updates.get(&2059) {
+            self.charge_start_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2060) {
+            self.charge_end_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2061) {
+            self.charge_target_soc_3 = v as f64;
+        }
+
+        // HR 96/59 toggle schedule execution without modifying stored slots.
+        if let Some(&v) = updates.get(&96) {
+            self.enable_charge = v != 0;
+        }
+        if let Some(&v) = updates.get(&59) {
+            self.enable_discharge = v != 0;
+        }
+        // TPH charge target SOC (HR 1111) — same as HR 116
+        if let Some(&v) = updates.get(&1111) {
+            self.charge_target_soc = v as f64;
+        }
+        if let Some(&v) = updates.get(&1112) {
+            self.enable_charge = v != 0;
+        }
+        if let Some(&v) = updates.get(&1113) {
+            self.charge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1114) {
+            self.charge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1115) {
+            self.charge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1116) {
+            self.charge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1118) {
+            self.discharge_start = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1119) {
+            self.discharge_end = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1120) {
+            self.discharge_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&1121) {
+            self.discharge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        // Charge target SOC (HR 116)
+    }
+
+    /// Preserve exact raw values for all Modbus schedule start/end registers.
+    pub fn record_raw_time_writes(&mut self, updates: &std::collections::HashMap<u16, u16>) {
+        for (&address, &value) in updates {
+            if is_schedule_time_register(address) {
+                self.raw_time_registers.insert(address, value);
+            }
+        }
+    }
+
+    /// Return a preserved raw value, falling back to a value derived from the
+    /// parsed schedule model when the register has not been written directly.
+    pub fn raw_time_or(&self, address: u16, derived: u16) -> u16 {
+        self.raw_time_registers
+            .get(&address)
+            .copied()
+            .unwrap_or(derived)
+    }
+
+    /// Whether any charge-slot endpoint has been written directly over Modbus,
+    /// including an invalid value that should suppress always-on fallback.
+    pub fn has_raw_charge_times(&self) -> bool {
+        self.raw_time_registers.keys().any(|address| {
+            matches!(
+                address,
+                31..=32 | 94..=95 | 243..=244 | 246..=269
+                    | 1113..=1116 | 2053..=2061
+            )
+        })
+    }
+
+    /// Whether any discharge-slot endpoint has been written directly over
+    /// Modbus, including invalid values.
+    pub fn has_raw_discharge_times(&self) -> bool {
+        self.raw_time_registers.keys().any(|address| {
+            matches!(
+                address,
+                44..=45 | 56..=57 | 276..=299 | 1118..=1121 | 2044..=2052
+            )
+        })
+    }
+}
+
+fn hhmm_to_schedule_hours(value: u16) -> Option<f64> {
+    if value == 60 {
+        return None;
+    }
+    let hours = value / 100;
+    let minutes = value % 100;
+    (hours <= 23 && minutes <= 59).then_some(hours as f64 + minutes as f64 / 60.0)
+}
+
+fn is_schedule_time_register(address: u16) -> bool {
+    matches!(
+        address,
+        31..=32 | 44..=45 | 56..=57 | 94..=95
+            | 243..=244 | 246..=247 | 249..=250 | 252..=253
+            | 255..=256 | 258..=259 | 261..=262 | 264..=265 | 267..=268
+            | 276..=277 | 279..=280 | 282..=283 | 285..=286
+            | 288..=289 | 291..=292 | 294..=295 | 297..=298
+            | 1113..=1116 | 1118..=1121
+            | 2044..=2045 | 2047..=2048 | 2050..=2051
+            | 2053..=2054 | 2056..=2057 | 2059..=2060
+    )
 }
 
 impl Default for Schedule {
@@ -1499,6 +1937,7 @@ impl Default for Schedule {
             discharge_target_soc_10: 4.0,
             enable_charge: false,
             enable_discharge: false,
+            raw_time_registers: std::collections::BTreeMap::new(),
             export_start_1: 0.0,
             export_end_1: 0.0,
             export_target_soc_1: 50.0,
@@ -1623,6 +2062,41 @@ mod tests {
         // (3680 W), not the old 3600 W.
         let s = InverterState::default();
         assert_eq!(s.export_limit_w, 3680.0);
+    }
+
+    #[test]
+    fn schedule_enable_writes_do_not_modify_slots() {
+        let mut schedule = Schedule {
+            charge_start: 1.5,
+            charge_end: 4.0,
+            discharge_start: 17.0,
+            discharge_end: 21.0,
+            enable_charge: true,
+            enable_discharge: true,
+            ..Schedule::default()
+        };
+
+        schedule.apply_modbus_updates(&[(96, 0), (59, 0)].into());
+
+        assert!(!schedule.enable_charge);
+        assert!(!schedule.enable_discharge);
+        assert_eq!((schedule.charge_start, schedule.charge_end), (1.5, 4.0));
+        assert_eq!(
+            (schedule.discharge_start, schedule.discharge_end),
+            (17.0, 21.0)
+        );
+    }
+
+    #[test]
+    fn schedule_preserves_invalid_raw_times_without_activating_them() {
+        let mut schedule = Schedule::default();
+        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX), (96, 1)].into());
+
+        assert_eq!(schedule.raw_time_or(94, 60), 2360);
+        assert_eq!(schedule.raw_time_or(95, 60), u16::MAX);
+        assert_eq!(schedule.charge_start, -1.0);
+        assert_eq!(schedule.charge_end, -1.0);
+        assert!(schedule.enable_charge);
     }
 
     #[test]

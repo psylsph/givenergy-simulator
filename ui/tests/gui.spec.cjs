@@ -135,14 +135,14 @@ test('inverter type dropdown has all preset options', async ({ page }) => {
   await expect(page.locator('#inverter-type option')).toHaveCount(45);
 });
 
-test('battery count has 3 options', async ({ page }) => {
+test('battery count supports all 6 modules', async ({ page }) => {
   await setupPage(page);
   const opts = page.locator('#battery-count option');
-  await expect(opts).toHaveCount(3);
+  await expect(opts).toHaveCount(6);
   const vals = await page.locator('#battery-count').evaluate(el =>
     Array.from(el.options).map(o => o.value)
   );
-  expect(vals).toEqual(['1', '2', '3']);
+  expect(vals).toEqual(['1', '2', '3', '4', '5', '6']);
 });
 
 test('load profile defaults to family with 4 options', async ({ page }) => {
@@ -463,90 +463,45 @@ test('battery SOC slider renders in battery display', async ({ page }) => {
   expect(p(c).soc).toBe(75);
 });
 
-// ===== Grid Port Max Power Output =====
-// The wire register for grid port max power output depends on inverter
-// family (per the giv_tcp / givenergy-modbus model audit):
-//   - Single-phase / AC-coupled / Gen1-4 / PV / AIO / Polar / Gen3+:
-//     HR 26 is read-only — the Set button is disabled in the GUI.
-//   - Three-phase / HV / ACThreePhase: HR 1063 (`p_export_limit`, ×0.1).
-//     The Set button writes user-friendly watts; the backend encodes.
-//   - EMS / EmsCommercial / Gateway: HR 2071 (`export_power_limit`, raw W).
-//
-// The Playwright mock returns a fixed inverter_type of Gen3Hybrid, so we
-// cover SinglePhase (read-only), ThreePhase, and Ems by re-rendering the
-// page with a different inverter type before clicking create.
+// ===== Grid Export Limit read-only display =====
 
-test('grid port power field is read-only for Gen3Hybrid (single-phase, HR 26)', async ({ page }) => {
+test('grid export limit shows the single-phase G98 value', async ({ page }) => {
   await setupPage(page);
   await page.click('#btn-create');
   await page.waitForTimeout(300);
 
-  // The register hint must show HR 26 for single-phase.
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 26/);
-  // Set button must be disabled — givenergy-modbus defines HR 26 with no
-  // setter (read-only on the wire).
-  await expect(page.locator('#btn-apply-grid-port-power')).toBeDisabled();
-  await expect(page.locator('#grid-port-power-input')).toBeDisabled();
+  await expect(page.locator('#grid-export-limit-display')).toHaveText('5,000 W');
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/G98 single-phase/);
 });
 
-test('grid port power field is writable for ThreePhase11kW (HR 1063)', async ({ page }) => {
+test('grid export limit identifies the ThreePhase HR 1063 family', async ({ page }) => {
   await setupPage(page);
   await page.selectOption('#inverter-type', 'ThreePhase11kW');
   await page.click('#btn-create');
   await page.waitForTimeout(300);
 
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 1063/);
-  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
-  await expect(page.locator('#grid-port-power-input')).toBeEnabled();
-
-  // Type a value and click Set — must invoke set_grid_port_max_power.
-  await page.fill('#grid-port-power-input', '4500');
-  await page.click('#btn-apply-grid-port-power');
-  await page.waitForTimeout(300);
-
-  const calls = await getCalls(page);
-  const c = calls.find(x => x.cmd === 'set_grid_port_max_power');
-  expect(c).toBeTruthy();
-  expect(p(c).watts).toBe(4500);
+  await expect(page.locator('#grid-export-limit-display')).toHaveText('6,500 W');
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/HR 1063/);
 });
 
-test('grid port power field is writable for EMS (HR 2071)', async ({ page }) => {
+test('grid export limit identifies the Gateway HR 2071 family', async ({ page }) => {
   await setupPage(page);
-  // The dropdown only includes the inverter types exposed in the GUI; for
-  // EMS we fall back to Gateway12kW which uses the same HR 2071 family.
   await page.selectOption('#inverter-type', 'Gateway12kW');
   await page.click('#btn-create');
   await page.waitForTimeout(300);
 
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 2071/);
-  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
-
-  await page.fill('#grid-port-power-input', '3000');
-  await page.click('#btn-apply-grid-port-power');
-  await page.waitForTimeout(300);
-
-  const calls = await getCalls(page);
-  const c = calls.find(x => x.cmd === 'set_grid_port_max_power');
-  expect(c).toBeTruthy();
-  expect(p(c).watts).toBe(3000);
+  await expect(page.locator('#grid-export-limit-display')).toHaveText('6,500 W');
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/HR 2071/);
 });
 
-test('grid port power field reclassifies on inverter-type change', async ({ page }) => {
+test('grid export limit note reclassifies on inverter-type change', async ({ page }) => {
   await setupPage(page);
-  await page.selectOption('#inverter-type', 'Gen3Hybrid');
-  await page.click('#btn-create');
-  await page.waitForTimeout(300);
-  // Single-phase after create.
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 26/);
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/G98 single-phase/);
 
-  // Change inverter type to ThreePhase — register hint should flip.
   await page.selectOption('#inverter-type', 'ThreePhase11kW');
-  await page.waitForTimeout(100);
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 1063/);
-  await expect(page.locator('#btn-apply-grid-port-power')).toBeEnabled();
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/HR 1063/);
+  await expect(page.locator('#grid-export-limit-display')).toHaveText('—');
 
-  // Change to Gateway — EMS family.
   await page.selectOption('#inverter-type', 'Gateway12kW');
-  await page.waitForTimeout(100);
-  await expect(page.locator('#grid-port-power-register')).toHaveText(/HR 2071/);
+  await expect(page.locator('#grid-export-limit-note')).toHaveText(/HR 2071/);
 });

@@ -4,6 +4,7 @@
 //! Also starts a Modbus TCP server on port 8899 (real GivEnergy port).
 
 mod app_state;
+mod atomic_write;
 mod commands;
 mod http;
 
@@ -37,6 +38,7 @@ pub fn run() {
         modbus_cmds: modbus_cmds.clone(),
         battery_snapshot: battery_snapshot.clone(),
         pending_time_regs: pending_time_regs.clone(),
+        pending_pause_regs: Arc::new(std::sync::Mutex::new([None; 3])),
         evc_state: evc_state.clone(),
         evc_port: Arc::new(std::sync::Mutex::new(5020)),
         dongle_misbehaviour: dongle_mode.clone(),

@@ -84,6 +84,15 @@ with the ARM/DSP firmware overrides). `PlantStateDto` now also exposes
 `inverter_temperature_celsius` + `inverter_temperature_override`. 5 new
 `sim-core` unit tests.
 
+**0.17.4** — Schedule enable/register persistence fix (issue #2) plus the
+validated accumulated WIP release. HR 96/59 now toggle execution without
+clearing or implicitly re-enabling charge/discharge slots; exact raw `u16`
+time values survive projection and persistence. Schedule write handling is
+centralized in `sim-models`. Also includes atomic persistence/export writes,
+HTTP request hardening, partial HR 318-320 reconciliation, shared inverter
+capability tables, Modbus range-overflow validation, simulation accounting
+corrections, and refreshed Playwright coverage.
+
 ## Common Gotchas
 
 ### GivEnergy Modbus protocol is NOT standard Modbus TCP

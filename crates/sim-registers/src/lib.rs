@@ -2306,136 +2306,119 @@ impl RegisterStore {
 
         // Charge slot 1 (HR 94-95)
         let (cs1_start, cs1_end) = slot_pair(schedule.charge_start, schedule.charge_end);
-        self.write(94, cs1_start);
-        self.write(95, cs1_end);
+        self.write(94, schedule.raw_time_or(94, cs1_start));
+        self.write(95, schedule.raw_time_or(95, cs1_end));
         let (cs2_start, cs2_end) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
         if gen3_ext && slot2 {
             // Gen3+ firmware stores charge slot 2 at HR 243-244.
             // HR 31-32 is stale/garbage on real Gen3 — leave at disabled sentinel.
-            self.write(243, cs2_start);
-            self.write(244, cs2_end);
+            self.write(243, schedule.raw_time_or(243, cs2_start));
+            self.write(244, schedule.raw_time_or(244, cs2_end));
         } else if slot2 {
             // Gen1: classic HR 31-32 for charge slot 2.
-            self.write(31, cs2_start);
-            self.write(32, cs2_end);
+            self.write(31, schedule.raw_time_or(31, cs2_start));
+            self.write(32, schedule.raw_time_or(32, cs2_end));
         }
         let (cs3_s, cs3_e) = slot_pair(schedule.charge_start_3, schedule.charge_end_3);
-        self.write(246, cs3_s);
-        self.write(247, cs3_e);
+        self.write(246, schedule.raw_time_or(246, cs3_s));
+        self.write(247, schedule.raw_time_or(247, cs3_e));
         let (cs4_s, cs4_e) = slot_pair(schedule.charge_start_4, schedule.charge_end_4);
-        self.write(249, cs4_s);
-        self.write(250, cs4_e);
+        self.write(249, schedule.raw_time_or(249, cs4_s));
+        self.write(250, schedule.raw_time_or(250, cs4_e));
         let (cs5_s, cs5_e) = slot_pair(schedule.charge_start_5, schedule.charge_end_5);
-        self.write(252, cs5_s);
-        self.write(253, cs5_e);
+        self.write(252, schedule.raw_time_or(252, cs5_s));
+        self.write(253, schedule.raw_time_or(253, cs5_e));
         let (cs6_s, cs6_e) = slot_pair(schedule.charge_start_6, schedule.charge_end_6);
-        self.write(255, cs6_s);
-        self.write(256, cs6_e);
+        self.write(255, schedule.raw_time_or(255, cs6_s));
+        self.write(256, schedule.raw_time_or(256, cs6_e));
         let (cs7_s, cs7_e) = slot_pair(schedule.charge_start_7, schedule.charge_end_7);
-        self.write(258, cs7_s);
-        self.write(259, cs7_e);
+        self.write(258, schedule.raw_time_or(258, cs7_s));
+        self.write(259, schedule.raw_time_or(259, cs7_e));
         let (cs8_s, cs8_e) = slot_pair(schedule.charge_start_8, schedule.charge_end_8);
-        self.write(261, cs8_s);
-        self.write(262, cs8_e);
+        self.write(261, schedule.raw_time_or(261, cs8_s));
+        self.write(262, schedule.raw_time_or(262, cs8_e));
         let (cs9_s, cs9_e) = slot_pair(schedule.charge_start_9, schedule.charge_end_9);
-        self.write(264, cs9_s);
-        self.write(265, cs9_e);
+        self.write(264, schedule.raw_time_or(264, cs9_s));
+        self.write(265, schedule.raw_time_or(265, cs9_e));
         let (cs10_s, cs10_e) = slot_pair(schedule.charge_start_10, schedule.charge_end_10);
-        self.write(267, cs10_s);
-        self.write(268, cs10_e);
+        self.write(267, schedule.raw_time_or(267, cs10_s));
+        self.write(268, schedule.raw_time_or(268, cs10_e));
 
         let (ds1_start, ds1_end) = slot_pair(schedule.discharge_start, schedule.discharge_end);
-        self.write(56, ds1_start);
-        self.write(57, ds1_end);
+        self.write(56, schedule.raw_time_or(56, ds1_start));
+        self.write(57, schedule.raw_time_or(57, ds1_end));
         let (ds2_start, ds2_end) = if !slot2 {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_2, schedule.discharge_end_2)
         };
-        self.write(44, ds2_start);
-        self.write(45, ds2_end);
+        self.write(44, schedule.raw_time_or(44, ds2_start));
+        self.write(45, schedule.raw_time_or(45, ds2_end));
         let no_extended = !slot2;
         let (ds3_s, ds3_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_3, schedule.discharge_end_3)
         };
-        self.write(276, ds3_s);
-        self.write(277, ds3_e);
+        self.write(276, schedule.raw_time_or(276, ds3_s));
+        self.write(277, schedule.raw_time_or(277, ds3_e));
         let (ds4_s, ds4_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_4, schedule.discharge_end_4)
         };
-        self.write(279, ds4_s);
-        self.write(280, ds4_e);
+        self.write(279, schedule.raw_time_or(279, ds4_s));
+        self.write(280, schedule.raw_time_or(280, ds4_e));
         let (ds5_s, ds5_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_5, schedule.discharge_end_5)
         };
-        self.write(282, ds5_s);
-        self.write(283, ds5_e);
+        self.write(282, schedule.raw_time_or(282, ds5_s));
+        self.write(283, schedule.raw_time_or(283, ds5_e));
         let (ds6_s, ds6_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_6, schedule.discharge_end_6)
         };
-        self.write(285, ds6_s);
-        self.write(286, ds6_e);
+        self.write(285, schedule.raw_time_or(285, ds6_s));
+        self.write(286, schedule.raw_time_or(286, ds6_e));
         let (ds7_s, ds7_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_7, schedule.discharge_end_7)
         };
-        self.write(288, ds7_s);
-        self.write(289, ds7_e);
+        self.write(288, schedule.raw_time_or(288, ds7_s));
+        self.write(289, schedule.raw_time_or(289, ds7_e));
         let (ds8_s, ds8_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_8, schedule.discharge_end_8)
         };
-        self.write(291, ds8_s);
-        self.write(292, ds8_e);
+        self.write(291, schedule.raw_time_or(291, ds8_s));
+        self.write(292, schedule.raw_time_or(292, ds8_e));
         let (ds9_s, ds9_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_9, schedule.discharge_end_9)
         };
-        self.write(294, ds9_s);
-        self.write(295, ds9_e);
+        self.write(294, schedule.raw_time_or(294, ds9_s));
+        self.write(295, schedule.raw_time_or(295, ds9_e));
         let (ds10_s, ds10_e) = if no_extended {
             (60, 60)
         } else {
             slot_pair(schedule.discharge_start_10, schedule.discharge_end_10)
         };
-        self.write(297, ds10_s);
-        self.write(298, ds10_e);
+        self.write(297, schedule.raw_time_or(297, ds10_s));
+        self.write(298, schedule.raw_time_or(298, ds10_e));
 
-        let charge_enabled = schedule.enable_charge
-            || schedule.charge_start != schedule.charge_end
-            || schedule.charge_start_2 != schedule.charge_end_2
-            || schedule.charge_start_3 != schedule.charge_end_3
-            || schedule.charge_start_4 != schedule.charge_end_4
-            || schedule.charge_start_5 != schedule.charge_end_5
-            || schedule.charge_start_6 != schedule.charge_end_6
-            || schedule.charge_start_7 != schedule.charge_end_7
-            || schedule.charge_start_8 != schedule.charge_end_8
-            || schedule.charge_start_9 != schedule.charge_end_9
-            || schedule.charge_start_10 != schedule.charge_end_10;
+        // Enable registers are independent controls on real inverters. A
+        // configured slot must never implicitly re-enable a schedule that a
+        // client disabled through HR 96/59.
+        let charge_enabled = schedule.enable_charge;
         self.write(96, if charge_enabled { 1 } else { 0 });
 
-        let discharge_enabled = schedule.enable_discharge
-            || schedule.discharge_start != schedule.discharge_end
-            || schedule.discharge_start_2 != schedule.discharge_end_2
-            || schedule.discharge_start_3 != schedule.discharge_end_3
-            || schedule.discharge_start_4 != schedule.discharge_end_4
-            || schedule.discharge_start_5 != schedule.discharge_end_5
-            || schedule.discharge_start_6 != schedule.discharge_end_6
-            || schedule.discharge_start_7 != schedule.discharge_end_7
-            || schedule.discharge_start_8 != schedule.discharge_end_8
-            || schedule.discharge_start_9 != schedule.discharge_end_9
-            || schedule.discharge_start_10 != schedule.discharge_end_10;
+        let discharge_enabled = schedule.enable_discharge;
         self.write(59, if discharge_enabled { 1 } else { 0 });
 
         self.write(116, schedule.charge_target_soc as u16);
@@ -2537,17 +2520,17 @@ impl RegisterStore {
         // 243/244) already cover its needs.
         if is_three_phase_inverter(inverter_type) {
             // TPH_CHARGE_SLOT_1_START/END = 1113-1114 (mirrors HR 94-95)
-            self.write(1113, cs1_start);
-            self.write(1114, cs1_end);
+            self.write(1113, schedule.raw_time_or(1113, cs1_start));
+            self.write(1114, schedule.raw_time_or(1114, cs1_end));
             // TPH_CHARGE_SLOT_2_START/END = 1115-1116 (mirrors HR 31-32 / 243-244)
-            self.write(1115, cs2_start);
-            self.write(1116, cs2_end);
+            self.write(1115, schedule.raw_time_or(1115, cs2_start));
+            self.write(1116, schedule.raw_time_or(1116, cs2_end));
             // TPH_DISCHARGE_SLOT_1_START/END = 1118-1119 (mirrors HR 56-57)
-            self.write(1118, ds1_start);
-            self.write(1119, ds1_end);
+            self.write(1118, schedule.raw_time_or(1118, ds1_start));
+            self.write(1119, schedule.raw_time_or(1119, ds1_end));
             // TPH_DISCHARGE_SLOT_2_START/END = 1120-1121 (mirrors HR 44-45)
-            self.write(1120, ds2_start);
-            self.write(1121, ds2_end);
+            self.write(1120, schedule.raw_time_or(1120, ds2_start));
+            self.write(1121, schedule.raw_time_or(1121, ds2_end));
             // TPH_BATTERY_SOC_RESERVE = 1109 (mirrors HR 110)
             let reserve = self
                 .read_by_space(110, RegisterSpace::Holding)
@@ -2588,30 +2571,30 @@ impl RegisterStore {
         // EMS charge/discharge slots (HR 2044-2061) — share the same
         // Schedule fields as native inverter slots.
         let (ems_ds1_s, ems_ds1_e) = slot_pair(schedule.discharge_start, schedule.discharge_end);
-        self.write(2044, ems_ds1_s);
-        self.write(2045, ems_ds1_e);
+        self.write(2044, schedule.raw_time_or(2044, ems_ds1_s));
+        self.write(2045, schedule.raw_time_or(2045, ems_ds1_e));
         self.write(2046, schedule.discharge_target_soc as u16);
         let (ems_ds2_s, ems_ds2_e) =
             slot_pair(schedule.discharge_start_2, schedule.discharge_end_2);
-        self.write(2047, ems_ds2_s);
-        self.write(2048, ems_ds2_e);
+        self.write(2047, schedule.raw_time_or(2047, ems_ds2_s));
+        self.write(2048, schedule.raw_time_or(2048, ems_ds2_e));
         self.write(2049, schedule.discharge_target_soc_2 as u16);
         let (ems_ds3_s, ems_ds3_e) =
             slot_pair(schedule.discharge_start_3, schedule.discharge_end_3);
-        self.write(2050, ems_ds3_s);
-        self.write(2051, ems_ds3_e);
+        self.write(2050, schedule.raw_time_or(2050, ems_ds3_s));
+        self.write(2051, schedule.raw_time_or(2051, ems_ds3_e));
         self.write(2052, schedule.discharge_target_soc_3 as u16);
         let (ems_cs1_s, ems_cs1_e) = slot_pair(schedule.charge_start, schedule.charge_end);
-        self.write(2053, ems_cs1_s);
-        self.write(2054, ems_cs1_e);
+        self.write(2053, schedule.raw_time_or(2053, ems_cs1_s));
+        self.write(2054, schedule.raw_time_or(2054, ems_cs1_e));
         self.write(2055, schedule.charge_target_soc as u16);
         let (ems_cs2_s, ems_cs2_e) = slot_pair(schedule.charge_start_2, schedule.charge_end_2);
-        self.write(2056, ems_cs2_s);
-        self.write(2057, ems_cs2_e);
+        self.write(2056, schedule.raw_time_or(2056, ems_cs2_s));
+        self.write(2057, schedule.raw_time_or(2057, ems_cs2_e));
         self.write(2058, schedule.charge_target_soc_2 as u16);
         let (ems_cs3_s, ems_cs3_e) = slot_pair(schedule.charge_start_3, schedule.charge_end_3);
-        self.write(2059, ems_cs3_s);
-        self.write(2060, ems_cs3_e);
+        self.write(2059, schedule.raw_time_or(2059, ems_cs3_s));
+        self.write(2060, schedule.raw_time_or(2060, ems_cs3_e));
         self.write(2061, schedule.charge_target_soc_3 as u16);
 
         // Internal schedule registers (HR 700-729)
@@ -9466,6 +9449,8 @@ mod tests {
             discharge_end_2: 14.0,
             discharge_target_soc: 25.0,
             discharge_target_soc_2: 30.0,
+            enable_charge: true,
+            enable_discharge: true,
             ..Default::default()
         };
         store.project_schedule_for(&sched, "ACCoupled");
@@ -9487,6 +9472,33 @@ mod tests {
         // Extended discharge slots disabled
         assert_eq!(store.read_by_space(276, RegisterSpace::Holding), Some(60));
         assert_eq!(store.read_by_space(277, RegisterSpace::Holding), Some(60));
+    }
+
+    #[test]
+    fn schedule_projection_keeps_enable_flags_independent_and_raw_times_exact() {
+        let mut store = RegisterStore::new(default_register_catalogue());
+        let mut schedule = sim_models::Schedule {
+            charge_start: 1.0,
+            charge_end: 4.0,
+            discharge_start: 17.0,
+            discharge_end: 21.0,
+            enable_charge: false,
+            enable_discharge: false,
+            ..Default::default()
+        };
+        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX)].into());
+
+        store.project_schedule_for(&schedule, "Gen3Hybrid");
+
+        assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(2360));
+        assert_eq!(
+            store.read_by_space(95, RegisterSpace::Holding),
+            Some(u16::MAX)
+        );
+        assert_eq!(store.read_by_space(96, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(59, RegisterSpace::Holding), Some(0));
+        assert_eq!(store.read_by_space(56, RegisterSpace::Holding), Some(1700));
+        assert_eq!(store.read_by_space(57, RegisterSpace::Holding), Some(2100));
     }
 
     #[test]

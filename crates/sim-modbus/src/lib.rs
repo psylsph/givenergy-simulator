@@ -93,6 +93,10 @@ pub const FC_WRITE_SINGLE: u8 = 0x06;
 pub const EC_ILLEGAL_FUNCTION: u8 = 0x01;
 pub const EC_ILLEGAL_DATA_ADDRESS: u8 = 0x02;
 
+fn register_range_overflows(start: u16, count: u16) -> bool {
+    start as u32 + count as u32 > u16::MAX as u32 + 1
+}
+
 // ---------------------------------------------------------------------------
 // CRC
 // ---------------------------------------------------------------------------
@@ -371,6 +375,26 @@ pub async fn run_modbus_server(
                             let count = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
 
                             if count == 0 || count > 60 {
+                                let resp = build_error_response(
+                                    &serial,
+                                    slave,
+                                    inner_func,
+                                    EC_ILLEGAL_DATA_ADDRESS,
+                                );
+                                let _ = stream.write_all(&resp).await;
+                                pending.drain(..frame_len);
+                                continue;
+                            }
+                            // Reject reads whose [start, start+count) range
+                            // overflows the 16-bit address space, even
+                            // though both fields are individually valid u16.
+                            // A `start = 0xFFFF, count = 2` would otherwise
+                            // silently read address 0xFFFF then 0x10000
+                            // (projected as 0 in the holding space) and the
+                            // client has no way to tell. Real Modbus
+                            // masters are expected to bound their requests
+                            // and would not issue a 65535+2 read.
+                            if register_range_overflows(start_addr, count) {
                                 let resp = build_error_response(
                                     &serial,
                                     slave,
@@ -1024,8 +1048,15 @@ fn build_evc_error(trans_id: u16, unit_id: u8, func: u8, code: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::evc_state_to_registers;
+    use super::{evc_state_to_registers, register_range_overflows};
     use sim_models::EvcState;
+
+    #[test]
+    fn register_range_overflow_check_allows_last_register_only() {
+        assert!(!register_range_overflows(u16::MAX, 1));
+        assert!(register_range_overflows(u16::MAX, 2));
+        assert!(!register_range_overflows(0, u16::MAX));
+    }
 
     fn evc_with_session_energy(kwh: f64) -> EvcState {
         EvcState {

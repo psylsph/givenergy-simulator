@@ -113,8 +113,8 @@ async fn send_recv(stream: &mut TcpStream, frame: &[u8]) -> Vec<u8> {
 /// start the Modbus server, and return the address + register store.
 struct TestHarness {
     addr: SocketAddr,
-    _store: Arc<Mutex<RegisterStore>>,
-    _cmd_rx: tokio::sync::mpsc::UnboundedReceiver<sim_modbus::ModbusCommand>,
+    store: Arc<Mutex<RegisterStore>>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<sim_modbus::ModbusCommand>,
 }
 
 impl TestHarness {
@@ -176,8 +176,8 @@ impl TestHarness {
 
         Self {
             addr,
-            _store: store,
-            _cmd_rx: rx,
+            store,
+            cmd_rx: rx,
         }
     }
 
@@ -239,6 +239,20 @@ impl TestHarness {
         let (slave, func, payload) = decode_response(&resp);
         assert_eq!(func, FC_WRITE_SINGLE, "Write response func should be 0x06");
         (slave, payload)
+    }
+
+    /// Apply queued Modbus schedule writes through the same shared model used
+    /// by the CLI and Tauri tick loops, then project the resulting schedule.
+    async fn apply_pending_schedule(&mut self, schedule: &mut sim_models::Schedule) {
+        let mut updates = std::collections::HashMap::new();
+        while let Ok(command) = self.cmd_rx.try_recv() {
+            updates.insert(command.address, command.value);
+        }
+        schedule.apply_modbus_updates(&updates);
+        self.store
+            .lock()
+            .await
+            .project_schedule_for(schedule, "Gen3Hybrid");
     }
 }
 
@@ -1235,6 +1249,53 @@ async fn enable_discharge_register() {
         1,
         "HR 59 should be 1 (enabled)"
     );
+}
+
+#[tokio::test]
+async fn schedule_enable_toggles_preserve_valid_and_invalid_slot_registers() {
+    let state = midday_state();
+    let mut h = TestHarness::new(state, 1).await;
+    let mut stream = h.connect().await;
+    let mut schedule = sim_models::Schedule::default();
+
+    for (address, value) in [(94, 130), (95, 430), (56, 1700), (57, 2100)] {
+        h.write_hr(&mut stream, address, value).await;
+    }
+    h.write_hr(&mut stream, 96, 1).await;
+    h.write_hr(&mut stream, 59, 1).await;
+    h.apply_pending_schedule(&mut schedule).await;
+
+    h.write_hr(&mut stream, 96, 0).await;
+    h.write_hr(&mut stream, 59, 0).await;
+    h.apply_pending_schedule(&mut schedule).await;
+    // Multiple projections represent subsequent simulation ticks.
+    h.store
+        .lock()
+        .await
+        .project_schedule_for(&schedule, "Gen3Hybrid");
+
+    assert_eq!(h.read_hr(&mut stream, 96).await, 0);
+    assert_eq!(h.read_hr(&mut stream, 59).await, 0);
+    assert_eq!(h.read_hr(&mut stream, 94).await, 130);
+    assert_eq!(h.read_hr(&mut stream, 95).await, 430);
+    assert_eq!(h.read_hr(&mut stream, 56).await, 1700);
+    assert_eq!(h.read_hr(&mut stream, 57).await, 2100);
+
+    h.write_hr(&mut stream, 96, 1).await;
+    h.write_hr(&mut stream, 59, 1).await;
+    h.apply_pending_schedule(&mut schedule).await;
+    assert_eq!(h.read_hr(&mut stream, 94).await, 130);
+    assert_eq!(h.read_hr(&mut stream, 56).await, 1700);
+
+    h.write_hr(&mut stream, 94, 2360).await;
+    h.write_hr(&mut stream, 95, u16::MAX).await;
+    h.apply_pending_schedule(&mut schedule).await;
+    h.store
+        .lock()
+        .await
+        .project_schedule_for(&schedule, "Gen3Hybrid");
+    assert_eq!(h.read_hr(&mut stream, 94).await, 2360);
+    assert_eq!(h.read_hr(&mut stream, 95).await, u16::MAX);
 }
 
 #[tokio::test]

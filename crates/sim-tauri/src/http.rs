@@ -24,6 +24,7 @@
 //! top of `ui/index.html`.
 
 use crate::app_state::AppState;
+use crate::atomic_write;
 use crate::commands;
 use serde_json::Value;
 use std::io;
@@ -197,6 +198,18 @@ async fn read_request(
     let content_length: usize = header_value(&headers, "content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // SECURITY: bound the body size so a malicious client can't exhaust
+    // memory by sending a huge Content-Length. The 1 MiB cap matches the
+    // header cap and is far larger than any legitimate REST call (the
+    // largest command payload in this bridge is the recording export
+    // request, which is a handful of bytes).
+    const MAX_BODY: usize = 1 << 20;
+    if content_length > MAX_BODY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request body too large",
+        ));
+    }
     while body.len() < content_length {
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
@@ -206,6 +219,16 @@ async fn read_request(
             ));
         }
         body.extend_from_slice(&tmp[..n]);
+        // Defensive: even if the client misreports Content-Length, refuse
+        // to grow the body past the cap. Otherwise a client that streams
+        // data forever after sending a small Content-Length would still
+        // exhaust memory.
+        if body.len() > MAX_BODY {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request body too large",
+            ));
+        }
     }
     body.truncate(content_length);
 
@@ -266,10 +289,13 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: Value) -> Result<Value, (u16
             let params = param!(args);
             ok(c::create_plant(app.clone(), state, params).await)
         }
-        "load_scenario" => {
-            let params = param!(args);
-            ok(c::load_scenario(state, params).await)
-        }
+        // Arbitrary server-side paths are not accepted over HTTP. Browser
+        // clients must use the scenario upload endpoint, which creates a
+        // server-controlled temporary file.
+        "load_scenario" => Err((
+            403,
+            "Direct scenario paths are unavailable over HTTP; upload the scenario instead".into(),
+        )),
         "start_simulation" => {
             let params = param!(args);
             ok(c::start_simulation(app.clone(), state, params).await)
@@ -402,7 +428,8 @@ async fn export_recordings(
         "json" => "json",
         _ => "csv",
     };
-    let path = temp_path(ext);
+    // Use a server-controlled path; HTTP clients never choose filesystem paths.
+    let path = app_export_path(app, ext);
     let result = c_export_recording(app, state, &path, format).await;
     let bytes = std::fs::read(&path).unwrap_or_default();
     let _ = std::fs::remove_file(&path);
@@ -425,7 +452,7 @@ async fn export_recordings(
 
 async fn export_config(stream: &mut TcpStream, app: &AppHandle) -> io::Result<()> {
     let state: State<'_, AppState> = app.state::<AppState>();
-    let path = temp_path("json");
+    let path = app_export_path(app, "json");
     let result =
         commands::export_config(app.clone(), state, path.to_string_lossy().into_owned()).await;
     let bytes = std::fs::read(&path).unwrap_or_default();
@@ -446,8 +473,29 @@ async fn load_scenario_body(
 ) -> io::Result<()> {
     let state: State<'_, AppState> = app.state::<AppState>();
     let yaml = String::from_utf8_lossy(body);
-    let path = temp_path("yaml");
-    if let Err(e) = std::fs::write(&path, yaml.as_bytes()) {
+    // Write the uploaded body under the app data directory before handing
+    // its server-controlled path to `load_scenario`. Timestamped names avoid
+    // collisions between concurrent uploads.
+    let data_dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let payload = serde_json::json!({ "error": e.to_string() }).to_string();
+            return respond(stream, 500, "application/json", payload.as_bytes()).await;
+        }
+    };
+    let scenarios_dir = data_dir.join("scenarios");
+    if !scenarios_dir.exists() {
+        let _ = std::fs::create_dir_all(&scenarios_dir);
+    }
+    let fname = format!(
+        "upload-{}.yaml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let path = scenarios_dir.join(fname);
+    if let Err(e) = atomic_write::write(&path, yaml.as_bytes()) {
         let payload = serde_json::json!({ "error": e.to_string() }).to_string();
         return respond(stream, 500, "application/json", payload.as_bytes()).await;
     }
@@ -584,19 +632,29 @@ fn status_reason(code: u16) -> &'static str {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         500 => "Internal Server Error",
         _ => "OK",
     }
 }
 
-fn temp_path(ext: &str) -> std::path::PathBuf {
+/// Build a server-controlled export path under the app data directory.
+fn app_export_path(app: &AppHandle, ext: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let pid = std::process::id();
-    std::env::temp_dir().join(format!("givsim-{pid}-{nanos}.{ext}"))
+    // If app_data_dir cannot be resolved, use the OS temporary directory.
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    dir.join(format!("givsim-export-{pid}-{nanos}.{ext}"))
 }
 
 fn header_value<'a>(headers: &'a [(String, String)], key: &str) -> Option<&'a str> {

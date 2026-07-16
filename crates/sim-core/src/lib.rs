@@ -535,11 +535,23 @@ impl DeviceModel for SolarEngine {
             state.solar.generation_w = w;
             let pv1_peak = self.peak_capacity_w;
             let pv2_peak = state.config.pv2_peak_watts;
-            let total_peak = pv1_peak + pv2_peak;
-            if total_peak > 0.0 && pv2_peak > 0.0 {
-                // Split proportionally to PV peak ratings
-                state.solar.pv1_w = (w * pv1_peak / total_peak).min(pv1_peak).max(0.0);
-                state.solar.pv2_w = (w * pv2_peak / total_peak).min(pv2_peak).max(0.0);
+            // Mirror the 45/55 split used by the non-override path below
+            // so a user setting a `solar_override` sees consistent
+            // per-array numbers regardless of relative PV peak ratings.
+            // (Previously the override split *proportionally* to peak
+            // ratings, which silently changed the PV1/PV2 ratio whenever
+            // the user enabled a manual override.)
+            if pv2_peak > 0.0 {
+                let pv1_cap = pv1_peak.min(w * 0.45).max(0.0);
+                let pv2_cap = pv2_peak.min(w * 0.55).max(0.0);
+                let total = pv1_cap + pv2_cap;
+                if total > 0.0 {
+                    state.solar.pv1_w = (w * pv1_cap / total).min(pv1_peak).max(0.0);
+                    state.solar.pv2_w = (w - state.solar.pv1_w).min(pv2_peak).max(0.0);
+                } else {
+                    state.solar.pv1_w = 0.0;
+                    state.solar.pv2_w = 0.0;
+                }
             } else {
                 state.solar.pv1_w = w.min(pv1_peak).max(0.0);
                 state.solar.pv2_w = 0.0;
@@ -940,7 +952,16 @@ impl InverterEngine {
 
         state.distribute_battery_power((from_solar + from_grid) / 1000.0);
         state.grid.power_w = solar_deficit + from_grid;
-        state.inverter.ac_power_w = solar_w;
+        // AC bus accounting: the home draws `load_w`; solar first covers that
+        // (solar comes from the DC side so it's "produced" by the inverter),
+        // and the grid *imports* to charge the battery — that part is a
+        // negative AC flow (the inverter consumes from the AC bus to charge
+        // the battery). So `ac_power_w = load_w - from_grid`:
+        //   - positive when solar alone covers the load (no grid import)
+        //   - negative when grid is also feeding the battery
+        // This matches the EnergyTracker convention of accumulating only the
+        // positive portion into `inverter_output_kwh` (line ~1473).
+        state.inverter.ac_power_w = load_w - from_grid;
     }
 
     /// Force discharge: battery exports to grid at max rate.
@@ -977,13 +998,20 @@ impl InverterEngine {
             let to_battery = excess.min(charge_limit);
 
             state.distribute_battery_power(to_battery / 1000.0);
-            state.inverter.ac_power_w = load_w + to_battery;
+            // In island mode the AC bus is the home only. The load draws
+            // `load_w`; the surplus charges the battery (a DC-side flow,
+            // *not* additional AC output). So `ac_power_w = load_w` here,
+            // not `load_w + to_battery` (the old value double-counted the
+            // battery charging as if it were additional home supply).
+            state.inverter.ac_power_w = load_w;
         } else {
             let deficit = -net;
             let discharge_limit = state.discharge_power_ceiling_w();
             let from_battery = deficit.min(discharge_limit);
 
             state.distribute_battery_power(-from_battery / 1000.0);
+            // Deficit case: solar + battery both flow out of the AC bus to
+            // serve the home. Same as `normal_priority`'s deficit arm.
             state.inverter.ac_power_w = solar_w + from_battery;
         }
     }
@@ -1995,7 +2023,8 @@ impl DeviceModel for ScheduleEngine {
 
         // Only do always-on charge when NO timed slots are configured.
         // When slots exist, the slot checks below determine when to charge.
-        let any_charge_slot = self.schedule.charge_start != self.schedule.charge_end
+        let any_charge_slot = self.schedule.has_raw_charge_times()
+            || self.schedule.charge_start != self.schedule.charge_end
             || self.schedule.charge_start_2 != self.schedule.charge_end_2
             || self.schedule.charge_start_3 != self.schedule.charge_end_3
             || self.schedule.charge_start_4 != self.schedule.charge_end_4
@@ -2011,7 +2040,8 @@ impl DeviceModel for ScheduleEngine {
         }
 
         // Same for discharge: always-on only when no slots configured.
-        let any_discharge_slot = self.schedule.discharge_start != self.schedule.discharge_end
+        let any_discharge_slot = self.schedule.has_raw_discharge_times()
+            || self.schedule.discharge_start != self.schedule.discharge_end
             || self.schedule.discharge_start_2 != self.schedule.discharge_end_2
             || self.schedule.discharge_start_3 != self.schedule.discharge_end_3
             || self.schedule.discharge_start_4 != self.schedule.discharge_end_4
@@ -2029,14 +2059,21 @@ impl DeviceModel for ScheduleEngine {
             return;
         }
 
-        // Check all charge slots (1-10)
+        // Check all charge slots (1-10). HR 96 is an independent gate: a
+        // configured window remains stored while charging is disabled. Invalid
+        // raw HHMM values are represented as negative parsed hours and must not
+        // participate in simulation physics.
         macro_rules! check_charge_slot {
             ($start:expr, $end:expr, $target:expr) => {
-                if $start != $end {
-                    if in_window($start, $end, hour) && soc < $target {
-                        state.scheduled_charge = true;
-                        return;
-                    }
+                if self.schedule.enable_charge
+                    && (0.0..24.0).contains(&$start)
+                    && (0.0..24.0).contains(&$end)
+                    && $start != $end
+                    && in_window($start, $end, hour)
+                    && soc < $target
+                {
+                    state.scheduled_charge = true;
+                    return;
                 }
             };
         }
@@ -2097,11 +2134,15 @@ impl DeviceModel for ScheduleEngine {
         // honours any schedule fields provided programmatically.
         macro_rules! check_discharge_slot {
             ($start:expr, $end:expr, $target:expr) => {
-                if $start != $end {
-                    if in_window($start, $end, hour) && soc > $target {
-                        state.scheduled_discharge = true;
-                        return;
-                    }
+                if self.schedule.enable_discharge
+                    && (0.0..24.0).contains(&$start)
+                    && (0.0..24.0).contains(&$end)
+                    && $start != $end
+                    && in_window($start, $end, hour)
+                    && soc > $target
+                {
+                    state.scheduled_discharge = true;
+                    return;
                 }
             };
         }
@@ -3479,6 +3520,58 @@ mod tests {
     }
 
     #[test]
+    fn seed_high_min_soc_produces_smaller_precharge() {
+        // When min_soc is high (e.g. 50% — common for backup-reserve plants),
+        // the runtime engine clamps SOC at the higher floor, so the "overnight
+        // pre-charge from min to 50% midpoint" model is consistent with runtime
+        // — the starting SoC and the pre-charge magnitude scale with min_soc.
+        let mut bank = test_bank();
+        bank[0].min_soc = 50.0;
+        bank[0].max_soc = 100.0;
+        let mut params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        params.battery_charge_limit_percent = 100.0;
+        params.battery_discharge_limit_percent = 100.0;
+        let t = seed_energy_totals_for_time_of_day(ts(6), LoadProfile::Family, &params);
+        // 10 kWh bank × 25% SoC delta / 0.95 eff ≈ 2.63 kWh pre-charge,
+        // plus any grid import from the 6am morning ramp.
+        assert!(
+            t.grid_import_kwh > 2.0 && t.grid_import_kwh < 4.5,
+            "high min_soc should produce a smaller pre-charge than the default (~4.74 kWh), got {}",
+            t.grid_import_kwh
+        );
+    }
+
+    #[test]
+    fn seed_min_soc_equals_max_soc_skips_precharge() {
+        // Degenerate case: min_soc == max_soc means the bank is "full" by
+        // definition, so the overnight pre-charge bookkeeping entry must be
+        // zero. Any grid import observed at 06:00 then comes from the
+        // morning load (Family profile) being served by the grid because the
+        // bank can't discharge.
+        let mut bank = test_bank();
+        bank[0].min_soc = 100.0;
+        bank[0].max_soc = 100.0;
+        let params = seed_params_for_test(5000.0, 51.5, LoadProfile::Family, &bank);
+        let t = seed_energy_totals_for_time_of_day(ts(6), LoadProfile::Family, &params);
+        // Pre-charge contribution: roughly 0 kWh (the SOC delta is zero).
+        // At 06:00 with Family load (250W * 6h ≈ 1.5 kWh) and the bank
+        // locked at 100% SoC (can't discharge below the floor), the morning
+        // load must come from the grid.
+        assert!(
+            t.grid_import_kwh > 0.5 && t.grid_import_kwh < 3.0,
+            "expected morning-load grid import in [0.5, 3.0] kWh range, got {}",
+            t.grid_import_kwh
+        );
+        // Battery_charge_kwh tracks the pre-charge (no daytime solar
+        // surplus at 06:00), so it should be small or zero.
+        assert!(
+            t.battery_charge_kwh < 0.5,
+            "battery_charge_kwh should reflect only pre-charge (~0 for min==max), got {}",
+            t.battery_charge_kwh
+        );
+    }
+
+    #[test]
     fn energy_tracker_with_last_reset_date_does_not_clobber_seed() {
         // Regression: callers that seed totals must construct the tracker
         // with `with_last_reset_date(today)` so the first tick takes the
@@ -3567,6 +3660,7 @@ mod tests {
         sched.charge_start = 2.0; // 02:00
         sched.charge_end = 6.0; // 06:00
         sched.charge_target_soc = 90.0;
+        sched.enable_charge = true;
 
         let mut engine = ScheduleEngine::new(sched);
         let mut state = PlantState::new(ts(4)); // 04:00 — inside window
@@ -3597,6 +3691,7 @@ mod tests {
         sched.charge_start = 2.0;
         sched.charge_end = 6.0;
         sched.charge_target_soc = 90.0;
+        sched.enable_charge = true;
 
         let mut engine = ScheduleEngine::new(sched);
         let mut state = PlantState::new(ts(4));
@@ -3622,6 +3717,7 @@ mod tests {
         sched.discharge_start = 17.0; // 17:00
         sched.discharge_end = 20.0; // 20:00
         sched.discharge_target_soc = 20.0;
+        sched.enable_discharge = true;
 
         let mut engine = ScheduleEngine::new(sched);
         let mut state = PlantState::new(ts(18)); // 18:00 — inside window
@@ -3652,6 +3748,7 @@ mod tests {
             discharge_start: 17.0,
             discharge_end: 20.0,
             discharge_target_soc: 20.0,
+            enable_discharge: true,
             ..Default::default()
         };
 
@@ -3680,6 +3777,7 @@ mod tests {
         sched.charge_start = 22.0; // 22:00
         sched.charge_end = 6.0; // 06:00 (wraps midnight)
         sched.charge_target_soc = 100.0;
+        sched.enable_charge = true;
 
         let mut engine = ScheduleEngine::new(sched);
 
@@ -3738,6 +3836,7 @@ mod tests {
         sched.charge_start = 2.0;
         sched.charge_end = 6.0;
         sched.charge_target_soc = 100.0;
+        sched.enable_charge = true;
 
         let mut state = PlantState::new(ts(4));
         state.inverter.mode_state.set_user(InverterMode::Eco);
@@ -3771,6 +3870,54 @@ mod tests {
             "Grid should be importing during charge slot, got {}W",
             engine.state.grid.power_w
         );
+    }
+
+    #[test]
+    fn disabled_enable_registers_gate_configured_windows() {
+        let schedule = Schedule {
+            charge_start: 2.0,
+            charge_end: 6.0,
+            discharge_start: 2.0,
+            discharge_end: 6.0,
+            enable_charge: false,
+            enable_discharge: false,
+            ..Schedule::default()
+        };
+        let mut engine = ScheduleEngine::new(schedule);
+        let mut state = PlantState::new(ts(4));
+        state.batteries[0].soc_percent = 50.0;
+        state.sync_battery_from_vec();
+
+        engine.update(
+            &TickContext {
+                now: ts(4),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+
+        assert!(!state.scheduled_charge);
+        assert!(!state.scheduled_discharge);
+    }
+
+    #[test]
+    fn invalid_raw_charge_window_does_not_trigger_always_on_charge() {
+        let mut schedule = Schedule::default();
+        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX), (96, 1)].into());
+        let mut engine = ScheduleEngine::new(schedule);
+        let mut state = PlantState::new(ts(4));
+        state.batteries[0].soc_percent = 50.0;
+        state.sync_battery_from_vec();
+
+        engine.update(
+            &TickContext {
+                now: ts(4),
+                dt_hours: 1.0,
+            },
+            &mut state,
+        );
+
+        assert!(!state.scheduled_charge);
     }
 
     #[test]
@@ -3817,8 +3964,7 @@ mod tests {
         sched.charge_start_3 = 5.0;
         sched.charge_end_3 = 7.0;
         sched.charge_target_soc_3 = 90.0;
-        // Disable any other slots / always-on
-        sched.enable_charge = false;
+        sched.enable_charge = true;
 
         let mut state = PlantState::new(ts(6)); // 06:00 — inside slot 3 window
         state.inverter.mode_state.set_user(InverterMode::Eco);
@@ -3848,7 +3994,7 @@ mod tests {
         sched.discharge_start_10 = 18.0;
         sched.discharge_end_10 = 22.0;
         sched.discharge_target_soc_10 = 20.0;
-        sched.enable_discharge = false;
+        sched.enable_discharge = true;
 
         let mut state = PlantState::new(ts(20)); // 20:00 — inside slot 10 window
         state.inverter.mode_state.set_user(InverterMode::Eco);
@@ -4282,6 +4428,132 @@ mod tests {
     }
 
     #[test]
+    fn force_charge_ac_power_equals_load_minus_grid_import() {
+        // Regression: `force_charge` previously set `inverter.ac_power_w = solar_w`
+        // even when most of the solar was being absorbed by the battery, which
+        // double-counted the AC bus output in `EnergyTracker::update`
+        // (which integrates the positive portion of `ac_power_w` into
+        // `inverter_output_kwh`). The new convention is
+        //   ac_power_w = load_w - from_grid
+        // so the AC bus output reflects what the home actually draws from
+        // the inverter, not the raw solar throughput.
+        //
+        // Scenario: 5 kW solar, 1 kW load, 2 kW battery charge limit.
+        //   from_solar = min(4 kW surplus, 2 kW limit) = 2 kW
+        //   from_grid  = 0 kW (charge ceiling already met)
+        //   ac_power_w = 1 kW (load) - 0 kW (grid import) = +1 kW
+        let mut state = PlantState::new(ts(12));
+        state.solar.generation_w = 5000.0;
+        state.load.demand_w = 1000.0;
+        state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::ForceCharge);
+        state.batteries[0].soc_percent = 50.0;
+        state.batteries[0].max_charge_kw = 2.0;
+        state.sync_battery_from_vec();
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        assert!(
+            (state.inverter.ac_power_w - 1000.0).abs() < 1.0,
+            "force_charge ac_power_w should be load - from_grid (≈ +1 kW when solar alone covers the load), got {}",
+            state.inverter.ac_power_w
+        );
+        // Battery should be charging.
+        assert!(
+            state.total_battery_power_kw() > 0.0,
+            "Battery should be charging"
+        );
+        // Grid import should be zero (battery ceiling met by solar).
+        assert!(
+            state.grid.power_w.abs() < 1.0,
+            "Grid should not be importing when solar alone fills the battery, got {}",
+            state.grid.power_w
+        );
+    }
+
+    #[test]
+    fn force_charge_negative_ac_when_grid_imports() {
+        // Companion to the test above: when the solar surplus can't cover
+        // the battery's charge ceiling, the grid fills the gap. The AC
+        // bus is then net-negative (the inverter is consuming from the
+        // AC side to charge the battery). This is the case that motivated
+        // the fix.
+        let mut state = PlantState::new(ts(12));
+        state.solar.generation_w = 1000.0; // 1 kW solar
+        state.load.demand_w = 500.0; // 0.5 kW load
+        state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::ForceCharge);
+        state.batteries[0].soc_percent = 50.0;
+        state.batteries[0].max_charge_kw = 5.0; // 5 kW charge ceiling
+        state.sync_battery_from_vec();
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        // Solar surplus = 0.5 kW (1 kW - 0.5 kW load). Battery can take 5 kW
+        // so the grid supplies the remaining 4.5 kW. ac_power_w =
+        // load - from_grid = 0.5 - 4.5 = -4.0 kW.
+        assert!(
+            (state.inverter.ac_power_w - (-4000.0)).abs() < 1.0,
+            "force_charge ac_power_w should be load - from_grid (≈ -4 kW when grid is importing), got {}",
+            state.inverter.ac_power_w
+        );
+        assert!(
+            state.grid.power_w > 0.0,
+            "Grid should be importing, got {}",
+            state.grid.power_w
+        );
+    }
+
+    #[test]
+    fn island_mode_surplus_does_not_include_battery_charge() {
+        // Regression: `island_mode` previously set
+        //   ac_power_w = load_w + to_battery
+        // on the surplus path, double-counting the battery charging as
+        // additional home supply. The home is the only AC load in island
+        // mode, so `ac_power_w = load_w` regardless of how much surplus
+        // solar is being absorbed by the battery.
+        let mut state = PlantState::new(ts(12));
+        state.solar.generation_w = 5000.0;
+        state.load.demand_w = 1000.0;
+        state.grid.connected = false; // island mode
+        state.batteries[0].soc_percent = 50.0;
+        state.batteries[0].max_charge_kw = 3.0;
+        state.sync_battery_from_vec();
+
+        let mut inv = InverterEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0,
+        };
+        inv.update(&ctx, &mut state);
+
+        assert!(
+            (state.inverter.ac_power_w - 1000.0).abs() < 1.0,
+            "island_mode surplus: ac_power_w should be load_w (1 kW), got {}",
+            state.inverter.ac_power_w
+        );
+        // Battery should be charging from solar surplus.
+        assert!(
+            state.total_battery_power_kw() > 0.0,
+            "Battery should be charging from solar surplus in island mode"
+        );
+    }
+
+    #[test]
     fn combo_force_charge_with_fault() {
         let mut state = PlantState::new(ts(2));
         state
@@ -4394,6 +4666,62 @@ mod tests {
         assert_eq!(
             engine.state.solar.generation_w, 2000.0,
             "Solar override should fix generation to 2000W"
+        );
+    }
+
+    #[test]
+    fn solar_override_pv1_pv2_split_matches_non_override() {
+        // Regression: the override path previously split PV1/PV2 *proportionally*
+        // to peak ratings, while the non-override path always splits 45/55. So a
+        // user setting a `solar_override` on a plant with PV2 ≠ PV1 saw a
+        // different per-array split than the engine's natural output. The
+        // override path now mirrors 45/55 (modulo per-array caps) so the two
+        // paths agree.
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let mut state = PlantState::new(ts);
+        state.solar_override = Some(6000.0);
+        // PV1 5kW, PV2 4kW (non-equal arrays) — the proportional split
+        // would have given 3333 / 2667, but the new 45/55 cap-aware split
+        // gives 2700 / 2755 (≈ 45/55 of 6000 with each capped at its peak).
+        state.config.pv2_peak_watts = 4000.0;
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(SolarEngine::new(5000.0, 51.5))];
+        let mut engine = SimulationEngine::new(state, devices, 1);
+        engine.tick();
+
+        // Both arrays should sum to the override total.
+        let total = engine.state.solar.pv1_w + engine.state.solar.pv2_w;
+        assert!(
+            (total - 6000.0).abs() < 1.0,
+            "PV1 + PV2 should equal the override total (6000 W), got {}",
+            total
+        );
+        // PV1 should be capped at its peak (5000 W), so the actual split
+        // can't be exactly 45/55 (that would require 2700 W on PV1 which is
+        // fine, and 3300 W on PV2 which is also under its 4000 W cap).
+        // Both arrays should be ≤ their peak.
+        assert!(
+            engine.state.solar.pv1_w <= 5000.0,
+            "PV1 should be capped at its 5000 W peak, got {}",
+            engine.state.solar.pv1_w
+        );
+        assert!(
+            engine.state.solar.pv2_w <= 4000.0,
+            "PV2 should be capped at its 4000 W peak, got {}",
+            engine.state.solar.pv2_w
+        );
+        // The proportional split would have given PV1=3333, PV2=2667
+        // (different ratio). The 45/55 cap-aware split gives PV1=2700,
+        // PV2=3300. Pin the new behavior.
+        let ratio = engine.state.solar.pv1_w / engine.state.solar.pv2_w;
+        assert!(
+            (ratio - 0.45 / 0.55).abs() < 0.05,
+            "PV1/PV2 ratio should be ≈ 45/55, got {} (pv1={}, pv2={})",
+            ratio,
+            engine.state.solar.pv1_w,
+            engine.state.solar.pv2_w
         );
     }
 
