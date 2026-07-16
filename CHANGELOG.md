@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-07-16
+
+### Changed
+
+- **Later-firmware schedule time validation** — charge/discharge start and end
+  registers accept and retain raw values from 0000 through 2399, including
+  minute components 60-99. Values above 2399 are acknowledged but ignored,
+  leaving the previously stored value unchanged.
+
 ## [0.17.4] - 2026-07-16
 
 ### Added

@@ -3903,7 +3903,7 @@ mod tests {
     #[test]
     fn invalid_raw_charge_window_does_not_trigger_always_on_charge() {
         let mut schedule = Schedule::default();
-        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX), (96, 1)].into());
+        schedule.apply_modbus_updates(&[(94, 2360), (95, 2399), (96, 1)].into());
         let mut engine = ScheduleEngine::new(schedule);
         let mut state = PlantState::new(ts(4));
         state.batteries[0].soc_percent = 50.0;

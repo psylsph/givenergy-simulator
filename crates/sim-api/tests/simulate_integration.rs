@@ -1288,14 +1288,21 @@ async fn schedule_enable_toggles_preserve_valid_and_invalid_slot_registers() {
     assert_eq!(h.read_hr(&mut stream, 56).await, 1700);
 
     h.write_hr(&mut stream, 94, 2360).await;
-    h.write_hr(&mut stream, 95, u16::MAX).await;
+    h.write_hr(&mut stream, 95, 2399).await;
     h.apply_pending_schedule(&mut schedule).await;
     h.store
         .lock()
         .await
         .project_schedule_for(&schedule, "Gen3Hybrid");
     assert_eq!(h.read_hr(&mut stream, 94).await, 2360);
-    assert_eq!(h.read_hr(&mut stream, 95).await, u16::MAX);
+    assert_eq!(h.read_hr(&mut stream, 95).await, 2399);
+
+    // Later firmware ACKs values above 2399 but retains the old value.
+    h.write_hr(&mut stream, 94, 2400).await;
+    h.write_hr(&mut stream, 95, u16::MAX).await;
+    h.apply_pending_schedule(&mut schedule).await;
+    assert_eq!(h.read_hr(&mut stream, 94).await, 2360);
+    assert_eq!(h.read_hr(&mut stream, 95).await, 2399);
 }
 
 #[tokio::test]

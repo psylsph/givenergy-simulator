@@ -1514,6 +1514,14 @@ impl Schedule {
     /// slot storage. Raw time values are retained exactly; invalid HHMM values
     /// are represented as `-1.0` in the parsed physics model.
     pub fn apply_modbus_updates(&mut self, updates: &std::collections::HashMap<u16, u16>) {
+        // Later firmware accepts raw 0000-2399 values verbatim (including
+        // minute fields 60-99), but acknowledges and ignores larger values.
+        let accepted_updates: std::collections::HashMap<u16, u16> = updates
+            .iter()
+            .filter(|(address, value)| schedule_time_write_is_accepted(**address, **value))
+            .map(|(&address, &value)| (address, value))
+            .collect();
+        let updates = &accepted_updates;
         self.record_raw_time_writes(updates);
         // Charge slot 1 (HR 94-95) — primary
         if let Some(&v) = updates.get(&94) {
@@ -1858,7 +1866,8 @@ fn hhmm_to_schedule_hours(value: u16) -> Option<f64> {
     (hours <= 23 && minutes <= 59).then_some(hours as f64 + minutes as f64 / 60.0)
 }
 
-fn is_schedule_time_register(address: u16) -> bool {
+/// Whether an address is a charge/discharge schedule start/end register.
+pub fn is_schedule_time_register(address: u16) -> bool {
     matches!(
         address,
         31..=32 | 44..=45 | 56..=57 | 94..=95
@@ -1870,6 +1879,12 @@ fn is_schedule_time_register(address: u16) -> bool {
             | 2044..=2045 | 2047..=2048 | 2050..=2051
             | 2053..=2054 | 2056..=2057 | 2059..=2060
     )
+}
+
+/// Later-firmware schedule validation: time registers accept the raw numeric
+/// range 0000-2399 without separately validating the minute component.
+pub fn schedule_time_write_is_accepted(address: u16, value: u16) -> bool {
+    !is_schedule_time_register(address) || value < 2400
 }
 
 impl Default for Schedule {
@@ -2088,15 +2103,21 @@ mod tests {
     }
 
     #[test]
-    fn schedule_preserves_invalid_raw_times_without_activating_them() {
+    fn schedule_accepts_0000_to_2399_and_ignores_larger_times() {
         let mut schedule = Schedule::default();
-        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX), (96, 1)].into());
+        schedule.apply_modbus_updates(&[(94, 2360), (95, 2399), (96, 1)].into());
 
         assert_eq!(schedule.raw_time_or(94, 60), 2360);
-        assert_eq!(schedule.raw_time_or(95, 60), u16::MAX);
+        assert_eq!(schedule.raw_time_or(95, 60), 2399);
         assert_eq!(schedule.charge_start, -1.0);
         assert_eq!(schedule.charge_end, -1.0);
         assert!(schedule.enable_charge);
+
+        schedule.apply_modbus_updates(&[(94, 2400), (95, u16::MAX)].into());
+        assert_eq!(schedule.raw_time_or(94, 60), 2360);
+        assert_eq!(schedule.raw_time_or(95, 60), 2399);
+        assert_eq!(schedule.charge_start, -1.0);
+        assert_eq!(schedule.charge_end, -1.0);
     }
 
     #[test]

@@ -223,6 +223,12 @@ impl RegisterStore {
         if (1000..=1124).contains(&address) && !is_three_phase_inverter(&self.inverter_type) {
             return false;
         }
+        // Later firmware ACKs schedule-time writes above 2399 but leaves the
+        // stored value unchanged. Values up to 2399 are retained verbatim,
+        // including minute components in the 60-99 range.
+        if !sim_models::schedule_time_write_is_accepted(address, value) {
+            return true;
+        }
         let key = address as u32 + HOLDING_OFFSET;
         if let Some(def) = self.defs.iter().find(|d| d.store_key() == key)
             && def.access == Access::ReadWrite
@@ -9486,15 +9492,12 @@ mod tests {
             enable_discharge: false,
             ..Default::default()
         };
-        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX)].into());
+        schedule.apply_modbus_updates(&[(94, 2360), (95, 2399)].into());
 
         store.project_schedule_for(&schedule, "Gen3Hybrid");
 
         assert_eq!(store.read_by_space(94, RegisterSpace::Holding), Some(2360));
-        assert_eq!(
-            store.read_by_space(95, RegisterSpace::Holding),
-            Some(u16::MAX)
-        );
+        assert_eq!(store.read_by_space(95, RegisterSpace::Holding), Some(2399));
         assert_eq!(store.read_by_space(96, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(59, RegisterSpace::Holding), Some(0));
         assert_eq!(store.read_by_space(56, RegisterSpace::Holding), Some(1700));
@@ -10014,6 +10017,20 @@ mod tests {
         assert!(store.write(35, 2025), "HR 35 year must accept write");
         assert!(store.write(36, 6), "HR 36 month must accept write");
         assert_eq!(store.read(35), Some(2025));
+    }
+
+    #[test]
+    fn schedule_times_accept_through_2399_and_acknowledge_but_ignore_larger_values() {
+        let mut store = RegisterStore::new(default_register_catalogue());
+        assert!(store.write(94, 2360));
+        assert!(store.write(95, 2399));
+        assert_eq!(store.read(94), Some(2360));
+        assert_eq!(store.read(95), Some(2399));
+
+        assert!(store.write(94, 2400));
+        assert!(store.write(95, u16::MAX));
+        assert_eq!(store.read(94), Some(2360));
+        assert_eq!(store.read(95), Some(2399));
     }
 
     #[test]

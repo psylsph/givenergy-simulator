@@ -10,6 +10,12 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 - `cargo clippy --all-targets` — must produce **zero** warnings.
 - `cargo test` — must be green. The suite is fast (~3s, 405 tests). Don't move on without green tests.
 
+## External Communication
+
+**Never post comments, close/reopen tickets, create releases, push commits/tags, or
+otherwise communicate externally without the user's explicit permission for that
+specific action.** Draft the proposed response or action locally and ask first.
+
 ## Workspace
 
 ```
@@ -92,6 +98,12 @@ centralized in `sim-models`. Also includes atomic persistence/export writes,
 HTTP request hardening, partial HR 318-320 reconciliation, shared inverter
 capability tables, Modbus range-overflow validation, simulation accounting
 corrections, and refreshed Playwright coverage.
+
+**0.17.5** — Later-firmware schedule time validation. Charge/discharge time
+registers accept raw values from 0000 through 2399 (including minute fields
+60-99). Values above 2399 are acknowledged but ignored, retaining the previous
+stored value. Covered at the model, register-store, integration, DTO, physics,
+and persistence layers.
 
 ## Common Gotchas
 

@@ -636,13 +636,13 @@ mod tests {
             enable_charge: false,
             ..Default::default()
         };
-        schedule.apply_modbus_updates(&[(94, 2360), (95, u16::MAX)].into());
+        schedule.apply_modbus_updates(&[(94, 2360), (95, 2399)].into());
 
         let dto = ScheduleDto::from_state(&state, Some(&schedule));
 
         assert!(!dto.enable_charge);
         assert_eq!(dto.charge_slot_1_start, 2360);
-        assert_eq!(dto.charge_slot_1_end, u16::MAX);
+        assert_eq!(dto.charge_slot_1_end, 2399);
     }
 
     #[test]
