@@ -294,22 +294,32 @@ giv-sim run <scenario.yaml> [options]
 
 ## Inverter Types
 
-All 12 supported inverter types with correct power limits from official datasheets:
+All supported inverter types with correct power limits (single source of truth:
+`sim_models::max_ac_watts_for` / `max_batt_w_for_inverter`). A representative
+subset is shown below; the full catalogue lives in the GUI dropdown / CLI help.
 
 | Inverter | DTC | AC Max | Battery Limit |
 |----------|-----|--------|---------------|
-| Gen 1 Hybrid | 0x1001 | 5,000W | 2,500W |
+| Gen1 Hybrid | 0x2001 | 5,000W | 2,500W |
 | Gen3 Hybrid | 0x2001 | 5,000W | 3,600W |
-| Gen3 Hybrid 8kW | 0x2101 | 8,000W | 8,000W |
-| Gen3 Hybrid 10kW | 0x2102 | 10,000W | 10,000W |
+| Polar 5kW | 0x2101 | 5,000W | 3,600W |
+| Polar 4.6kW | 0x2102 | 4,600W | 3,600W |
+| Polar 8kW | 0x2106 | 8,000W | 8,000W |
+| Gen3 Plus 5kW | 0x2201 | 5,000W | 2,600W |
 | AC Coupled | 0x3001 | 3,000W | 3,000W |
 | AC Coupled Mk2 | 0x3002 | 3,000W | 3,000W |
-| Three Phase | 0x4001 | 6,000W | 6,000W |
+| Three Phase 6kW | 0x4001 | 6,000W | 6,000W |
+| Commercial AIO 30kW | 0x4101 | 30,000W | 30,000W |
 | All-in-One 6kW | 0x8001 | 6,000W | 6,000W |
-| All-in-One | 0x8002 | 6,000W | 6,000W |
-| All-in-One 5kW | 0x8003 | 5,000W | 5,000W |
-| AIO 8kW | 0x8102 | 8,000W | 8,000W |
-| AIO 10kW | 0x8103 | 10,000W | 10,000W |
+| All-in-One | 0x8002 | 3,600W | 3,600W |
+| Gen3 HV Hybrid 8kW | 0x8102 | 8,000W | 8,000W |
+| Gen3 HV Hybrid 10kW | 0x8103 | 10,000W | 10,000W |
+| AIO Hybrid 10kW | 0x8203 | 10,000W | 10,000W |
+
+DTC 0x2102 is a **4.6 kW** unit ("ALPS HY6.0k-GL/PZ8000 4.6KW" per the GivEnergy
+app v4.0.7 inventory and `_DTC_RATED_POWER`); there is no single-phase 10 kW
+DTC. The 0x81xx family (`Gen3HvHybrid*`) is the three-phase HV
+`GIV-HY-10.0-G3-HV`, not an All-in-One.
 
 Battery charge and discharge is capped by both the battery C-rate and the inverter's battery limit — whichever is lower.
 

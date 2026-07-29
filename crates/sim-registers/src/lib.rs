@@ -154,11 +154,19 @@ fn has_slot_2(inverter_type: &str) -> bool {
 /// Returns true for three-phase inverter types that report line-to-line
 /// grid voltage (~415V) at TPH registers IR 1061-1063 instead of
 /// phase-to-neutral voltage (240V) used by single-phase inverters.
+///
+/// Delegates to [`sim_models::is_three_phase_inverter_type`] so the family
+/// list (ThreePhase*, AC-coupled three-phase, Gen3 HV hybrid 0x81xx, AIO
+/// hybrid 0x82xx, commercial AIO 0x4101) lives in one place.
 fn is_three_phase_inverter(inverter_type: &str) -> bool {
-    inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase"
+    sim_models::is_three_phase_inverter_type(inverter_type)
 }
 
 fn is_ac_coupled_inverter(inverter_type: &str) -> bool {
+    // Narrow single-phase AC-coupled set used by the write guards below
+    // (HR 2071 / HR 318-320). Note: ACCoupledThreePhase6kW (0x6001) is
+    // intentionally NOT included — it serves HR 318-320 (Timed Discharge)
+    // and the three-phase HR 1000-1124 bank.
     matches!(inverter_type, "ACCoupled" | "ACCoupled2")
 }
 
@@ -250,7 +258,7 @@ impl RegisterStore {
     }
 
     /// Returns true if this store models a three-phase inverter
-    /// (`ThreePhase*` or `ACThreePhase`). Used by the Modbus server to reject
+    /// (`ThreePhase*` or `ACCoupledThreePhase6kW`). Used by the Modbus server to reject
     /// reads into the three-phase holding control bank (HR 1000-1124) on
     /// devices that lack it (e.g. Gateway12kW), mirroring real hardware.
     pub fn is_three_phase_device(&self) -> bool {
@@ -895,21 +903,19 @@ impl RegisterStore {
                         "Hybrid4600" => 0x2002,
                         "Hybrid3600" => 0x2003,
                         "Polar5kW" => 0x2101,
+                        // 0x2102 = "ALPS HY6.0k-GL/PZ8000 4.6KW" (app v4.0.7
+                        // inventory + _DTC_RATED_POWER=4600). There is no
+                        // single-phase 10kW DTC; this is a 4.6 kW unit.
                         "Polar4600" => 0x2102,
                         "Polar3600" => 0x2103,
                         "Polar6kW" => 0x2104,
                         "Polar7kW" => 0x2105,
-                        // GivTCP inverter_max_power LUT: 0x2106=8000W.
-                        // No single-phase 10kW DTC exists in GivTCP's database;
-                        // 0x2102 is recognised as 4600W by GivTCP — closest
-                        // available, but the client will under-size this unit.
-                        "Gen3Hybrid8kW" => 0x2106,
-                        "Gen3Hybrid10kW" => 0x2102,
+                        // 0x2106 = "ALPS HY6.0k-GL/PZ8000 8KW" (8 kW).
                         "Polar8kW" => 0x2106,
-                        "Gen3Plus6kW" => 0x2201,
+                        "Gen3Plus5kW" => 0x2201,
                         "Gen3Plus4600" => 0x2202,
                         "Gen3Plus3600" => 0x2203,
-                        "Gen3Plus6kW2" => 0x2204,
+                        "Gen3Plus6kW" => 0x2204,
                         "Gen3Plus7kW" => 0x2205,
                         "Gen3Plus8kW" => 0x2206,
                         "PVInverter5kW" => 0x2301,
@@ -922,17 +928,17 @@ impl RegisterStore {
                         "ThreePhase8kW" => 0x4002,
                         "ThreePhase10kW" => 0x4003,
                         "ThreePhase11kW" => 0x4004,
-                        "AIOCommercial" => 0x4101,
+                        "CommercialAllInOne30kW" => 0x4101,
                         "EMS" => 0x5001,
                         "EMSCommercial" => 0x5101,
-                        "ACThreePhase" => 0x6001,
+                        "ACCoupledThreePhase6kW" => 0x6001,
                         "Gateway12kW" => 0x7001,
                         "AllInOne6" => 0x8001,
                         "AllInOne" => 0x8002,
                         "AllInOne5" => 0x8003,
-                        "AIO6kW" => 0x8101,
-                        "AIO8kW" => 0x8102,
-                        "AIO10kW" => 0x8103,
+                        "Gen3HvHybrid6kW" => 0x8101,
+                        "Gen3HvHybrid8kW" => 0x8102,
+                        "Gen3HvHybrid10kW" => 0x8103,
                         "AIOHybrid6kW" => 0x8201,
                         "AIOHybrid8kW" => 0x8202,
                         "AIOHybrid10kW" => 0x8203,
@@ -954,9 +960,7 @@ impl RegisterStore {
                     } else {
                         1u16
                     };
-                    let phases = if state.config.inverter_type.starts_with("ThreePhase")
-                        || state.config.inverter_type == "ACThreePhase"
-                    {
+                    let phases = if is_three_phase_inverter(&state.config.inverter_type) {
                         3u16
                     } else {
                         1u16
@@ -1060,16 +1064,15 @@ impl RegisterStore {
                 "ge_hr_arm_firmware" => {
                     let fw = if state.inverter.arm_firmware_version != 0 {
                         state.inverter.arm_firmware_version
-                    } else if state.config.inverter_type.starts_with("ThreePhase")
-                        || state.config.inverter_type == "ACThreePhase"
-                    {
+                    } else if is_three_phase_inverter(&state.config.inverter_type) {
                         612
                     } else {
                         match state.config.inverter_type.as_str() {
                             "Gen1Hybrid" => 252, // century 2 → Gen1
                             "Gen2Hybrid" => 852, // century 8 → Gen2
                             "Gen3Hybrid" => 318, // century 3 → Gen3 (D318-A318 26-Aug-2025)
-                            "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                            "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
+                            | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
                             _ => 318,
                         }
                     };
@@ -1207,13 +1210,11 @@ impl RegisterStore {
                 // HR 55: Battery capacity in Ah (total system)
                 // kWh = Ah * nominal_voltage / 1000 → Ah = kWh * 1000 / V
                 "ge_hr_battery_capacity_ah" => {
-                    let nom_v = if state.config.inverter_type.starts_with("ThreePhase")
-                        || state.config.inverter_type == "ACThreePhase"
-                    {
+                    let nom_v = if is_three_phase_inverter(&state.config.inverter_type) {
                         76.8
                     } else {
                         match state.config.inverter_type.as_str() {
-                            "AllInOne6" | "AllInOne" | "AllInOne5" | "AIO8kW" | "AIO10kW" => 307.0,
+                            "AllInOne6" | "AllInOne" | "AllInOne5" => 307.0,
                             _ => 51.2,
                         }
                     };
@@ -1809,15 +1810,14 @@ impl RegisterStore {
                 "tph_ir_arm_firmware_version" => {
                     let fw = if state.inverter.arm_firmware_version != 0 {
                         state.inverter.arm_firmware_version
-                    } else if state.config.inverter_type.starts_with("ThreePhase")
-                        || state.config.inverter_type == "ACThreePhase"
-                    {
+                    } else if is_three_phase_inverter(&state.config.inverter_type) {
                         612
                     } else {
                         match state.config.inverter_type.as_str() {
                             "Gen1Hybrid" => 252,
                             "Gen2Hybrid" => 852,
-                            "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                            "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
+                            | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
                             _ => 318,
                         }
                     };
@@ -7750,7 +7750,7 @@ pub fn default_register_catalogue() -> Vec<RegisterDef> {
         },
         // ================================================================
         // Three-phase inverter fault bank (Input Registers, IR 1300-1307)
-        // Populated only for three-phase inverters (ThreePhase*, ACThreePhase);
+        // Populated only for three-phase inverters (ThreePhase*, ACCoupledThreePhase6kW);
         // single-phase units keep these at zero and use HR(223-224) instead.
         // Each register is one 16-bit MSB-first fault word, decoded by the
         // GivEnergy `_inverter_fault_code2` / `inverter_fault_code2` table.
@@ -8249,27 +8249,35 @@ mod tests {
             "Gen1Hybrid",
             "Gen2Hybrid",
             "Gen3Hybrid",
-            "Gen3Hybrid8kW",
-            "Gen3Hybrid10kW",
-            "Gen3Plus6kW",
+            "Gen3Plus5kW",
             "Gen3Plus4600",
             "Gen3Plus3600",
-            "Gen3Plus6kW2",
+            "Gen3Plus6kW",
+            "Gen3Plus7kW",
+            "Gen3Plus8kW",
+            "Polar5kW",
+            "Polar4600",
+            "Polar3600",
+            "Polar6kW",
+            "Polar7kW",
             "ACCoupled",
             "ACCoupled2",
             "ThreePhase",
             "ThreePhase8kW",
             "ThreePhase10kW",
             "ThreePhase11kW",
-            "ACThreePhase",
+            "CommercialAllInOne30kW",
+            "ACCoupledThreePhase6kW",
             "AllInOne6",
             "AllInOne",
             "AllInOne5",
-            "AIO8kW",
-            "AIO10kW",
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
             "AIOHybrid6kW",
             "AIOHybrid8kW",
             "AIOHybrid10kW",
+            "AIOHybrid12kW",
         ];
 
         for inv_type in inverter_types {
@@ -8309,7 +8317,7 @@ mod tests {
                 "{inv_type}: PV generation today should be zero"
             );
 
-            if inv_type.starts_with("ThreePhase") || inv_type == "ACThreePhase" {
+            if is_three_phase_inverter(inv_type) {
                 assert_eq!(
                     read_u32_ir(&store, 1366, 1367),
                     0,
@@ -8544,13 +8552,14 @@ mod tests {
     }
 
     #[test]
-    fn power_limit_registers_default_to_100_percent() {
+    fn power_limit_registers_use_family_specific_scales() {
         let state = PlantState::new(test_ts());
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&state);
+        // Single-phase DC HR111/112 use 0-50, where 50 means full power.
         assert_eq!(store.read_by_space(111, RegisterSpace::Holding), Some(50));
         assert_eq!(store.read_by_space(112, RegisterSpace::Holding), Some(50));
-        // AC-coupled and 3-phase mirrors of the same fields
+        // AC-coupled and 3-phase mirrors use direct 0-100 percentages.
         assert_eq!(store.read_by_space(313, RegisterSpace::Holding), Some(100));
         assert_eq!(store.read_by_space(314, RegisterSpace::Holding), Some(100));
         assert_eq!(store.read_by_space(1108, RegisterSpace::Holding), Some(100));
@@ -9517,9 +9526,9 @@ mod tests {
             "AllInOne",
             "AllInOne5",
             "AllInOne6",
-            "AIO6kW",
-            "AIO8kW",
-            "AIO10kW",
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
             "AIOHybrid6kW",
             "AIOHybrid8kW",
             "AIOHybrid10kW",
@@ -9550,16 +9559,16 @@ mod tests {
         // Verify that all Gen3-era models leave HR 31-32 untouched.
         for inv_type in &[
             "Gen3Hybrid",
-            "Gen3Hybrid8kW",
-            "Gen3Hybrid10kW",
-            "Gen3Plus6kW",
+            "Polar8kW",
+            "Polar4600",
+            "Gen3Plus5kW",
             "Gen3Plus8kW",
             "ThreePhase",
             "ThreePhase8kW",
             "ThreePhase10kW",
             "ThreePhase11kW",
             "AllInOne",
-            "AIO8kW",
+            "Gen3HvHybrid8kW",
             "AIOHybrid8kW",
             "Polar5kW",
             "Polar8kW",
@@ -10479,7 +10488,7 @@ mod tests {
         // Three-phase has a REAL dedicated battery-over-temp bit, unlike
         // single-phase. word 7 (IR1307) idx 6 → bit 9.
         let mut state = make_state();
-        state.config.inverter_type = "ACThreePhase".into();
+        state.config.inverter_type = "ACCoupledThreePhase6kW".into();
         state.active_faults = vec!["battery_over_temp".into()];
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&state);

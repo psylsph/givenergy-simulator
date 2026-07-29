@@ -473,17 +473,15 @@
           <option value="Hybrid4600">Hybrid 4.6kW (0x2002)</option>
           <option value="Hybrid3600">Hybrid 3.6kW (0x2003)</option>
           <option value="Polar5kW">Polar 5kW (0x2101)</option>
-          <option value="Gen3Hybrid8kW">Polar 8kW (0x2106)</option>
           <option value="Polar4600">Polar 4.6kW (0x2102)</option>
-          <option value="Gen3Hybrid10kW">Polar 10kW (0x2102)</option>
           <option value="Polar3600">Polar 3.6kW (0x2103)</option>
           <option value="Polar6kW">Polar 6kW (0x2104)</option>
           <option value="Polar7kW">Polar 7kW (0x2105)</option>
           <option value="Polar8kW">Polar 8kW (0x2106)</option>
-          <option value="Gen3Plus6kW">Gen3 Plus 6kW (0x2201)</option>
+          <option value="Gen3Plus5kW">Gen3 Plus 5kW (0x2201)</option>
           <option value="Gen3Plus4600">Gen3 Plus 4.6kW (0x2202)</option>
           <option value="Gen3Plus3600">Gen3 Plus 3.6kW (0x2203)</option>
-          <option value="Gen3Plus6kW2">Gen3 Plus 6kW (0x2204)</option>
+          <option value="Gen3Plus6kW">Gen3 Plus 6kW (0x2204)</option>
           <option value="Gen3Plus7kW">Gen3 Plus 7kW (0x2205)</option>
           <option value="Gen3Plus8kW">Gen3 Plus 8kW (0x2206)</option>
           <option value="PVInverter5kW">PV Inverter 5kW (0x2301)</option>
@@ -496,17 +494,17 @@
           <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
           <option value="ThreePhase10kW">Three Phase 10kW (0x4003)</option>
           <option value="ThreePhase11kW">Three Phase 11kW (0x4004)</option>
-          <option value="AIOCommercial">AIO Commercial (0x4101)</option>
+          <option value="CommercialAllInOne30kW">Commercial AIO 30kW (0x4101)</option>
           <option value="EMS">EMS (0x5001)</option>
           <option value="EMSCommercial">EMS Commercial (0x5101)</option>
-          <option value="ACThreePhase">AC Three Phase (0x6001)</option>
+          <option value="ACCoupledThreePhase6kW">AC Three Phase (0x6001)</option>
           <option value="Gateway12kW">Gateway 12kW (0x7001)</option>
           <option value="AllInOne6">All-in-One 6kW (0x8001)</option>
           <option value="AllInOne">All-in-One (0x8002)</option>
           <option value="AllInOne5">All-in-One 5kW (0x8003)</option>
-          <option value="AIO6kW">AIO 6kW (0x8101)</option>
-          <option value="AIO8kW">AIO 8kW (0x8102)</option>
-          <option value="AIO10kW">AIO 10kW (0x8103)</option>
+          <option value="Gen3HvHybrid6kW">Gen3 HV Hybrid 6kW (0x8101)</option>
+          <option value="Gen3HvHybrid8kW">Gen3 HV Hybrid 8kW (0x8102)</option>
+          <option value="Gen3HvHybrid10kW">Gen3 HV Hybrid 10kW (0x8103)</option>
           <option value="AIOHybrid6kW">AIO Hybrid 6kW (0x8201)</option>
           <option value="AIOHybrid8kW">AIO Hybrid 8kW (0x8202)</option>
           <option value="AIOHybrid10kW">AIO Hybrid 10kW (0x8203)</option>
@@ -855,62 +853,61 @@
 
     const BATTERY_SIZES = [2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4];
 
-    // Inverter type presets: [max_ac_watts, default_export_limit]
+    // Inverter type presets: { dtc, label, maxBattW, nomV }
+    // maxBattW mirrors `sim_models::max_batt_w_for_inverter`; nomV mirrors
+    // the HR 55 capacity nominal-voltage selection in sim-registers.
     const INVERTER_PRESETS = {
-      Gen1Hybrid:      { dtc: 0x2001, label: 'Gen 1 Hybrid',     maxBattW: 2500, nomV: 51.2 },
-      Gen2Hybrid:      { dtc: 0x2001, label: 'Gen 2 Hybrid',     maxBattW: 3600, nomV: 51.2 },
-      Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',     maxBattW: 3600, nomV: 51.2 },
-      Gen3Hybrid8kW:   { dtc: 0x2101, label: 'Polar 8kW',        maxBattW: 8000, nomV: 51.2 },
-      Gen3Hybrid10kW:  { dtc: 0x2102, label: 'Polar 10kW',       maxBattW: 10000,nomV: 51.2 },
-      Gen3Plus6kW:     { dtc: 0x2201, label: 'Gen3 Plus 6kW',   maxBattW: 2600, nomV: 51.2 },
-      Gen3Plus4600:    { dtc: 0x2202, label: 'Gen3 Plus 4.6kW', maxBattW: 2600, nomV: 51.2 },
-      Gen3Plus3600:    { dtc: 0x2203, label: 'Gen3 Plus 3.6kW', maxBattW: 2600, nomV: 51.2 },
-      Gen3Plus6kW2:    { dtc: 0x2204, label: 'Gen3 Plus 6kW',   maxBattW: 2600, nomV: 51.2 },
-      ACCoupled:       { dtc: 0x3001, label: 'AC Coupled',      maxBattW: 3000, nomV: 51.2 },
-      ACCoupled2:      { dtc: 0x3002, label: 'AC Coupled Mk2',  maxBattW: 3000, nomV: 51.2 },
-      ThreePhase:      { dtc: 0x4001, label: 'Three Phase',     maxBattW: 6000, nomV: 76.8 },
-      ThreePhase8kW:    { dtc: 0x4002, label: 'Three Phase 8kW', maxBattW: 8000, nomV: 76.8 },
-      ThreePhase10kW:   { dtc: 0x4003, label: 'Three Phase 10kW',maxBattW: 10000,nomV: 76.8 },
-      ThreePhase11kW:   { dtc: 0x4004, label: 'Three Phase 11kW',maxBattW: 11000,nomV: 76.8 },
-      Gateway12kW:     { dtc: 0x7001, label: 'Gateway 12kW',    maxBattW: 6000, nomV: 307.0 },
-      AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',  maxBattW: 6000, nomV: 307.0 },
-      AllInOne:        { dtc: 0x8002, label: 'All-in-One',       maxBattW: 6000, nomV: 307.0 },
-      AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',  maxBattW: 5000, nomV: 307.0 },
-      AIO8kW:          { dtc: 0x8102, label: 'AIO 8kW',         maxBattW: 8000, nomV: 307.0 },
-      AIO10kW:         { dtc: 0x8103, label: 'AIO 10kW',       maxBattW: 10000,nomV: 307.0 },
-      AIOHybrid6kW:    { dtc: 0x8201, label: 'AIO Hybrid 6kW', maxBattW: 6000, nomV: 307.0 },
-      AIOHybrid8kW:    { dtc: 0x8202, label: 'AIO Hybrid 8kW', maxBattW: 8000, nomV: 307.0 },
-      AIOHybrid10kW:   { dtc: 0x8203, label: 'AIO Hybrid 10kW',maxBattW: 10000,nomV: 307.0 },
-      AIOHybrid12kW:   { dtc: 0x8204, label: 'AIO Hybrid 12kW',maxBattW: 12000,nomV: 307.0 },
-      // --- Variants accepted by the Rust catalogue but not in the original preset map ---
-      // Single-phase hybrids (0x2002/0x2003)
-      Hybrid4600:      { dtc: 0x2002, label: 'Hybrid 4.6kW',    maxBattW: 3600, nomV: 51.2 },
-      Hybrid3600:      { dtc: 0x2003, label: 'Hybrid 3.6kW',    maxBattW: 3600, nomV: 51.2 },
-      // Polar family (0x2101/0x2103/0x2104/0x2105/0x2106). 0x2102 already
-      // covered by Gen3Hybrid10kW above (same DTC).
-      Polar5kW:        { dtc: 0x2101, label: 'Polar 5kW',       maxBattW: 3600, nomV: 51.2 },
-      Polar4600:       { dtc: 0x2102, label: 'Polar 4.6kW',     maxBattW: 3600, nomV: 51.2 },
-      Polar3600:       { dtc: 0x2103, label: 'Polar 3.6kW',     maxBattW: 3600, nomV: 51.2 },
-      Polar6kW:        { dtc: 0x2104, label: 'Polar 6kW',       maxBattW: 3600, nomV: 51.2 },
-      Polar7kW:        { dtc: 0x2105, label: 'Polar 7kW',       maxBattW: 3600, nomV: 51.2 },
-      Polar8kW:        { dtc: 0x2106, label: 'Polar 8kW',       maxBattW: 8000, nomV: 51.2 },
-      // Gen3 Plus high-wattage (0x2205/0x2206)
-      Gen3Plus7kW:     { dtc: 0x2205, label: 'Gen3 Plus 7kW',   maxBattW: 3600, nomV: 51.2 },
-      Gen3Plus8kW:     { dtc: 0x2206, label: 'Gen3 Plus 8kW',   maxBattW: 3600, nomV: 51.2 },
-      // PV-only inverters (0x230x) — no battery bank
-      PVInverter5kW:   { dtc: 0x2301, label: 'PV Inverter 5kW', maxBattW: 0,    nomV: 0    },
-      PVInverter4600:  { dtc: 0x2302, label: 'PV Inverter 4.6kW', maxBattW: 0,  nomV: 0    },
-      PVInverter3600:  { dtc: 0x2303, label: 'PV Inverter 3.6kW', maxBattW: 0,  nomV: 0    },
-      PVInverter6kW:   { dtc: 0x2304, label: 'PV Inverter 6kW', maxBattW: 0,    nomV: 0    },
-      // Three-phase commercial / AC-coupled three-phase
-      AIOCommercial:   { dtc: 0x4101, label: 'AIO Commercial',  maxBattW: 6000, nomV: 307.0 },
-      EMS:             { dtc: 0x5001, label: 'EMS',             maxBattW: 3600, nomV: 51.2 },
-      EMSCommercial:   { dtc: 0x5101, label: 'EMS Commercial',  maxBattW: 3600, nomV: 51.2 },
-      ACThreePhase:    { dtc: 0x6001, label: 'AC Three Phase',  maxBattW: 3600, nomV: 76.8 },
-      // All-in-One 6kW (0x8101) — distinct from AIO 8kW / 10kW (0x8102/0x8103)
-      AIO6kW:          { dtc: 0x8101, label: 'AIO 6kW',         maxBattW: 6000, nomV: 307.0 },
-      // Gen4 hybrid (newer family, 0x8304)
-      Gen4Hybrid6kW:   { dtc: 0x8304, label: 'Gen4 Hybrid 6kW', maxBattW: 3600, nomV: 51.2 },
+      // --- Single-phase hybrids (0x2001-0x2003, 0x21xx, 0x22xx, 0x23xx) ---
+      Gen1Hybrid:      { dtc: 0x2001, label: 'Gen1 Hybrid',      maxBattW: 2500, nomV: 51.2 },
+      Gen2Hybrid:      { dtc: 0x2001, label: 'Gen2 Hybrid',      maxBattW: 3600, nomV: 51.2 },
+      Gen3Hybrid:      { dtc: 0x2001, label: 'Gen3 Hybrid',      maxBattW: 3600, nomV: 51.2 },
+      Hybrid4600:      { dtc: 0x2002, label: 'Hybrid 4.6kW',     maxBattW: 3600, nomV: 51.2 },
+      Hybrid3600:      { dtc: 0x2003, label: 'Hybrid 3.6kW',     maxBattW: 3600, nomV: 51.2 },
+      Polar5kW:        { dtc: 0x2101, label: 'Polar 5kW',        maxBattW: 3600, nomV: 51.2 },
+      // 0x2102 = "ALPS HY6.0k-GL/PZ8000 4.6KW" — a 4.6 kW unit (no 10 kW DTC exists).
+      Polar4600:       { dtc: 0x2102, label: 'Polar 4.6kW',      maxBattW: 3600, nomV: 51.2 },
+      Polar3600:       { dtc: 0x2103, label: 'Polar 3.6kW',      maxBattW: 3600, nomV: 51.2 },
+      Polar6kW:        { dtc: 0x2104, label: 'Polar 6kW',        maxBattW: 3600, nomV: 51.2 },
+      Polar7kW:        { dtc: 0x2105, label: 'Polar 7kW',        maxBattW: 3600, nomV: 51.2 },
+      Polar8kW:        { dtc: 0x2106, label: 'Polar 8kW',        maxBattW: 8000, nomV: 51.2 },
+      Gen3Plus5kW:     { dtc: 0x2201, label: 'Gen3 Plus 5kW',    maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus4600:    { dtc: 0x2202, label: 'Gen3 Plus 4.6kW',  maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus3600:    { dtc: 0x2203, label: 'Gen3 Plus 3.6kW',  maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus6kW:     { dtc: 0x2204, label: 'Gen3 Plus 6kW',    maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus7kW:     { dtc: 0x2205, label: 'Gen3 Plus 7kW',    maxBattW: 2600, nomV: 51.2 },
+      Gen3Plus8kW:     { dtc: 0x2206, label: 'Gen3 Plus 8kW',    maxBattW: 2600, nomV: 51.2 },
+      PVInverter5kW:   { dtc: 0x2301, label: 'PV Inverter 5kW',  maxBattW: 0,    nomV: 0    },
+      PVInverter4600:  { dtc: 0x2302, label: 'PV Inverter 4.6kW',maxBattW: 0,    nomV: 0    },
+      PVInverter3600:  { dtc: 0x2303, label: 'PV Inverter 3.6kW',maxBattW: 0,    nomV: 0    },
+      PVInverter6kW:   { dtc: 0x2304, label: 'PV Inverter 6kW',  maxBattW: 0,    nomV: 0    },
+      // --- AC-coupled ---
+      ACCoupled:       { dtc: 0x3001, label: 'AC Coupled',       maxBattW: 3000, nomV: 51.2 },
+      ACCoupled2:      { dtc: 0x3002, label: 'AC Coupled Mk2',   maxBattW: 3000, nomV: 51.2 },
+      // --- Three-phase / HV (nomV 76.8, 3 CTs, HR 1000-1124 bank) ---
+      ThreePhase:      { dtc: 0x4001, label: 'Three Phase 6kW',  maxBattW: 6000,  nomV: 76.8 },
+      ThreePhase8kW:   { dtc: 0x4002, label: 'Three Phase 8kW',  maxBattW: 8000,  nomV: 76.8 },
+      ThreePhase10kW:  { dtc: 0x4003, label: 'Three Phase 10kW', maxBattW: 10000, nomV: 76.8 },
+      ThreePhase11kW:  { dtc: 0x4004, label: 'Three Phase 11kW', maxBattW: 11000, nomV: 76.8 },
+      CommercialAllInOne30kW: { dtc: 0x4101, label: 'Commercial AIO 30kW', maxBattW: 30000, nomV: 76.8 },
+      ACCoupledThreePhase6kW: { dtc: 0x6001, label: 'AC Three Phase 6kW',  maxBattW: 6000,  nomV: 76.8 },
+      // Gen3 HV hybrids (0x81xx = GIV-HY-10.0-G3-HV): three-phase HV.
+      Gen3HvHybrid6kW:  { dtc: 0x8101, label: 'Gen3 HV Hybrid 6kW',  maxBattW: 6000,  nomV: 76.8 },
+      Gen3HvHybrid8kW:  { dtc: 0x8102, label: 'Gen3 HV Hybrid 8kW',  maxBattW: 8000,  nomV: 76.8 },
+      Gen3HvHybrid10kW: { dtc: 0x8103, label: 'Gen3 HV Hybrid 10kW', maxBattW: 10000, nomV: 76.8 },
+      // All-in-One hybrids (0x82xx = All in One-HY): three-phase HV.
+      AIOHybrid6kW:    { dtc: 0x8201, label: 'AIO Hybrid 6kW',   maxBattW: 6000,  nomV: 76.8 },
+      AIOHybrid8kW:    { dtc: 0x8202, label: 'AIO Hybrid 8kW',   maxBattW: 8000,  nomV: 76.8 },
+      AIOHybrid10kW:   { dtc: 0x8203, label: 'AIO Hybrid 10kW',  maxBattW: 10000, nomV: 76.8 },
+      AIOHybrid12kW:   { dtc: 0x8204, label: 'AIO Hybrid 12kW',  maxBattW: 12000, nomV: 76.8 },
+      // --- Residential All-in-One (0x80xx): single-phase HV (nomV 307) ---
+      AllInOne6:       { dtc: 0x8001, label: 'All-in-One 6kW',   maxBattW: 6000, nomV: 307.0 },
+      AllInOne:        { dtc: 0x8002, label: 'All-in-One 3.6kW', maxBattW: 3600, nomV: 307.0 },
+      AllInOne5:       { dtc: 0x8003, label: 'All-in-One 5kW',   maxBattW: 5000, nomV: 307.0 },
+      Gen4Hybrid6kW:   { dtc: 0x8304, label: 'Gen4 Hybrid 6kW',  maxBattW: 3600, nomV: 51.2 },
+      // --- EMS / Gateway ---
+      EMS:             { dtc: 0x5001, label: 'EMS',              maxBattW: 3600, nomV: 51.2 },
+      EMSCommercial:   { dtc: 0x5101, label: 'EMS Commercial',   maxBattW: 3600, nomV: 51.2 },
+      Gateway12kW:     { dtc: 0x7001, label: 'Gateway 12kW',     maxBattW: 6000, nomV: 307.0 },
     };
 
     function fmt(w) {
@@ -982,7 +979,7 @@
     //     the inverter's *physical* AC output (`max_ac_watts`), NOT a grid
     //     export limit — e.g. 3000 W for a 3 kW AC-coupled unit. The
     //     label is "Inverter Max AC Output" in this mode.
-    //   - Three-phase / HV / ACThreePhase: HR 1063 (`p_export_limit`,
+    //   - Three-phase / HV / ACCoupledThreePhase6kW: HR 1063 (`p_export_limit`,
     //     C.deci encoding, ×0.1 dW). This is the *grid-port export limit*
     //     — the regulatory cap on what can flow out to the grid. The input
     //     is in watts; the backend multiplies by 10 on the way to the
@@ -998,7 +995,11 @@
     // classify identically and both must be updated together.
     function gridPortPowerFamily(inverterType) {
       if (!inverterType) return 'SinglePhase';
-      if (inverterType.startsWith('ThreePhase') || inverterType === 'ACThreePhase') {
+      // Three-phase families (mirror sim_models::is_three_phase_inverter_type):
+      // ThreePhase*, AC-coupled three-phase (0x6001), Gen3 HV hybrids
+      // (0x81xx), AIO hybrids (0x82xx), commercial AIO (0x4101).
+      const tp = ['CommercialAllInOne30kW','ACCoupledThreePhase6kW','Gen3HvHybrid6kW','Gen3HvHybrid8kW','Gen3HvHybrid10kW','AIOHybrid6kW','AIOHybrid8kW','AIOHybrid10kW','AIOHybrid12kW'];
+      if (inverterType.startsWith('ThreePhase') || tp.includes(inverterType)) {
         return 'ThreePhase';
       }
       if (inverterType === 'EMS' || inverterType === 'EmsCommercial' || inverterType === 'Gateway12kW') {

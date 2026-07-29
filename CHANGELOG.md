@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — inverter identity & classification overhaul
+
+Fixed a family of inverter mis-identifications discovered by cross-referencing
+the authoritative GivEnergy `app_4.0.7_inventory.json`, `_DTC_RATED_POWER`,
+and `givenergy-modbus` `manifest.py` capability tables. The inverter
+catalogue (DTC, AC/battery power limits, DSP firmware, three-phase / HV /
+AC-coupled classification) is now centralized in `sim-models`
+(`inverter_dtc_for`, `max_ac_watts_for`, `max_batt_w_for_inverter`,
+`dsp_firmware_for_inverter`, `is_three_phase_inverter_type`,
+`is_hv_inverter_type`, `is_ac_coupled_inverter_type`); every other crate and
+the JS frontend delegate to it, eliminating the per-crate match tables that
+had drifted apart.
+
+- **0x81xx reclassified** from single-phase "AIO" to three-phase HV Gen3
+  hybrids (`AIO6kW/8kW/10kW` → `Gen3HvHybrid6kW/8kW/10kW`, DTC
+  `GIV-HY-10.0-G3-HV`). They now serve the HR 1000-1124 / IR 1000-1413
+  three-phase banks, use 76.8 V nominal battery voltage, 3 CT clamps, and the
+  three-phase schedule/export-limit register set.
+- **0x82xx** (`AIOHybrid*`, "All in One-HY") and **0x4101**
+  (`AIOCommercial` → `CommercialAllInOne30kW`, 30 kW) and **0x6001**
+  (`ACThreePhase` → `ACCoupledThreePhase6kW`) are likewise classified as
+  three-phase per `manifest.py`.
+- **0x2102 corrected**: was `Gen3Hybrid10kW` rated 10 kW — the inventory and
+  `_DTC_RATED_POWER` both say it is a **4.6 kW** unit ("ALPS HY6.0k-GL/PZ8000
+  4.6KW"). Renamed to `Polar4600` (4600 W AC). There is no single-phase 10 kW
+  DTC. `Gen3Hybrid8kW` → `Polar8kW` (0x2106, 8 kW) and the Gen3 Plus lineup
+  was relabelled to match ratings (`Gen3Plus6kW` 0x2201 → `Gen3Plus5kW`,
+  `Gen3Plus6kW2` 0x2204 → `Gen3Plus6kW`).
+- CT-clamp count (`meter_slaves_from_store`) now returns 3 for the 0x41/0x81/
+  0x82 DTC families in addition to 0x40/0x60.
+- `GridPortPowerFamily` (Rust + JS `gridPortPowerFamily` mirror) reclassified
+  via the central three-phase predicate.
+- `AllInOne` (0x8002) AC/battery limit corrected 6000 W → 3600 W
+  (`_DTC_BATPOWER["8002"] = 3600`).
+
+### Known follow-up (not in this release)
+
+Upstream `givenergy-modbus` (e9def9e) renamed HR 1063 `p_export_limit`
+(watts, max=6500) → `export_power_rate` (0–100 % of rated power, `C.deci`,
+raw 0–1000), matching the v4.1.6 `BackflowPowerRateSet` name. The simulator
+still models HR 1063 as watts × 10 for round-trip consistency; the three-phase
+export-limit default stays at the 6500 W wire ceiling. Converting the
+projection + Modbus write path to the rate-based model is tracked separately.
+
 ## [0.17.5] - 2026-07-16
 
 ### Changed

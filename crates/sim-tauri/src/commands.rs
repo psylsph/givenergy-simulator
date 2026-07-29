@@ -405,8 +405,8 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         // HR 96
         // HR 110: Battery SOC reserve (%)
         110 => Some(Command::SetMinSoc(value as f64)),
-        // Single-phase DC HR111/112 use a 0-50 raw scale, while the
-        // simulator stores normalized 0-100 limits.
+        // HR 111/112 use a 0-50 raw scale; the simulator stores normalized
+        // 0-100 limits. AC-coupled / three-phase registers are direct.
         111 => Some(Command::SetBatteryChargeLimit(
             sim_models::dc_battery_limit_raw_to_percent(value),
         )),
@@ -1782,12 +1782,13 @@ pub enum GridPortPowerFamily {
 impl GridPortPowerFamily {
     /// Classify an inverter type string into the wire-protocol family.
     pub fn from_inverter_type(inverter_type: &str) -> Self {
-        // Three-phase: starts with "ThreePhase" (ThreePhase / ThreePhase8kW /
-        // ThreePhase10kW / ThreePhase11kW) OR equals "ACThreePhase". Per
-        // giv_tcp's `model/threephase.py` these all share the 1000-1124
-        // HR block and the 1061-1120 IR block, so they all read/write the
-        // same `p_export_limit` at HR 1063.
-        if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+        // Three-phase family: any device that exposes the TPH 1000-1124 HR
+        // block / 1000-1413 IR block and reads/writes `p_export_limit` at
+        // HR 1063. This includes ThreePhase*, AC-coupled three-phase
+        // (0x6001), the Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx),
+        // and the commercial AIO (0x4101) — all three-phase per
+        // givenergy-modbus `manifest.py`.
+        if sim_models::is_three_phase_inverter_type(inverter_type) {
             return Self::ThreePhase;
         }
         // EMS family: EMS, EmsCommercial, and the Gateway all use HR 2071
@@ -1986,6 +1987,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {
+        match modbus_address_to_command(111, 50) {
+            Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 100.0),
+            other => panic!("unexpected HR111 command: {other:?}"),
+        }
+        match modbus_address_to_command(112, 25) {
+            Some(Command::SetBatteryDischargeLimit(value)) => assert_eq!(value, 50.0),
+            other => panic!("unexpected HR112 command: {other:?}"),
+        }
+        match modbus_address_to_command(313, 50) {
+            Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 50.0),
+            other => panic!("unexpected HR313 command: {other:?}"),
+        }
+        match modbus_address_to_command(1110, 100) {
+            Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 100.0),
+            other => panic!("unexpected HR1110 command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_throughput_from_soh_calculation() {
         // Test SOH 0.781 (approx 3 years old, 1 cycle/day)
         let soh = 0.781;
@@ -2016,7 +2037,7 @@ mod tests {
         use GridPortPowerFamily::*;
 
         // Three-phase family — all share the HR 1000-1124 block per giv_tcp
-        // model/threephase.py. ACThreePhase is included for symmetry with
+        // model/threephase.py. ACCoupledThreePhase6kW is included for symmetry with
         // is_three_phase_inverter() in sim-registers.
         assert_eq!(
             GridPortPowerFamily::from_inverter_type("ThreePhase"),
@@ -2035,9 +2056,27 @@ mod tests {
             ThreePhase
         );
         assert_eq!(
-            GridPortPowerFamily::from_inverter_type("ACThreePhase"),
+            GridPortPowerFamily::from_inverter_type("ACCoupledThreePhase6kW"),
             ThreePhase
         );
+        // Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx), and the commercial
+        // AIO (0x4101) are three-phase per givenergy-modbus manifest.py.
+        for inv in [
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+            "CommercialAllInOne30kW",
+        ] {
+            assert_eq!(
+                GridPortPowerFamily::from_inverter_type(inv),
+                ThreePhase,
+                "expected {inv} to be classified as ThreePhase"
+            );
+        }
 
         // EMS family — EMS, EmsCommercial, and Gateway (the Gateway inherits
         // its export_power_limit / 2071 semantics from EMS per
@@ -2050,29 +2089,29 @@ mod tests {
         assert_eq!(GridPortPowerFamily::from_inverter_type("Gateway12kW"), Ems);
 
         // Single-phase family — HR 26 is read-only. Includes all the
-        // hybrid / polar / AC-coupled / Gen3+ / PV inverter / AIO variants.
+        // hybrid / polar / AC-coupled / Gen3+ / PV inverter / residential
+        // AIO variants. (0x81xx/0x82xx are three-phase, tested above.)
         for inv in [
             "Gen1Hybrid",
             "Gen2Hybrid",
             "Gen3Hybrid",
-            "Gen3Hybrid8kW",
-            "Gen3Hybrid10kW",
+            "Polar5kW",
+            "Polar4600",
+            "Polar3600",
+            "Polar6kW",
+            "Polar7kW",
+            "Polar8kW",
             "Gen4Hybrid6kW",
-            "Gen3Plus6kW",
+            "Gen3Plus5kW",
             "Gen3Plus4600",
             "Gen3Plus3600",
-            "Gen3Plus6kW2",
+            "Gen3Plus6kW",
             "Gen3Plus7kW",
             "Gen3Plus8kW",
             "ACCoupled",
             "ACCoupled2",
             "Hybrid4600",
             "Hybrid3600",
-            "Polar5kW",
-            "Polar4600",
-            "Polar3600",
-            "Polar6kW",
-            "Polar7kW",
             "PVInverter5kW",
             "PVInverter4600",
             "PVInverter3600",
@@ -2080,13 +2119,6 @@ mod tests {
             "AllInOne",
             "AllInOne6",
             "AllInOne5",
-            "AIO6kW",
-            "AIO8kW",
-            "AIO10kW",
-            "AIOHybrid6kW",
-            "AIOHybrid8kW",
-            "AIOHybrid10kW",
-            "AIOHybrid12kW",
         ] {
             assert_eq!(
                 GridPortPowerFamily::from_inverter_type(inv),
@@ -2193,32 +2225,5 @@ mod tests {
         // EMS: full 16-bit ceiling.
         assert_eq!(clamp(GridPortPowerFamily::Ems, 65535.0), 65535.0);
         assert_eq!(clamp(GridPortPowerFamily::Ems, 70000.0), 65535.0);
-    }
-
-    #[test]
-    fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {
-        // Single-phase DC HR111/112 use a 0-50 raw scale; the simulator
-        // stores normalized 0-100 limits. The write routing must convert.
-        match modbus_address_to_command(111, 50) {
-            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 100.0),
-            other => panic!("unexpected HR111(50): {other:?}"),
-        }
-        match modbus_address_to_command(111, 25) {
-            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 50.0),
-            other => panic!("unexpected HR111(25): {other:?}"),
-        }
-        match modbus_address_to_command(112, 50) {
-            Some(Command::SetBatteryDischargeLimit(v)) => assert_eq!(v, 100.0),
-            other => panic!("unexpected HR112(50): {other:?}"),
-        }
-        match modbus_address_to_command(112, 25) {
-            Some(Command::SetBatteryDischargeLimit(v)) => assert_eq!(v, 50.0),
-            other => panic!("unexpected HR112(25): {other:?}"),
-        }
-        // AC-coupled and three-phase limits are direct percentages (no scaling).
-        match modbus_address_to_command(313, 50) {
-            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 50.0),
-            other => panic!("unexpected HR313(50): {other:?}"),
-        }
     }
 }

@@ -46,26 +46,36 @@ Run a headless simulation with the 'simulate' subcommand (starts Modbus server a
 \n  Gen1Hybrid          DTC 0x2001  5kW AC, 2.5kW battery\
 \n  Gen2Hybrid          DTC 0x2001  5kW AC, 3.6kW battery\
 \n  Gen3Hybrid          DTC 0x2001  5kW AC, 3.6kW battery (default)\
-\n  Gen3Hybrid8kW       DTC 0x2106  8kW AC, 8kW battery\
-\n  Gen3Hybrid10kW      DTC 0x2102  10kW AC, 10kW battery\
-\n  Gen3Plus6kW         DTC 0x2201  5kW AC, 2.6kW battery\
+\n  Polar5kW            DTC 0x2101  5kW AC, 3.6kW battery\
+\n  Polar4600           DTC 0x2102  4.6kW AC, 3.6kW battery\
+\n  Polar3600           DTC 0x2103  3.6kW AC, 3.6kW battery\
+\n  Polar6kW            DTC 0x2104  6kW AC, 3.6kW battery\
+\n  Polar7kW            DTC 0x2105  7kW AC, 3.6kW battery\
+\n  Polar8kW            DTC 0x2106  8kW AC, 8kW battery\
+\n  Gen3Plus5kW         DTC 0x2201  5kW AC, 2.6kW battery\
 \n  Gen3Plus4600        DTC 0x2202  4.6kW AC, 2.6kW battery\
 \n  Gen3Plus3600        DTC 0x2203  3.6kW AC, 2.6kW battery\
-\n  Gen3Plus6kW2        DTC 0x2204  6kW AC, 2.6kW battery\
+\n  Gen3Plus6kW         DTC 0x2204  6kW AC, 2.6kW battery\
+\n  Gen3Plus7kW         DTC 0x2205  7kW AC, 2.6kW battery\
+\n  Gen3Plus8kW         DTC 0x2206  8kW AC, 2.6kW battery\
 \n  ACCoupled           DTC 0x3001  3kW AC, 3kW battery\
 \n  ACCoupled2          DTC 0x3002  3kW AC, 3kW battery\
 \n  ThreePhase          DTC 0x4001  6kW AC, 6kW battery\
 \n  ThreePhase8kW       DTC 0x4002  8kW AC, 8kW battery\
 \n  ThreePhase10kW      DTC 0x4003  10kW AC, 10kW battery\
 \n  ThreePhase11kW      DTC 0x4004  11kW AC, 11kW battery\
+\n  CommercialAllInOne30kW DTC 0x4101 30kW AC, 30kW battery\
+\n  ACCoupledThreePhase6kW DTC 0x6001 6kW AC, 6kW battery\
 \n  AllInOne6           DTC 0x8001  6kW AC, 6kW battery\
-\n  AllInOne            DTC 0x8002  6kW AC, 6kW battery\
+\n  AllInOne            DTC 0x8002  3.6kW AC, 3.6kW battery\
 \n  AllInOne5           DTC 0x8003  5kW AC, 5kW battery\
-\n  AIO8kW              DTC 0x8102  8kW AC, 8kW battery\
-\n  AIO10kW             DTC 0x8103  10kW AC, 10kW battery\
+\n  Gen3HvHybrid6kW     DTC 0x8101  6kW AC, 6kW battery (3-ph HV)\
+\n  Gen3HvHybrid8kW     DTC 0x8102  8kW AC, 8kW battery (3-ph HV)\
+\n  Gen3HvHybrid10kW    DTC 0x8103  10kW AC, 10kW battery (3-ph HV)\
 \n  AIOHybrid6kW        DTC 0x8201  6kW AC, 6kW battery\
 \n  AIOHybrid8kW        DTC 0x8202  8kW AC, 8kW battery\
 \n  AIOHybrid10kW       DTC 0x8203  10kW AC, 10kW battery\
+\n  AIOHybrid12kW       DTC 0x8204  12kW AC, 12kW battery\
 \n\
 \nBATTERY SIZES (kWh, use with --battery-size):\
 \n  2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4\
@@ -438,6 +448,8 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         }
         50 => Some(Command::SetActivePowerRate(cmd.value as f64)),
         110 => Some(Command::SetMinSoc(cmd.value as f64)),
+        // Single-phase DC HR111/112 use a 0-50 raw scale, while the
+        // simulator stores normalized 0-100 limits.
         111 => Some(Command::SetBatteryChargeLimit(
             sim_models::dc_battery_limit_raw_to_percent(cmd.value),
         )),
@@ -445,6 +457,7 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         112 => Some(Command::SetBatteryDischargeLimit(
             sim_models::dc_battery_limit_raw_to_percent(cmd.value),
         )),
+        // AC-coupled and three-phase battery limits are direct percentages.
         313 | 1110 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
         314 | 1108 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
         163 => {

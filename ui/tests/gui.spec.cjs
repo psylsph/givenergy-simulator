@@ -56,7 +56,7 @@ const mockTauriScript = `
           const invType = requested || 'Gen3Hybrid';
           // Pick plausible caps per family so the field's current-watts
           // display is meaningful without each test having to specify it.
-          const isThreePhase = invType.startsWith('ThreePhase') || invType === 'ACThreePhase';
+          const isThreePhase = invType.startsWith('ThreePhase') || invType === 'ACCoupledThreePhase6kW';
           const isEms = invType === 'EMS' || invType === 'EmsCommercial' || invType === 'Gateway12kW';
           const maxOutputW = isThreePhase ? 11000 : isEms ? 5000 : 5000;
           const exportLimitW = isThreePhase || isEms ? 6500 : 5000;
@@ -132,7 +132,7 @@ test('inverter type dropdown has all preset options', async ({ page }) => {
   // The dropdown must expose every InverterType variant the Rust catalogue
   // accepts, so a CLI/JSON-loaded plant can be re-selected in the GUI
   // without an empty label rendering.
-  await expect(page.locator('#inverter-type option')).toHaveCount(45);
+  await expect(page.locator('#inverter-type option')).toHaveCount(43);
 });
 
 test('battery count supports all 6 modules', async ({ page }) => {
@@ -153,8 +153,8 @@ test('load profile defaults to family with 4 options', async ({ page }) => {
 
 // ===== Create plant with all inverter types =====
 
-const types = ['Gen3Hybrid','Gen3Hybrid8kW','Gen3Hybrid10kW','ACCoupled','ACCoupled2',
-  'AllInOne6','AllInOne','AllInOne5','AIO8kW','AIO10kW','ThreePhase'];
+const types = ['Gen3Hybrid','Polar8kW','Polar4600','ACCoupled','ACCoupled2',
+  'AllInOne6','AllInOne','AllInOne5','Gen3HvHybrid6kW','Gen3HvHybrid8kW','Gen3HvHybrid10kW','ThreePhase'];
 for (const type of types) {
   test(`create plant with ${type}`, async ({ page }) => {
     await setupPage(page);
@@ -221,7 +221,7 @@ const VISIBLE_TYPES = [
   ['AllInOne6', 'residential All-in-One (0x8001)'],
   ['AllInOne', 'residential All-in-One (0x8002)'],
   ['AllInOne5', 'residential All-in-One (0x8003)'],
-  ['ACThreePhase', 'AC three-phase (0x6001)'],
+  ['ACCoupledThreePhase6kW', 'AC three-phase (0x6001)'],
 ];
 for (const [type, label] of VISIBLE_TYPES) {
   test(`Timed Discharge card visible for ${label}`, async ({ page }) => {
@@ -232,9 +232,9 @@ for (const [type, label] of VISIBLE_TYPES) {
 
 const HIDDEN_TYPES = [
   ['Gen1Hybrid', 'Gen1 Hybrid (0x2001, FW252)'],
-  ['Gen3Plus6kW', 'DC hybrid Gen3+ (0x2201)'],
+  ['Gen3Plus5kW', 'DC hybrid Gen3+ (0x2201)'],
   ['ThreePhase', 'three-phase (0x4001)'],
-  ['AIO8kW', 'HV Gen3 AIO (0x8102)'],
+  ['Gen3HvHybrid8kW', 'HV Gen3 hybrid (0x8102)'],
   ['AIOHybrid6kW', 'AIO Hybrid (0x8201)'],
   ['Gateway12kW', 'Gateway (0x7001)'],
 ];

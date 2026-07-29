@@ -322,52 +322,11 @@ fn nearest_battery_size(requested: f64) -> f64 {
 }
 
 fn max_batt_w_for_inverter(inv_type: &str) -> f64 {
-    match inv_type {
-        "Gen1Hybrid" => 2500.0,
-        "Gen2Hybrid" => 3600.0,
-        "Gen3Hybrid" => 3600.0,
-        "Gen3Hybrid8kW" => 8000.0,
-        "Gen3Hybrid10kW" => 10000.0,
-        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 2600.0,
-        "ACCoupled" | "ACCoupled2" => 3000.0,
-        "ThreePhase" => 6000.0,
-        "ThreePhase8kW" => 8000.0,
-        "ThreePhase10kW" => 10000.0,
-        "ThreePhase11kW" => 11000.0,
-        "AllInOne6" | "AllInOne" => 6000.0,
-        "AllInOne5" => 5000.0,
-        "AIO8kW" => 8000.0,
-        "AIO10kW" => 10000.0,
-        "AIOHybrid6kW" => 6000.0,
-        "AIOHybrid8kW" => 8000.0,
-        "AIOHybrid10kW" => 10000.0,
-        _ => 3600.0,
-    }
+    sim_models::max_batt_w_for_inverter(inv_type)
 }
 
 fn max_ac_w_for_inverter(inv_type: &str) -> f64 {
-    match inv_type {
-        "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" => 5000.0,
-        "Gen3Hybrid8kW" => 8000.0,
-        "Gen3Hybrid10kW" => 10000.0,
-        "Gen3Plus6kW" => 5000.0,
-        "Gen3Plus4600" => 4600.0,
-        "Gen3Plus3600" => 3600.0,
-        "Gen3Plus6kW2" => 6000.0,
-        "ACCoupled" | "ACCoupled2" => 3000.0,
-        "ThreePhase" => 6000.0,
-        "ThreePhase8kW" => 8000.0,
-        "ThreePhase10kW" => 10000.0,
-        "ThreePhase11kW" => 11000.0,
-        "AllInOne6" | "AllInOne" => 6000.0,
-        "AllInOne5" => 5000.0,
-        "AIO8kW" => 8000.0,
-        "AIO10kW" => 10000.0,
-        "AIOHybrid6kW" => 6000.0,
-        "AIOHybrid8kW" => 8000.0,
-        "AIOHybrid10kW" => 10000.0,
-        _ => 5000.0,
-    }
+    sim_models::max_ac_watts_for(inv_type)
 }
 
 fn configure_inverter(state: &mut PlantState, inv_type: &str) {
@@ -409,11 +368,11 @@ async fn dtc_gen2_hybrid() {
 
 #[tokio::test]
 async fn dtc_gen3_hybrid_8kw() {
-    let state = build_state("Gen3Hybrid8kW", 1, 9.5, 50.0);
+    let state = build_state("Polar8kW", 1, 9.5, 50.0);
     let h = TestHarness::new(state, 10).await;
     let mut s = h.connect().await;
     let dtc = h.read_hr(&mut s, 0).await;
-    assert_eq!(dtc, 0x2106, "Gen3Hybrid8kW DTC should be 0x2106");
+    assert_eq!(dtc, 0x2106, "Polar8kW DTC should be 0x2106");
 }
 
 #[tokio::test]
@@ -499,20 +458,20 @@ async fn dtc_all_in_one_5() {
 
 #[tokio::test]
 async fn dtc_aio_8kw() {
-    let state = build_state("AIO8kW", 1, 9.5, 50.0);
+    let state = build_state("Gen3HvHybrid8kW", 1, 9.5, 50.0);
     let h = TestHarness::new(state, 10).await;
     let mut s = h.connect().await;
     let dtc = h.read_hr(&mut s, 0).await;
-    assert_eq!(dtc, 0x8102, "AIO8kW DTC should be 0x8102");
+    assert_eq!(dtc, 0x8102, "Gen3HvHybrid8kW DTC should be 0x8102");
 }
 
 #[tokio::test]
 async fn dtc_aio_10kw() {
-    let state = build_state("AIO10kW", 1, 9.5, 50.0);
+    let state = build_state("Gen3HvHybrid10kW", 1, 9.5, 50.0);
     let h = TestHarness::new(state, 10).await;
     let mut s = h.connect().await;
     let dtc = h.read_hr(&mut s, 0).await;
-    assert_eq!(dtc, 0x8103, "AIO10kW DTC should be 0x8103");
+    assert_eq!(dtc, 0x8103, "Gen3HvHybrid10kW DTC should be 0x8103");
 }
 
 #[tokio::test]
@@ -544,11 +503,11 @@ async fn dtc_aio_hybrid_10kw() {
 
 #[tokio::test]
 async fn dtc_gen3_plus_6kw() {
-    let state = build_state("Gen3Plus6kW", 1, 9.5, 50.0);
+    let state = build_state("Gen3Plus5kW", 1, 9.5, 50.0);
     let h = TestHarness::new(state, 10).await;
     let mut s = h.connect().await;
     let dtc = h.read_hr(&mut s, 0).await;
-    assert_eq!(dtc, 0x2201, "Gen3Plus6kW DTC should be 0x2201");
+    assert_eq!(dtc, 0x2201, "Gen3Plus5kW DTC should be 0x2201");
 }
 
 #[tokio::test]
@@ -730,7 +689,7 @@ async fn soc_reserve_holding_register() {
 }
 
 #[tokio::test]
-async fn battery_charge_limit_100_percent() {
+async fn battery_charge_limit_100_percent_projects_as_dc_register_max() {
     let mut state = midday_state();
     state.battery_charge_limit_percent = 100.0;
 
@@ -742,14 +701,13 @@ async fn battery_charge_limit_100_percent() {
 }
 
 #[tokio::test]
-async fn battery_discharge_limit_50_percent() {
+async fn battery_discharge_limit_50_percent_projects_as_dc_register_25() {
     let mut state = midday_state();
     state.battery_discharge_limit_percent = 50.0;
 
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
-    // Single-phase DC HR112 uses 0-50, where 50 = full power. The
-    // projection divides the normalized 50% limit by 2 → raw 25.
+    // A normalized 50% limit is raw 25 in single-phase DC HR112.
     let limit = h.read_hr(&mut s, 112).await;
     assert_eq!(limit, 25, "HR 112 should use its 0-50 raw scale");
 }
@@ -1783,9 +1741,8 @@ async fn full_holding_block_0_to_119_gen3() {
     assert_eq!(data[96], 0);
     // HR 110 = SOC reserve
     assert_eq!(data[110], 4, "HR 110 should be 4% (default min_soc)");
-    // HR 111 = charge limit (0-50 raw scale for DC)
+    // Single-phase DC HR 111/112 use 0-50, where 50 means full power.
     assert_eq!(data[111], 50);
-    // HR 112 = discharge limit (0-50 raw scale for DC)
     assert_eq!(data[112], 50);
     // HR 116 = charge target SOC = 100
     assert_eq!(data[116], 100);
@@ -1958,12 +1915,12 @@ async fn all_in_one_has_correct_dtc() {
 
 #[tokio::test]
 async fn gen3_plus_has_correct_dtc() {
-    let state = build_state("Gen3Plus6kW", 1, 5.2, 50.0);
+    let state = build_state("Gen3Plus5kW", 1, 5.2, 50.0);
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
 
     let dtc = h.read_hr(&mut s, 0).await;
-    assert_eq!(dtc, 0x2201, "Gen3Plus6kW DTC should be 0x2201");
+    assert_eq!(dtc, 0x2201, "Gen3Plus5kW DTC should be 0x2201");
 }
 
 // ===========================================================================

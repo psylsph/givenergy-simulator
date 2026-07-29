@@ -34,62 +34,143 @@ pub enum DongleMisbehaviourMode {
 }
 
 // ---------------------------------------------------------------------------
+// Inverter identity and capability catalogue
+// ---------------------------------------------------------------------------
+
+/// Return the GivEnergy device-type code (HR 0) for a simulator inverter name.
+///
+/// Names intentionally describe the actual hardware family. In particular,
+/// 0x81xx is the three-phase GIV-HY-10.0-G3-HV family, not an All-in-One.
+pub fn inverter_dtc_for(inverter_type: &str) -> u16 {
+    match inverter_type {
+        "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" => 0x2001,
+        "Hybrid4600" => 0x2002,
+        "Hybrid3600" => 0x2003,
+        "Polar5kW" => 0x2101,
+        "Polar4600" => 0x2102,
+        "Polar3600" => 0x2103,
+        "Polar6kW" => 0x2104,
+        "Polar7kW" => 0x2105,
+        "Polar8kW" => 0x2106,
+        "Gen3Plus5kW" => 0x2201,
+        "Gen3Plus4600" => 0x2202,
+        "Gen3Plus3600" => 0x2203,
+        "Gen3Plus6kW" => 0x2204,
+        "Gen3Plus7kW" => 0x2205,
+        "Gen3Plus8kW" => 0x2206,
+        "PVInverter5kW" => 0x2301,
+        "PVInverter4600" => 0x2302,
+        "PVInverter3600" => 0x2303,
+        "PVInverter6kW" => 0x2304,
+        "ACCoupled" => 0x3001,
+        "ACCoupled2" => 0x3002,
+        "ThreePhase" => 0x4001,
+        "ThreePhase8kW" => 0x4002,
+        "ThreePhase10kW" => 0x4003,
+        "ThreePhase11kW" => 0x4004,
+        "CommercialAllInOne30kW" => 0x4101,
+        "EMS" => 0x5001,
+        "EmsCommercial" => 0x5101,
+        "ACCoupledThreePhase6kW" => 0x6001,
+        "Gateway12kW" => 0x7001,
+        "AllInOne6" => 0x8001,
+        "AllInOne" => 0x8002,
+        "AllInOne5" => 0x8003,
+        "Gen3HvHybrid6kW" => 0x8101,
+        "Gen3HvHybrid8kW" => 0x8102,
+        "Gen3HvHybrid10kW" => 0x8103,
+        "AIOHybrid6kW" => 0x8201,
+        "AIOHybrid8kW" => 0x8202,
+        "AIOHybrid10kW" => 0x8203,
+        "AIOHybrid12kW" => 0x8204,
+        "Gen4Hybrid6kW" => 0x8304,
+        _ => 0x2001,
+    }
+}
+
+/// Whether the device exposes the three-phase HR 1000-1124 / IR 1000-1413 banks.
+pub fn is_three_phase_inverter_type(inverter_type: &str) -> bool {
+    inverter_type.starts_with("ThreePhase")
+        || matches!(
+            inverter_type,
+            "CommercialAllInOne30kW"
+                | "ACCoupledThreePhase6kW"
+                | "Gen3HvHybrid6kW"
+                | "Gen3HvHybrid8kW"
+                | "Gen3HvHybrid10kW"
+                | "AIOHybrid6kW"
+                | "AIOHybrid8kW"
+                | "AIOHybrid10kW"
+                | "AIOHybrid12kW"
+        )
+}
+
+/// Whether battery discovery uses an HV BCU/BMU stack rather than LV packs.
+pub fn is_hv_inverter_type(inverter_type: &str) -> bool {
+    inverter_type.starts_with("ThreePhase")
+        || matches!(
+            inverter_type,
+            "ACCoupledThreePhase6kW"
+                | "AllInOne6"
+                | "AllInOne"
+                | "AllInOne5"
+                | "Gen3HvHybrid6kW"
+                | "Gen3HvHybrid8kW"
+                | "Gen3HvHybrid10kW"
+                | "AIOHybrid6kW"
+                | "AIOHybrid8kW"
+                | "AIOHybrid10kW"
+                | "AIOHybrid12kW"
+        )
+}
+
+/// Whether the device has the HR 300-359 AC-output configuration block.
+pub fn has_ac_config_block(inverter_type: &str) -> bool {
+    matches!(
+        inverter_type,
+        "ACCoupled" | "ACCoupled2" | "AllInOne6" | "AllInOne" | "AllInOne5"
+    )
+}
+
+/// Whether the device is AC-coupled (no integrated DC solar input path).
+pub fn is_ac_coupled_inverter_type(inverter_type: &str) -> bool {
+    matches!(
+        inverter_type,
+        "ACCoupled" | "ACCoupled2" | "ACCoupledThreePhase6kW"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // UK EREC G98 / G99 standard grid-export limits
 // ---------------------------------------------------------------------------
 //
 // Per EREC G98 (Issue 1 Amendment 7, October 2022, ENA), a "Micro-generator"
-// is limited to a Registered Capacity of 16 A per phase, which at 230 V
-// single-phase nominal is exactly 3680 W (16 A × 230 V). Three-phase G98
-// Micro-generators can therefore export up to 3 × 3680 = 11_040 W across the
-// three phases — but the `givenergy-modbus` HR 1063 (`p_export_limit`,
-// C.deci) is hard-capped at `max=6500` on the wire (u16 × 0.1 dW = 6553.5 W
-// representable max), so the ThreePhase family default is clamped to 6500 W
-// to round-trip exactly on the wire. EMS HR 2071 is a full 16-bit register
-// (0–65 535 W). Single-phase HR 26 is read-only on the wire (mirrors
-// `config.max_ac_watts`) and has no client-settable export-limit field.
+// is limited to 16 A per phase: 3680 W single-phase (16 A × 230 V) or
+// 11 040 W three-phase (3 × 16 A × 230 V).
 //
-// `default_export_limit_w_for(inverter_type)` returns the standard UK
-// legal default that should seed a brand-new plant so a freshly built
-// sim matches what an MCS installer would set before the customer even
-// touches the GUI.
+// NOTE on HR 1063: upstream givenergy-modbus (e9def9e) renamed this register
+// `p_export_limit` (watts, max=6500) → `export_power_rate` (0–100% of rated
+// power, C.deci, raw 0–1000), matching the v4.1.6 doc name
+// `BackflowPowerRateSet`. The simulator still models HR 1063 as watts × 10
+// (clamped to u16, max 6553.5 W) for round-trip consistency with the existing
+// tests and clients. The three-phase default is therefore the wire ceiling of
+// 6500 W so `state ↔ HR 1063` round-trips exactly. Converting the projection
+// + write path to the rate-based model is a tracked follow-up.
 
 /// Default UK single-phase G98 Micro-generator limit: 16 A × 230 V = 3680 W.
-/// Reference: EREC G98 § Scope (Issue 1 Amendment 7, October 2022):
-/// "16 A per phase, 230/400 V AC corresponds to 3.68 kilowatts (kW) on a
-/// single-phase supply".
 pub const DEFAULT_G98_SINGLE_PHASE_EXPORT_W: f64 = 3680.0;
 
 /// Wire ceiling for the three-phase export limit, in watts.
 ///
-/// The UK EREC G98 three-phase legal limit is 3 × (16 A × 230 V) = 11_040 W,
-/// but the `givenergy-modbus` register HR 1063 (`p_export_limit`, C.deci)
-/// encodes the value as watts × 10 into a u16, giving a representable max of
-/// 65 535 dW = 6553.5 W, and givenergy-modbus itself hard-caps writes at
-/// `max=6500`. We default to 6500 W so the value round-trips exactly on the
-/// wire (state → HR 1063 read → state): any higher value would be silently
-/// clamped by the projection and the Modbus client would read a different
-/// number from what `state.inverter.export_limit_w` holds.
+/// HR 1063 is encoded as watts × 10 into a u16 (max 6553.5 W); the default is
+/// clamped to 6500 W so the value round-trips exactly through the register
+/// projection. (Upstream models HR 1063 as an export-rate %; see the note
+// above.)
 pub const DEFAULT_G98_THREE_PHASE_EXPORT_W: f64 = 6500.0;
 
-/// Default UK EREC G98 export limit for a given inverter family, in watts.
-///
-/// Returns the standard default that should seed a brand-new plant so a
-/// freshly built sim matches what an MCS installer would set before the
-/// customer touches the GUI, **clamped to what the wire register can
-/// actually represent**:
-/// * Single-phase (Gen1-4 Hybrid, Polar, Gen3+, AC-coupled, PV, AIO,
-///   AIOHybrid, Gateway) — 3680 W (UK EREC G98 single-phase = 16 A × 230 V).
-/// * Three-phase (ThreePhase*, ACThreePhase) — 6500 W, the wire ceiling of
-///   HR 1063 (`max=6500` in givenergy-modbus). The UK legal three-phase
-///   G98 cap is 11_040 W but the register physically cannot represent it,
-///   so we use the wire ceiling to keep the state ↔ HR 1063 round-trip
-///   exact rather than silently clamping.
-/// * EMS / EmsCommercial — 0 W. HR 2071 is full 16-bit with no G98 cap on
-///   the wire; we return 0 so the export-limit code path is disabled
-///   until an operator explicitly configures it (no sensible "legal
-///   default" applies).
+/// Default grid-export limit for a new plant, in watts.
 pub fn default_export_limit_w_for(inverter_type: &str) -> f64 {
-    if inverter_type.starts_with("ThreePhase") || inverter_type == "ACThreePhase" {
+    if is_three_phase_inverter_type(inverter_type) {
         DEFAULT_G98_THREE_PHASE_EXPORT_W
     } else if inverter_type == "EMS" || inverter_type == "EmsCommercial" {
         0.0
@@ -99,42 +180,41 @@ pub fn default_export_limit_w_for(inverter_type: &str) -> f64 {
 }
 
 /// Physical AC output capability of a given inverter type, in watts.
-///
-/// This is the inverter's *hardware* cap — how much AC power it can
-/// physically produce. Distinct from [`default_export_limit_w_for`], which
-/// is the *regulatory* DNO-facing export limit. For an AC-coupled 3 kW
-/// inverter this is 3000 W (the inverter can't make more), while the UK
-/// EREC G98 export limit is independently 3680 W.
-///
-/// Mirrors the table that previously lived only in
-/// `sim_tauri::commands::create_plant` and `sim_api::main::configure_inverter`.
-/// Both call sites now use this function so the inverter catalogue has a
-/// single source of truth.
 pub fn max_ac_watts_for(inverter_type: &str) -> f64 {
     match inverter_type {
-        "Gen3Hybrid8kW" => 8000.0,
-        "Gen3Hybrid10kW" => 10000.0,
-        "Gen3Plus6kW" => 5000.0,
+        "Polar8kW" => 8000.0,
+        "Gen3Plus5kW" => 5000.0,
         "Gen3Plus4600" => 4600.0,
         "Gen3Plus3600" => 3600.0,
-        "Gen3Plus6kW2" => 6000.0,
+        "Gen3Plus6kW" => 6000.0,
+        "Gen3Plus7kW" => 7000.0,
+        "Gen3Plus8kW" => 8000.0,
         "AllInOne6" => 6000.0,
-        "AIO8kW" => 8000.0,
-        "AIO10kW" => 10000.0,
+        "AllInOne" => 3600.0,
+        "AllInOne5" => 5000.0,
+        "Gen3HvHybrid6kW" => 6000.0,
+        "Gen3HvHybrid8kW" => 8000.0,
+        "Gen3HvHybrid10kW" => 10000.0,
         "AIOHybrid6kW" => 6000.0,
         "AIOHybrid8kW" => 8000.0,
         "AIOHybrid10kW" => 10000.0,
+        "AIOHybrid12kW" => 12000.0,
         "ThreePhase" => 6000.0,
         "ThreePhase8kW" => 8000.0,
         "ThreePhase10kW" => 10000.0,
         "ThreePhase11kW" => 11000.0,
-        "ACCoupled" | "ACCoupled2" => 3000.0,
-        "AllInOne" => 6000.0,
-        "AllInOne5" => 5000.0,
-        "Gen1Hybrid" => 5000.0,
-        "Gen2Hybrid" => 5000.0,
-        "Gen3Hybrid" => 5000.0,
-        // Gateway: aggregates an All-in-One (6kW AC) behind it.
+        "CommercialAllInOne30kW" => 30000.0,
+        "ACCoupled" => 3000.0,
+        "ACCoupled2" => 3000.0,
+        "ACCoupledThreePhase6kW" => 6000.0,
+        "Gen1Hybrid" | "Gen2Hybrid" | "Gen3Hybrid" | "Polar5kW" => 5000.0,
+        "Polar4600" | "Hybrid4600" => 4600.0,
+        "Polar3600" | "Hybrid3600" | "PVInverter3600" => 3600.0,
+        "Polar6kW" | "PVInverter6kW" | "Gen4Hybrid6kW" => 6000.0,
+        "Polar7kW" => 7000.0,
+        "PVInverter5kW" => 5000.0,
+        "PVInverter4600" => 4600.0,
+        // Gateway aggregates one 6 kW residential All-in-One.
         "Gateway12kW" => 6000.0,
         _ => 5000.0,
     }
@@ -176,27 +256,32 @@ pub fn max_batt_w_for_inverter(inverter_type: &str) -> f64 {
         // Gen3 Hybrid 3.6/5.0: charge 3300W, discharge 3600W. Use 3600 as
         // the DC battery limit (the more conservative figure).
         "Gen3Hybrid" => 3600.0,
-        // Gen3 Hybrid 8.0: charge 8000W, discharge 8500W
-        "Gen3Hybrid8kW" => 8000.0,
-        // Gen3 Hybrid 10.0: charge 10000W, discharge 10500W
-        "Gen3Hybrid10kW" => 10000.0,
+        "Polar8kW" => 8000.0,
         // Gen3 Plus variants: 2600W (per datasheet)
-        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 2600.0,
-        // AC Coupled / Mk2: 3000W charge/discharge
+        "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW" | "Gen3Plus7kW"
+        | "Gen3Plus8kW" => 2600.0,
+        // AC Coupled / Mk2
         "ACCoupled" | "ACCoupled2" => 3000.0,
-        // All-in-One variants
-        "AllInOne6" | "AllInOne" => 6000.0,
+        "ACCoupledThreePhase6kW" => 6000.0,
+        // Residential All-in-One variants
+        "AllInOne6" => 6000.0,
+        "AllInOne" => 3600.0,
         "AllInOne5" => 5000.0,
-        "AIO8kW" => 8000.0,
-        "AIO10kW" => 10000.0,
+        // Gen3 high-voltage hybrid variants
+        "Gen3HvHybrid6kW" => 6000.0,
+        "Gen3HvHybrid8kW" => 8000.0,
+        "Gen3HvHybrid10kW" => 10000.0,
+        // All-in-One hybrid variants
         "AIOHybrid6kW" => 6000.0,
         "AIOHybrid8kW" => 8000.0,
         "AIOHybrid10kW" => 10000.0,
+        "AIOHybrid12kW" => 12000.0,
         // Three-phase variants
         "ThreePhase" => 6000.0,
         "ThreePhase8kW" => 8000.0,
         "ThreePhase10kW" => 10000.0,
         "ThreePhase11kW" => 11000.0,
+        "CommercialAllInOne30kW" => 30000.0,
         // Gateway: aggregates an All-in-One (6kW continuous) behind it.
         "Gateway12kW" => 6000.0,
         // Fallback: 3600W (the default for unlisted hybrid inverters).
@@ -212,13 +297,22 @@ pub fn dsp_firmware_for_inverter(inv_type: &str) -> u16 {
         "Gen1Hybrid" => 110,
         "Gen2Hybrid" => 230,
         "Gen3Hybrid" => 449,
-        "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 510,
+        "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW" => 510,
         "ACCoupled" | "ACCoupled2" => 305,
-        "ThreePhase" | "ThreePhase8kW" | "ThreePhase10kW" => 612,
+        "ThreePhase"
+        | "ThreePhase8kW"
+        | "ThreePhase10kW"
+        | "CommercialAllInOne30kW"
+        | "ACCoupledThreePhase6kW"
+        | "Gen3HvHybrid6kW"
+        | "Gen3HvHybrid8kW"
+        | "Gen3HvHybrid10kW"
+        | "AIOHybrid6kW"
+        | "AIOHybrid8kW"
+        | "AIOHybrid10kW"
+        | "AIOHybrid12kW" => 612,
         "ThreePhase11kW" => 11043,
         "AllInOne6" | "AllInOne" | "AllInOne5" => 1010,
-        "AIO8kW" | "AIO10kW" => 1010,
-        "AIOHybrid6kW" | "AIOHybrid8kW" | "AIOHybrid10kW" => 1010,
         _ => 449,
     }
 }
@@ -1991,6 +2085,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dc_battery_limit_register_uses_zero_to_fifty_scale() {
+        assert_eq!(dc_battery_limit_raw_to_percent(0), 0.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(25), 50.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(50), 100.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(51), 100.0);
+
+        assert_eq!(battery_limit_percent_to_dc_raw(0.0), 0.0);
+        assert_eq!(battery_limit_percent_to_dc_raw(50.0), 25.0);
+        assert_eq!(battery_limit_percent_to_dc_raw(100.0), 50.0);
+    }
+
+    #[test]
     fn g98_single_phase_default_is_3680_w() {
         // UK EREC G98: 16 A × 230 V = 3680 W is the single-phase
         // Micro-generator Registered Capacity. The constant is the source
@@ -2002,20 +2108,18 @@ mod tests {
             "Gen1Hybrid",
             "Gen2Hybrid",
             "Gen3Hybrid",
-            "Gen3Hybrid8kW",
-            "Gen3Hybrid10kW",
-            "Gen3Plus6kW",
-            "Gen3Plus4600",
-            "Gen3Plus3600",
-            "Gen3Plus6kW2",
-            "Gen3Plus7kW",
-            "Gen3Plus8kW",
             "Polar5kW",
             "Polar4600",
             "Polar3600",
             "Polar6kW",
             "Polar7kW",
             "Polar8kW",
+            "Gen3Plus5kW",
+            "Gen3Plus4600",
+            "Gen3Plus3600",
+            "Gen3Plus6kW",
+            "Gen3Plus7kW",
+            "Gen3Plus8kW",
             "PVInverter5kW",
             "PVInverter4600",
             "PVInverter3600",
@@ -2025,13 +2129,6 @@ mod tests {
             "AllInOne6",
             "AllInOne",
             "AllInOne5",
-            "AIO6kW",
-            "AIO8kW",
-            "AIO10kW",
-            "AIOHybrid6kW",
-            "AIOHybrid8kW",
-            "AIOHybrid10kW",
-            "AIOHybrid12kW",
             "Gen4Hybrid6kW",
             "Hybrid3600",
             "Hybrid4600",
@@ -2062,7 +2159,17 @@ mod tests {
             "ThreePhase8kW",
             "ThreePhase10kW",
             "ThreePhase11kW",
-            "ACThreePhase",
+            "ACCoupledThreePhase6kW",
+            // Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx), and the
+            // commercial AIO (0x4101) are three-phase per manifest.py.
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+            "CommercialAllInOne30kW",
         ] {
             assert_eq!(
                 default_export_limit_w_for(inv),
@@ -2171,18 +2278,5 @@ mod tests {
                 max_ac_watts_for(inv),
             );
         }
-    }
-    #[test]
-    fn dc_battery_limit_register_uses_zero_to_fifty_scale() {
-        // Single-phase DC HR111/112 use a 0-50 wire scale where 50 = full
-        // power. The helper must map 0→0, 50→100, values >50 → 100.
-        assert_eq!(dc_battery_limit_raw_to_percent(0), 0.0);
-        assert_eq!(dc_battery_limit_raw_to_percent(25), 50.0);
-        assert_eq!(dc_battery_limit_raw_to_percent(50), 100.0);
-        assert_eq!(dc_battery_limit_raw_to_percent(51), 100.0);
-        // Round-trip: 50% normalized = raw 25.
-        assert_eq!(battery_limit_percent_to_dc_raw(0.0), 0.0);
-        assert_eq!(battery_limit_percent_to_dc_raw(50.0), 25.0);
-        assert_eq!(battery_limit_percent_to_dc_raw(100.0), 50.0);
     }
 }

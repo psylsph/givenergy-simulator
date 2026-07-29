@@ -527,7 +527,8 @@ impl From<&PlantState> for PlantStateDto {
                     "Gen1Hybrid" => 252,
                     "Gen2Hybrid" => 852,
                     "Gen3Hybrid" => 318,
-                    "Gen3Plus6kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW2" => 452,
+                    "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
+                    | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
                     _ => 318,
                 }
             },

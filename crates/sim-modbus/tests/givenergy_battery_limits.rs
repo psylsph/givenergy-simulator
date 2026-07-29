@@ -303,7 +303,7 @@ async fn gen3_hybrid_battery_limit_3_6kw() {
 #[tokio::test]
 async fn aio_10kw_battery_limit_10kw() {
     let mut state = test_state();
-    state.config.inverter_type = "AIO10kW".to_string();
+    state.config.inverter_type = "Gen3HvHybrid10kW".to_string();
     state.batteries[0].max_charge_kw = 10.0;
     state.sync_battery_from_vec();
 

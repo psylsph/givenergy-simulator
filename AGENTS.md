@@ -35,6 +35,31 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.17.6** — Inverter identity & classification overhaul. Fixed a family of
+mis-identifications found by cross-referencing the GivEnergy
+`app_4.0.7_inventory.json`, `_DTC_RATED_POWER`, and `givenergy-modbus`
+`manifest.py`. The inverter catalogue (DTC, AC/battery limits, DSP firmware,
+three-phase/HV/AC-coupled flags) is centralized in `sim-models`; all other
+crates + the JS frontend delegate to it.
+
+* **0x81xx** reclassified single-phase "AIO" → three-phase HV Gen3 hybrids
+  (`AIO6/8/10kW` → `Gen3HvHybrid6/8/10kW`, `GIV-HY-10.0-G3-HV`). Now serves
+  the HR 1000-1124 / IR 1000-1413 three-phase banks, 76.8 V nominal battery,
+  3 CT clamps, three-phase schedule + export-limit registers.
+* **0x82xx** (`AIOHybrid*`), **0x4101** (`AIOCommercial` →
+  `CommercialAllInOne30kW`, 30 kW), **0x6001** (`ACThreePhase` →
+  `ACCoupledThreePhase6kW`) likewise reclassified three-phase.
+* **0x2102** corrected: was `Gen3Hybrid10kW` @ 10 kW — actually **4.6 kW**
+  ("ALPS HY6.0k-GL/PZ8000 4.6KW"); renamed `Polar4600` (4600 W). No
+  single-phase 10 kW DTC exists. `Gen3Hybrid8kW` → `Polar8kW` (0x2106, 8 kW);
+  Gen3 Plus relabelled to ratings (`Gen3Plus6kW` 0x2201 → `Gen3Plus5kW`,
+  `Gen3Plus6kW2` 0x2204 → `Gen3Plus6kW`).
+* `AllInOne` (0x8002) limit 6000 W → 3600 W (`_DTC_BATPOWER`).
+* `GridPortPowerFamily` (Rust + JS) + `meter_slaves_from_store` reclassified
+  via the central predicates.
+* Documented follow-up: upstream renamed HR 1063 `p_export_limit` (watts)
+  → `export_power_rate` (0–100 %); simulator keeps watts×10 for now.
+
 **0.17.1** — Timed Discharge (HR 318-320 battery-pause slot) GUI fixes.
 The schedule card is renamed **"Pause Slot" → "Timed Discharge"** and two
 bugs are fixed: (1) `ScheduleDto::from_state` hard-coded the pause-slot
@@ -274,49 +299,58 @@ generation is decided by HR(21) ARM firmware century (fw/100):
 | Gen1Hybrid | 0x2001 | 5000W | 2500W | 252 |
 | Gen2Hybrid | 0x2001 | 5000W | 3600W | 852 |
 | Gen3Hybrid | 0x2001 | 5000W | 3600W | 318 |
-| Hybrid4600 | 0x2002 | default¹ | default¹ | — |
-| Hybrid3600 | 0x2003 | default¹ | default¹ | — |
-| Polar5kW | 0x2101 | default¹ | default¹ | — |
-| Polar4600 / Gen3Hybrid10kW² | 0x2102 | 10000W | 10000W | — |
-| Polar3600 | 0x2103 | default¹ | default¹ | — |
-| Polar6kW | 0x2104 | default¹ | default¹ | — |
-| Polar7kW | 0x2105 | default¹ | default¹ | — |
-| Gen3Hybrid8kW / Polar8kW² | 0x2106 | 8000W | 8000W | — |
-| Gen3Plus6kW | 0x2201 | 5000W | 2600W | 452 |
+| Hybrid4600 | 0x2002 | 4600W | 3600W | — |
+| Hybrid3600 | 0x2003 | 3600W | 3600W | — |
+| Polar5kW | 0x2101 | 5000W | 3600W | — |
+| Polar4600 | 0x2102 | 4600W | 3600W | — |
+| Polar3600 | 0x2103 | 3600W | 3600W | — |
+| Polar6kW | 0x2104 | 6000W | 3600W | — |
+| Polar7kW | 0x2105 | 7000W | 3600W | — |
+| Polar8kW | 0x2106 | 8000W | 8000W | — |
+| Gen3Plus5kW | 0x2201 | 5000W | 2600W | 452 |
 | Gen3Plus4600 | 0x2202 | 4600W | 2600W | 452 |
 | Gen3Plus3600 | 0x2203 | 3600W | 2600W | 452 |
-| Gen3Plus6kW2 | 0x2204 | 6000W | 2600W | 452 |
-| Gen3Plus7kW | 0x2205 | default¹ | default¹ | — |
-| Gen3Plus8kW | 0x2206 | default¹ | default¹ | — |
-| PVInverter5kW | 0x2301 | default¹ | N/A | — |
-| PVInverter4600 | 0x2302 | default¹ | N/A | — |
-| PVInverter3600 | 0x2303 | default¹ | N/A | — |
-| PVInverter6kW | 0x2304 | default¹ | N/A | — |
+| Gen3Plus6kW | 0x2204 | 6000W | 2600W | 452 |
+| Gen3Plus7kW | 0x2205 | 7000W | 2600W | 452 |
+| Gen3Plus8kW | 0x2206 | 8000W | 2600W | 452 |
+| PVInverter5kW | 0x2301 | 5000W | N/A | — |
+| PVInverter4600 | 0x2302 | 4600W | N/A | — |
+| PVInverter3600 | 0x2303 | 3600W | N/A | — |
+| PVInverter6kW | 0x2304 | 6000W | N/A | — |
 | ACCoupled | 0x3001 | 3000W | 3000W | — |
 | ACCoupled2 | 0x3002 | 3000W | 3000W | — |
 | ThreePhase | 0x4001 | 6000W | 6000W | — |
 | ThreePhase8kW | 0x4002 | 8000W | 8000W | — |
 | ThreePhase10kW | 0x4003 | 10000W | 10000W | — |
 | ThreePhase11kW | 0x4004 | 11000W | 11000W | — |
-| AIOCommercial | 0x4101 | default¹ | default¹ | — |
-| EMS | 0x5001 | default¹ | default¹ | — |
-| EMSCommercial | 0x5101 | default¹ | default¹ | — |
-| ACThreePhase | 0x6001 | default¹ | default¹ | — |
+| CommercialAllInOne30kW | 0x4101 | 30000W | 30000W | — |
+| EMS | 0x5001 | 5000W | 3600W | — |
+| EMSCommercial | 0x5101 | 5000W | 3600W | — |
+| ACCoupledThreePhase6kW | 0x6001 | 6000W | 6000W | — |
 | Gateway12kW | 0x7001 | 6000W | 6000W | — |
 | AllInOne6 | 0x8001 | 6000W | 6000W | — |
-| AllInOne | 0x8002 | 6000W | 6000W | — |
+| AllInOne | 0x8002 | 3600W | 3600W | — |
 | AllInOne5 | 0x8003 | 5000W | 5000W | — |
-| AIO6kW | 0x8101 | default¹ | default¹ | — |
-| AIO8kW | 0x8102 | 8000W | 8000W | — |
-| AIO10kW | 0x8103 | 10000W | 10000W | — |
+| Gen3HvHybrid6kW | 0x8101 | 6000W | 6000W | — |
+| Gen3HvHybrid8kW | 0x8102 | 8000W | 8000W | — |
+| Gen3HvHybrid10kW | 0x8103 | 10000W | 10000W | — |
 | AIOHybrid6kW | 0x8201 | 6000W | 6000W | — |
 | AIOHybrid8kW | 0x8202 | 8000W | 8000W | — |
 | AIOHybrid10kW | 0x8203 | 10000W | 10000W | — |
-| AIOHybrid12kW | 0x8204 | default¹ | default¹ | — |
-| Gen4Hybrid6kW | 0x8304 | default¹ | default¹ | — |
+| AIOHybrid12kW | 0x8204 | 12000W | 12000W | — |
+| Gen4Hybrid6kW | 0x8304 | 6000W | 3600W | — |
 
-¹ Falls back to `_ =>` default: 5000W AC, 3600W battery.
-² Shared DTC — GUI lists one entry, register projection accepts both.
+Ratings come from `sim_models::max_ac_watts_for` / `max_batt_w_for_inverter`
+(single source of truth). 0x2102 is a 4.6 kW unit ("ALPS HY6.0k-GL/PZ8000
+4.6KW" per the app v4.0.7 inventory + `_DTC_RATED_POWER`); there is no
+single-phase 10 kW DTC, so the old `Gen3Hybrid10kW` alias was a misnomer.
+
+**Three-phase / HV families** (`is_three_phase_inverter_type`): `ThreePhase*`,
+`CommercialAllInOne30kW` (0x41), `ACCoupledThreePhase6kW` (0x60), the Gen3 HV
+hybrids `Gen3HvHybrid*` (0x81), and the AIO hybrids `AIOHybrid*` (0x82). These
+serve the HR 1000-1124 / IR 1000-1413 banks, use 76.8 V nominal battery
+voltage, 3 CT clamps, and the HV BCU/BMU battery-discovery protocol. The
+residential All-in-One family (0x80xx) is single-phase HV (307 V nominal).
 
 Dropdown and INVERTER_PRESETS are ordered by DTC hex value ascending.
 
@@ -420,7 +454,7 @@ without an extra round trip.
 | Inverter family | Wire register | Encoding | Writable? | Notes |
 |---|---|---|---|---|
 | Single-phase / AC-coupled / Gen1-4 / PV / Polar / Gen3+ / AIO / AIOHybrid | HR 26 (`ge_hr_grid_port_max_power_output`) | `C.uint16` (raw = watts, no scaling) | **Read-only** | givenergy-modbus defines no setter; clients can read but not write. Simulator mirrors `state.config.max_ac_watts`. |
-| Three-phase / HV / ACThreePhase | HR 1063 (`p_export_limit`) | `C.deci` (raw = watts × 10, clamped to u16) | Yes | givenergy-modbus `max=6500`. The simulator divides the raw value by 10 when ingesting a write and multiplies by 10 on the way out, so the user-facing unit is always watts. |
+| Three-phase / HV / ACCoupledThreePhase6kW | HR 1063 (`p_export_limit`) | `C.deci` (raw = watts × 10, clamped to u16) | Yes | givenergy-modbus `max=6500`. The simulator divides the raw value by 10 when ingesting a write and multiplies by 10 on the way out, so the user-facing unit is always watts. |
 | EMS / EmsCommercial / Gateway12kW | HR 2071 (`ems_export_power_limit`) | `C.uint16` (raw = watts, no scaling) | Yes | givenergy-modbus does not set a max — full 16-bit range (0–65535 W) is valid. The schedule engine previously wrote this register from `schedule.export_power_limit_w`; it now mirrors the live `state.inverter.export_limit_w` so user edits take effect immediately. The schedule still drives the value during export windows via `SetExportLimit`. |
 
 All three registers project from `state.inverter.export_limit_w` (or, for
@@ -453,7 +487,7 @@ mirrors as raw hex (no name decoder). Key fault bits:
 Auxiliary: inverter_trip → IR 0 status = 3 (Fault); grid_loss → IR 49 system mode = 1 (off-grid);
 battery_over_temp → IR 57 charger_warning_code = 1.
 
-**Three-phase** (`ThreePhase*`, `ACThreePhase`): **IR(1300)–IR(1307)**, eight 16-bit words.
+**Three-phase** (`ThreePhase*`, `ACCoupledThreePhase6kW`): **IR(1300)–IR(1307)**, eight 16-bit words.
 HR(223-224) stays 0. Key bits:
 | Fault | Word (IR) | bit | Decodes to |
 |-------|-----------|-----|------------|

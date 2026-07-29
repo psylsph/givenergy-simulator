@@ -44,8 +44,12 @@ pub fn meter_slaves_from_store(
     // DTC is at holding register 0
     let dtc = store.read(0).unwrap_or(0x2001);
     let family = dtc >> 8;
-    // Family 4x = ThreePhase, 6x = ACThreePhase → 3 CTs; all others → 1 CT
-    if family == 0x40 || family == 0x60 {
+    // Three-phase device families expose 3 CT clamps (slaves 1-3); all others 1.
+    //   0x40 = ThreePhase, 0x41 = Commercial AIO (GIV-PM-30/50),
+    //   0x60 = AC-coupled three-phase,
+    //   0x81 = Gen3 HV hybrid (GIV-HY-10.0-G3-HV),
+    //   0x82 = AIO hybrid (All in One-HY).
+    if matches!(family, 0x40 | 0x41 | 0x60 | 0x81 | 0x82) {
         1..=3
     } else {
         1..=1
@@ -1048,8 +1052,9 @@ fn build_evc_error(trans_id: u16, unit_id: u8, func: u8, code: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{evc_state_to_registers, register_range_overflows};
-    use sim_models::EvcState;
+    use super::{evc_state_to_registers, meter_slaves_from_store, register_range_overflows};
+    use sim_models::{EvcState, PlantState};
+    use sim_registers::{RegisterStore, default_register_catalogue};
 
     #[test]
     fn register_range_overflow_check_allows_last_register_only() {
@@ -1102,5 +1107,59 @@ mod tests {
         assert_eq!(regs[72], 127); // session energy ×10
         assert_eq!(regs[29], 127); // meter energy ×10
         assert_eq!(regs[36], 320); // charge limit ×10
+    }
+
+    /// Build a projected register store for the given inverter type so we can
+    /// read back the DTC (HR 0) that `meter_slaves_from_store` inspects.
+    fn store_for(inverter_type: &str) -> RegisterStore {
+        let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 21)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let mut state = PlantState::new(ts);
+        state.config.inverter_type = inverter_type.to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        store
+    }
+
+    #[test]
+    fn meter_slaves_three_phase_families_get_three_cts() {
+        // The renamed/reclassified three-phase families must expose 3 CT
+        // clamps (slaves 1-3), matching real three-phase hardware. Covers
+        // 0x40/0x41/0x60 plus the 0x81 (Gen3 HV hybrid) and 0x82 (AIO
+        // hybrid) families that were previously mis-classified as
+        // single-phase.
+        for inv in [
+            "ThreePhase",
+            "ThreePhase11kW",
+            "CommercialAllInOne30kW", // 0x41
+            "ACCoupledThreePhase6kW", // 0x60
+            "Gen3HvHybrid6kW",        // 0x81
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW", // 0x82
+            "AIOHybrid12kW",
+        ] {
+            let store = store_for(inv);
+            assert_eq!(
+                meter_slaves_from_store(&store),
+                1..=3,
+                "{inv} (0x81/0x82/0x41/0x60/0x40 family) must report 3 CTs"
+            );
+        }
+    }
+
+    #[test]
+    fn meter_slaves_single_phase_families_get_one_ct() {
+        // Single-phase hybrids and the residential All-in-One stay at 1 CT.
+        for inv in ["Gen3Hybrid", "Gen3Plus5kW", "AllInOne6", "ACCoupled"] {
+            let store = store_for(inv);
+            assert_eq!(
+                meter_slaves_from_store(&store),
+                1..=1,
+                "{inv} is single-phase and must report 1 CT"
+            );
+        }
     }
 }

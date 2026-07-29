@@ -1333,9 +1333,9 @@ impl DeviceModel for BatteryEngine {
             //  50%:  51.5 V
             //  90%:  52.0 V
             // 100%:  54.0 V (full)
-            // For ThreePhase inverters (24S modules, 76.8V nominal), scale by 1.5.
-            let is_tph = state.config.inverter_type.starts_with("ThreePhase")
-                || state.config.inverter_type == "ACThreePhase";
+            // For three-phase / HV inverters (24S modules, 76.8V nominal),
+            // scale by 1.5.
+            let is_tph = sim_models::is_three_phase_inverter_type(&state.config.inverter_type);
             let tph_scale = if is_tph { 1.5 } else { 1.0 };
             b.voltage_v = if b.soc_percent <= 5.0 {
                 // Steep rise from empty
