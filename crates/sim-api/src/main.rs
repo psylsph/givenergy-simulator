@@ -438,9 +438,13 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
         }
         50 => Some(Command::SetActivePowerRate(cmd.value as f64)),
         110 => Some(Command::SetMinSoc(cmd.value as f64)),
-        111 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
+        111 => Some(Command::SetBatteryChargeLimit(
+            sim_models::dc_battery_limit_raw_to_percent(cmd.value),
+        )),
         166 => Some(Command::SetEnableRtc(cmd.value != 0)),
-        112 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
+        112 => Some(Command::SetBatteryDischargeLimit(
+            sim_models::dc_battery_limit_raw_to_percent(cmd.value),
+        )),
         313 | 1110 => Some(Command::SetBatteryChargeLimit(cmd.value as f64)),
         314 | 1108 => Some(Command::SetBatteryDischargeLimit(cmd.value as f64)),
         163 => {
@@ -1676,4 +1680,28 @@ fn apply_schedule_updates(
     updates: &std::collections::HashMap<u16, u16>,
 ) {
     sched.apply_modbus_updates(updates);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {
+        let command =
+            |address, value| modbus_command_to_sim(&sim_modbus::ModbusCommand { address, value });
+
+        match command(111, 50) {
+            Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 100.0),
+            other => panic!("unexpected HR111 command: {other:?}"),
+        }
+        match command(112, 25) {
+            Some(Command::SetBatteryDischargeLimit(value)) => assert_eq!(value, 50.0),
+            other => panic!("unexpected HR112 command: {other:?}"),
+        }
+        match command(313, 50) {
+            Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 50.0),
+            other => panic!("unexpected HR313 command: {other:?}"),
+        }
+    }
 }

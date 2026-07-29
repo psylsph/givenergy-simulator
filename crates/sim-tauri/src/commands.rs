@@ -405,9 +405,14 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         // HR 96
         // HR 110: Battery SOC reserve (%)
         110 => Some(Command::SetMinSoc(value as f64)),
-        // HR 111/112: Battery charge/discharge limits (%)
-        111 => Some(Command::SetBatteryChargeLimit(value as f64)),
-        112 => Some(Command::SetBatteryDischargeLimit(value as f64)),
+        // Single-phase DC HR111/112 use a 0-50 raw scale, while the
+        // simulator stores normalized 0-100 limits.
+        111 => Some(Command::SetBatteryChargeLimit(
+            sim_models::dc_battery_limit_raw_to_percent(value),
+        )),
+        112 => Some(Command::SetBatteryDischargeLimit(
+            sim_models::dc_battery_limit_raw_to_percent(value),
+        )),
         313 | 1110 => Some(Command::SetBatteryChargeLimit(value as f64)),
         314 | 1108 => Some(Command::SetBatteryDischargeLimit(value as f64)),
         29 => {
@@ -2188,5 +2193,32 @@ mod tests {
         // EMS: full 16-bit ceiling.
         assert_eq!(clamp(GridPortPowerFamily::Ems, 65535.0), 65535.0);
         assert_eq!(clamp(GridPortPowerFamily::Ems, 70000.0), 65535.0);
+    }
+
+    #[test]
+    fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {
+        // Single-phase DC HR111/112 use a 0-50 raw scale; the simulator
+        // stores normalized 0-100 limits. The write routing must convert.
+        match modbus_address_to_command(111, 50) {
+            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 100.0),
+            other => panic!("unexpected HR111(50): {other:?}"),
+        }
+        match modbus_address_to_command(111, 25) {
+            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 50.0),
+            other => panic!("unexpected HR111(25): {other:?}"),
+        }
+        match modbus_address_to_command(112, 50) {
+            Some(Command::SetBatteryDischargeLimit(v)) => assert_eq!(v, 100.0),
+            other => panic!("unexpected HR112(50): {other:?}"),
+        }
+        match modbus_address_to_command(112, 25) {
+            Some(Command::SetBatteryDischargeLimit(v)) => assert_eq!(v, 50.0),
+            other => panic!("unexpected HR112(25): {other:?}"),
+        }
+        // AC-coupled and three-phase limits are direct percentages (no scaling).
+        match modbus_address_to_command(313, 50) {
+            Some(Command::SetBatteryChargeLimit(v)) => assert_eq!(v, 50.0),
+            other => panic!("unexpected HR313(50): {other:?}"),
+        }
     }
 }

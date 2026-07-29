@@ -1280,10 +1280,16 @@ impl RegisterStore {
                 }
                 // HR 110: Battery SOC reserve (%)
                 "ge_hr_battery_soc_reserve" => Some(state.min_aggregate_soc()),
-                // HR 111: Battery charge limit (%)
-                "ge_hr_battery_charge_limit" => Some(state.battery_charge_limit_percent),
-                // HR 112: Battery discharge limit (%)
-                "ge_hr_battery_discharge_limit" => Some(state.battery_discharge_limit_percent),
+                // HR 111/112: Single-phase DC limits use a 0-50 raw scale,
+                // where 50 is the full normalized power limit.
+                "ge_hr_battery_charge_limit" => Some(sim_models::battery_limit_percent_to_dc_raw(
+                    state.battery_charge_limit_percent,
+                )),
+                "ge_hr_battery_discharge_limit" => {
+                    Some(sim_models::battery_limit_percent_to_dc_raw(
+                        state.battery_discharge_limit_percent,
+                    ))
+                }
                 // HR 313/314: AC-coupled battery charge/discharge limit (%)
                 "ge_hr_battery_charge_limit_ac" => Some(state.battery_charge_limit_percent),
                 "ge_hr_battery_discharge_limit_ac" => Some(state.battery_discharge_limit_percent),
@@ -8542,8 +8548,8 @@ mod tests {
         let state = PlantState::new(test_ts());
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&state);
-        assert_eq!(store.read_by_space(111, RegisterSpace::Holding), Some(100));
-        assert_eq!(store.read_by_space(112, RegisterSpace::Holding), Some(100));
+        assert_eq!(store.read_by_space(111, RegisterSpace::Holding), Some(50));
+        assert_eq!(store.read_by_space(112, RegisterSpace::Holding), Some(50));
         // AC-coupled and 3-phase mirrors of the same fields
         assert_eq!(store.read_by_space(313, RegisterSpace::Holding), Some(100));
         assert_eq!(store.read_by_space(314, RegisterSpace::Holding), Some(100));

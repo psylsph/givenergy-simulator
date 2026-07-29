@@ -736,9 +736,9 @@ async fn battery_charge_limit_100_percent() {
 
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
-    // HR 111 = battery charge limit (%)
+    // Single-phase DC HR111 uses 0-50, where 50 means full power.
     let limit = h.read_hr(&mut s, 111).await;
-    assert_eq!(limit, 100, "HR 111 should be 100% charge limit");
+    assert_eq!(limit, 50, "HR 111 should use its 0-50 raw scale");
 }
 
 #[tokio::test]
@@ -748,9 +748,10 @@ async fn battery_discharge_limit_50_percent() {
 
     let h = TestHarness::new(state, 1).await;
     let mut s = h.connect().await;
-    // HR 112 = battery discharge limit (%)
+    // Single-phase DC HR112 uses 0-50, where 50 = full power. The
+    // projection divides the normalized 50% limit by 2 → raw 25.
     let limit = h.read_hr(&mut s, 112).await;
-    assert_eq!(limit, 50, "HR 112 should be 50% discharge limit");
+    assert_eq!(limit, 25, "HR 112 should use its 0-50 raw scale");
 }
 
 // ===========================================================================
@@ -1782,10 +1783,10 @@ async fn full_holding_block_0_to_119_gen3() {
     assert_eq!(data[96], 0);
     // HR 110 = SOC reserve
     assert_eq!(data[110], 4, "HR 110 should be 4% (default min_soc)");
-    // HR 111 = charge limit = 100
-    assert_eq!(data[111], 100);
-    // HR 112 = discharge limit = 100
-    assert_eq!(data[112], 100);
+    // HR 111 = charge limit (0-50 raw scale for DC)
+    assert_eq!(data[111], 50);
+    // HR 112 = discharge limit (0-50 raw scale for DC)
+    assert_eq!(data[112], 50);
     // HR 116 = charge target SOC = 100
     assert_eq!(data[116], 100);
 }

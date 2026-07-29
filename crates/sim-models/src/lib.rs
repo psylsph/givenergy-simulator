@@ -140,6 +140,22 @@ pub fn max_ac_watts_for(inverter_type: &str) -> f64 {
     }
 }
 
+/// Convert a single-phase DC hybrid HR111/112 raw value (0–50) to the
+/// simulator's normalized 0–100% battery power limit.
+///
+/// GivEnergy's single-phase DC register bank uses 50 as its maximum, unlike
+/// the AC-coupled HR313/314 and three-phase HR1110/1108 registers, which use
+/// direct 0–100 percentages.
+pub fn dc_battery_limit_raw_to_percent(raw: u16) -> f64 {
+    f64::from(raw.min(50)) * 2.0
+}
+
+/// Convert the simulator's normalized battery power limit to a DC hybrid
+/// HR111/112 raw register value.
+pub fn battery_limit_percent_to_dc_raw(percent: f64) -> f64 {
+    percent.clamp(0.0, 100.0) / 2.0
+}
+
 /// Physical battery (DC-side) power limit per inverter type, in watts.
 ///
 /// This is the *hardware* cap on battery charge/discharge throughput
@@ -892,10 +908,12 @@ pub struct PlantState {
     /// HR50 active power rate percentage.
     #[serde(default = "default_percent_100")]
     pub active_power_rate_percent: f64,
-    /// HR111 battery charge limit percentage.
+    /// Normalized battery charge limit (0–100%). Projected as 0–50 in the
+    /// single-phase DC HR111 register and directly in HR313/HR1110.
     #[serde(default = "default_percent_100")]
     pub battery_charge_limit_percent: f64,
-    /// HR112 battery discharge limit percentage.
+    /// Normalized battery discharge limit (0–100%). Projected as 0–50 in the
+    /// single-phase DC HR112 register and directly in HR314/HR1108.
     #[serde(default = "default_percent_100")]
     pub battery_discharge_limit_percent: f64,
     /// HR318 battery pause mode.
@@ -2153,5 +2171,18 @@ mod tests {
                 max_ac_watts_for(inv),
             );
         }
+    }
+    #[test]
+    fn dc_battery_limit_register_uses_zero_to_fifty_scale() {
+        // Single-phase DC HR111/112 use a 0-50 wire scale where 50 = full
+        // power. The helper must map 0→0, 50→100, values >50 → 100.
+        assert_eq!(dc_battery_limit_raw_to_percent(0), 0.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(25), 50.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(50), 100.0);
+        assert_eq!(dc_battery_limit_raw_to_percent(51), 100.0);
+        // Round-trip: 50% normalized = raw 25.
+        assert_eq!(battery_limit_percent_to_dc_raw(0.0), 0.0);
+        assert_eq!(battery_limit_percent_to_dc_raw(50.0), 25.0);
+        assert_eq!(battery_limit_percent_to_dc_raw(100.0), 50.0);
     }
 }

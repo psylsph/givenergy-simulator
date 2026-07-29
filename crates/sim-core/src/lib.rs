@@ -95,9 +95,11 @@ pub enum Command {
     SetEnableChargeTarget(bool),
     /// Set HR50 active power rate percentage.
     SetActivePowerRate(f64),
-    /// Set HR111 battery charge limit percentage.
+    /// Set the normalized battery charge limit (0–100%). HR111's 0–50 raw
+    /// value is converted before this command is enqueued.
     SetBatteryChargeLimit(f64),
-    /// Set HR112 battery discharge limit percentage.
+    /// Set the normalized battery discharge limit (0–100%). HR112's 0–50 raw
+    /// value is converted before this command is enqueued.
     SetBatteryDischargeLimit(f64),
     /// Simulate inverter reboot request.
     InverterReboot,
@@ -1246,8 +1248,8 @@ impl DeviceModel for BatteryEngine {
             }
         }
 
-        // Apply battery charge/discharge limit percentages.
-        // HR 111/112 use 0-100% where 100 = full power (no cap).
+        // Apply normalized battery charge/discharge limit percentages.
+        // The Modbus adapters convert DC HR111/112 from their 0-50 wire scale.
         let charge_scale = (state.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
         let discharge_scale = (state.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
 
@@ -1543,9 +1545,9 @@ pub struct EnergySeedParams<'a> {
     pub batteries: &'a [sim_models::BatteryState],
     /// Inverter AC throughput cap (W). Mirrors `config.max_ac_watts`.
     pub max_ac_watts: f64,
-    /// HR 111 charge limit (0–100%).
+    /// Normalized battery charge limit (0–100%).
     pub battery_charge_limit_percent: f64,
-    /// HR 112 discharge limit (0–100%).
+    /// Normalized battery discharge limit (0–100%).
     pub battery_discharge_limit_percent: f64,
 }
 
