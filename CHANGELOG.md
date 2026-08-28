@@ -4,7 +4,7 @@ All notable changes to the GivEnergy Plant Simulator are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.17.7] - 2026-08-28
 
 ### Fixed — island-mode battery reconciliation
 
@@ -29,6 +29,16 @@ phantom grid import.
   disabling the island guard fails the checker.
 - 5 new pause/island regression tests (pause→grid redirection in both
   directions, island idle/derated/paused battery), 517 total.
+
+### Docs & tooling
+
+- TDD workflow codified in `AGENTS.md`; standard release procedure documented
+  (pre-flight checks, scenario + GUI regression, version-sync list, changelog
+  roll-up, annotated tag, approval-gated push).
+- Repo-wide markdownlint config (`.markdownlint.jsonc`) with rationale for
+  every relaxation; all 29 markdown files cleaned and enforced in CI.
+- `crates/sim-tauri/tauri.conf.json` version re-synced with the workspace
+  version (was stale at 0.17.5 after the 0.17.6 bump).
 
 ### Changed — inverter identity & classification overhaul
 

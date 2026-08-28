@@ -56,9 +56,19 @@ crates/
   sim-api/       — Headless CLI binary (`giv-sim run`, `giv-sim replay`)
   sim-tauri/     — Tauri v2 desktop GUI (30 IPC commands, vanilla JS frontend)
 ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 1420)
-```text
+```
 
 ## Version
+
+**0.17.7** — Island-mode grid reconciliation fix + conservation invariant
+checker. `BatteryEngine::reconcile_ac_power_flow` no longer conjures phantom
+grid import/export through a disconnected grid when the battery is idle,
+paused, or curtailed: island surplus curtails, deficit sheds, grid stays at
+exactly zero. New property-style checker (`sim-core/tests/power_balance_invariants.rs`)
+asserts bus balance (connected), zero grid flow (island), and finiteness across
+a 5,832-combination sweep + two 2-day soaks, mutation-validated. Also: TDD
+workflow codified in this guide, repo-wide markdownlint config + cleanup,
+markdownlint enforced in CI.
 
 **0.17.6** — Inverter identity & classification overhaul. Fixed a family of
 mis-identifications found by cross-referencing the GivEnergy
@@ -183,7 +193,7 @@ The server must prepend the 10-byte inverter serial to the response payload:
 
 ```text
 serial(10) + base_register(2) + register_count(2) + data(N×2)
-```text
+```
 
 The client parses this as: skip 10 bytes, read start/count, then register values.
 Write responses follow the same pattern: `serial(10) + register(2) + value(2)`.
@@ -579,7 +589,7 @@ cargo test -p sim-modbus --test givenergy_protocol
 
 # With output
 cargo test -- --nocapture
-```text
+```
 
 ## Running the GUI
 
@@ -592,7 +602,65 @@ cd crates/sim-tauri && cargo tauri dev
 
 ```bash
 cargo build && cargo test    # should complete in ~5s total
-```text
+```
+
+## Release Procedure
+
+Versioning follows semver-ish `0.x.y`: **patch** for bug fixes, **minor** for
+features, new registers, or UI changes. Every step is mandatory, in order:
+
+1. **Pre-flight (Golden Rule)** — all four green before anything else:
+
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --all-targets          # zero warnings
+   cargo test                          # full workspace, 500+ tests
+   npx -y markdownlint-cli2 "**/*.md" "#**/node_modules/**" "#**/target/**"
+   ```
+
+2. **Scenario regression** — every `examples/*.yaml` must pass:
+
+   ```bash
+   ./scripts/run-ci.sh
+   ```
+
+3. **GUI tests (whenever `ui/` or `sim-tauri` changed)** — Playwright
+   self-starts Vite on port 1421:
+
+   ```bash
+   cd ui && npx playwright test
+   ```
+
+4. **Version bump** — all release-tracked versions must agree:
+   - Root `Cargo.toml` `[workspace.package] version` (crates inherit via
+     `version.workspace = true`), then rebuild once so `Cargo.lock`
+     refreshes.
+   - `crates/sim-tauri/tauri.conf.json` `version` (desktop app version —
+     this was missed for 0.17.6; don't repeat).
+   - `ui/package.json` stays at `0.1.0` — it is not release-tracked.
+
+5. **CHANGELOG.md** — rename `## [Unreleased]` → `## [0.x.y] - YYYY-MM-DD`
+   (Keep-a-Changelog sections: Added / Changed / Fixed / Tests). New work
+   accumulates under a fresh `## [Unreleased]`.
+
+6. **AGENTS.md** — add the release blurb atop the `## Version` section;
+   older entries stay for context.
+
+7. **Commit + tag** — one release commit, then an annotated tag in the
+   same style:
+
+   ```bash
+   git commit -m "release: v0.x.y <short summary>"
+   git tag -a v0.x.y -m "v0.x.y <short summary>"
+   ```
+
+8. **Push — only with the user's explicit approval for that release**
+   (external-communication rule; a tag push may trigger external
+   automation):
+
+   ```bash
+   git push origin main && git push origin v0.x.y
+   ```
 
 ## Persistence
 
