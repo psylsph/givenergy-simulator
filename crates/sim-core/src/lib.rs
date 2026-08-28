@@ -1196,6 +1196,47 @@ impl BatteryEngine {
         }
         power_kw
     }
+
+    /// Reconcile grid and inverter AC power after the battery engine changes
+    /// battery power. Any charge/discharge curtailed by a limit or pause must
+    /// flow to/from the grid rather than disappearing from the power balance.
+    /// In island mode (`grid.connected == false`) no grid flow is possible:
+    /// surplus beyond battery absorption is curtailed and unmet deficit sheds
+    /// load instead of importing. AC-output convention: `ac_power_w` counts
+    /// solar (+ discharge) flowing through the inverter; the ForceCharge-mode
+    /// variant (`load − grid import`, see `InverterEngine::force_charge`) is
+    /// deliberately not reproduced here.
+    fn reconcile_ac_power_flow(state: &mut PlantState) {
+        let total_batt_kw = state.total_battery_power_kw();
+        if !state.grid.connected {
+            // Island: the AC bus feeds the home only. Island allocation never
+            // charges in a deficit, so a charging/idle battery implies a
+            // solar surplus — AC output is the load, with excess solar
+            // curtailed. Discharging adds to solar output; whatever deficit
+            // remains is shed, never imported from the disconnected grid.
+            state.grid.power_w = 0.0;
+            state.inverter.ac_power_w = if total_batt_kw < 0.0 {
+                state.solar.generation_w - total_batt_kw * 1000.0
+            } else {
+                state.load.demand_w.min(state.solar.generation_w)
+            };
+            return;
+        }
+        if total_batt_kw >= 0.0 {
+            // Battery charging (or idle): unabsorbed surplus becomes grid
+            // export, while unmet load becomes grid import.
+            state.grid.power_w =
+                state.load.demand_w + total_batt_kw * 1000.0 - state.solar.generation_w;
+            state.inverter.ac_power_w = state.solar.generation_w;
+        } else {
+            // Battery discharging: capped discharge reduces grid import or
+            // increases export, up to the inverter's AC throughput limit.
+            let discharge_w = (-total_batt_kw * 1000.0).min(state.config.max_ac_watts);
+            let net = state.solar.generation_w - state.load.demand_w;
+            state.grid.power_w = -(net + discharge_w);
+            state.inverter.ac_power_w = state.solar.generation_w + discharge_w;
+        }
+    }
 }
 
 impl DeviceModel for BatteryEngine {
@@ -1244,6 +1285,7 @@ impl DeviceModel for BatteryEngine {
                     }
                 }
                 state.sync_battery_from_vec();
+                Self::reconcile_ac_power_flow(state);
                 return;
             }
         }
@@ -1372,20 +1414,7 @@ impl DeviceModel for BatteryEngine {
         // (percentage limits, thermal derating, per-module C-rate caps).
         // Without this recalculation, the throttled power vanishes instead of
         // being redirected to/from the grid — an energy conservation violation.
-        let total_batt_kw = state.total_battery_power_kw();
-        if total_batt_kw > 0.0 {
-            // Battery charging: unabsorbed surplus becomes grid export.
-            // grid = load + charge - solar (energy balance).
-            state.grid.power_w =
-                state.load.demand_w + total_batt_kw * 1000.0 - state.solar.generation_w;
-            state.inverter.ac_power_w = state.solar.generation_w;
-        } else if total_batt_kw < 0.0 {
-            // Battery discharging: capped discharge reduces grid export/import.
-            let discharge_w = (-total_batt_kw * 1000.0).min(state.config.max_ac_watts);
-            let net = state.solar.generation_w - state.load.demand_w;
-            state.grid.power_w = -(net + discharge_w);
-            state.inverter.ac_power_w = state.solar.generation_w + discharge_w;
-        }
+        Self::reconcile_ac_power_flow(state);
     }
 }
 
@@ -5088,6 +5117,127 @@ mod tests {
             state.batteries[0].power_kw, 0.0,
             "discharge must be paused at noon (outside the 03:00-04:00 slot)"
         );
+    }
+
+    #[test]
+    fn timed_discharge_pause_redirects_load_to_grid() {
+        // When PauseDischarge stops a battery that was covering the house,
+        // the unmet load must become grid import rather than disappearing.
+        let mut state = pause_test_state(2, 400, 300, 12, 0);
+        state.solar.generation_w = 0.0;
+        state.load.demand_w = 2_000.0;
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        state.grid.power_w = 0.0;
+        state.inverter.ac_power_w = 2_000.0;
+
+        tick_battery(&mut state, 12, 0);
+
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+        assert_eq!(state.grid.power_w, 2_000.0);
+        assert_eq!(state.inverter.ac_power_w, 0.0);
+    }
+
+    #[test]
+    fn pause_charge_redirects_surplus_to_grid_export() {
+        // Symmetric to the discharge case: when PauseCharge stops a battery
+        // that was absorbing solar surplus, the surplus must become grid
+        // export rather than disappearing.
+        let mut state = pause_test_state(1, 1100, 1300, 12, 0);
+        state.solar.generation_w = 3_000.0;
+        state.load.demand_w = 1_000.0;
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        state.grid.power_w = -2_000.0; // exporting surplus
+        state.inverter.ac_power_w = 3_000.0;
+
+        tick_battery(&mut state, 12, 0);
+
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+        assert_eq!(state.grid.power_w, -2_000.0);
+        assert_eq!(state.inverter.ac_power_w, 3_000.0);
+    }
+
+    #[test]
+    fn island_idle_battery_keeps_grid_disconnected() {
+        // Island mode with an idle battery at night: InverterEngine leaves
+        // grid.power_w = 0. BatteryEngine's reconciliation must not conjure
+        // a phantom grid import from a disconnected grid.
+        let mut state = pause_test_state(0, 60, 60, 23, 0);
+        state.grid.connected = false;
+        state.solar.generation_w = 0.0;
+        state.load.demand_w = 2_000.0;
+        state.batteries[0].power_kw = 0.0; // island allocation: empty battery
+        state.sync_battery_from_vec();
+        state.grid.power_w = 0.0;
+        state.inverter.ac_power_w = 0.0;
+
+        tick_battery(&mut state, 23, 0);
+
+        assert_eq!(state.grid.power_w, 0.0, "no grid flow while disconnected");
+        assert_eq!(state.inverter.ac_power_w, 0.0);
+    }
+
+    #[test]
+    fn island_derated_discharge_sheds_load_without_grid_flow() {
+        // Island deficit: InverterEngine allocated 4 kW of discharge, but the
+        // 50% discharge limit caps it at 2.5 kW. The shed 1.5 kW must simply
+        // go unserved — never appear as grid import.
+        let mut state = pause_test_state(0, 60, 60, 23, 0);
+        state.grid.connected = false;
+        state.battery_discharge_limit_percent = 50.0;
+        state.solar.generation_w = 0.0;
+        state.load.demand_w = 4_000.0;
+        state.batteries[0].power_kw = -4.0; // island allocation
+        state.sync_battery_from_vec();
+        state.grid.power_w = 0.0;
+        state.inverter.ac_power_w = 4_000.0;
+
+        tick_battery(&mut state, 23, 0);
+
+        assert_eq!(state.batteries[0].power_kw, -2.5);
+        assert_eq!(state.grid.power_w, 0.0, "no grid flow while disconnected");
+        assert_eq!(state.inverter.ac_power_w, 2_500.0); // rest is shed
+    }
+
+    #[test]
+    fn island_pause_discharge_sheds_load_without_grid_flow() {
+        // PauseDischarge in island mode: the paused battery's would-be load
+        // coverage must shed (AC output drops to solar), never import.
+        let mut state = pause_test_state(2, 400, 300, 12, 0);
+        state.grid.connected = false;
+        state.solar.generation_w = 0.0;
+        state.load.demand_w = 2_000.0;
+        state.batteries[0].power_kw = -2.0;
+        state.sync_battery_from_vec();
+        state.grid.power_w = 0.0;
+        state.inverter.ac_power_w = 2_000.0;
+
+        tick_battery(&mut state, 12, 0);
+
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+        assert_eq!(state.grid.power_w, 0.0, "no grid flow while disconnected");
+        assert_eq!(state.inverter.ac_power_w, 0.0);
+    }
+
+    #[test]
+    fn island_pause_charge_curtails_surplus_without_grid_flow() {
+        // PauseCharge in island surplus: the unabsorbed solar must be
+        // curtailed (AC output = load), never exported to a dead grid.
+        let mut state = pause_test_state(1, 1100, 1300, 12, 0);
+        state.grid.connected = false;
+        state.solar.generation_w = 3_000.0;
+        state.load.demand_w = 1_000.0;
+        state.batteries[0].power_kw = 2.0; // island allocation
+        state.sync_battery_from_vec();
+        state.grid.power_w = 0.0;
+        state.inverter.ac_power_w = 1_000.0;
+
+        tick_battery(&mut state, 12, 0);
+
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+        assert_eq!(state.grid.power_w, 0.0, "no grid flow while disconnected");
+        assert_eq!(state.inverter.ac_power_w, 1_000.0); // surplus curtailed
     }
 
     #[test]
