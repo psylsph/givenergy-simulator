@@ -447,7 +447,7 @@ fn modbus_command_to_sim(cmd: &sim_modbus::ModbusCommand) -> Option<Command> {
             }
         }
         50 => Some(Command::SetActivePowerRate(cmd.value as f64)),
-        110 => Some(Command::SetMinSoc(cmd.value as f64)),
+        110 | 1109 => Some(Command::SetMinSoc(cmd.value as f64)),
         // Single-phase DC HR111/112 use a 0-50 raw scale, while the
         // simulator stores normalized 0-100 limits.
         111 => Some(Command::SetBatteryChargeLimit(
@@ -1654,7 +1654,7 @@ fn is_schedule_register(addr: u16) -> bool {
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
             | 242..=245 | 272 | 275
             | 246..=269 | 276..=299
-            | 1109 | 1111..=1116 | 1118..=1121
+            | 1111..=1116 | 1118..=1121
             | 2062..=2070
             | 2044..=2061
     )
@@ -1715,6 +1715,25 @@ mod tests {
         match command(313, 50) {
             Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 50.0),
             other => panic!("unexpected HR313 command: {other:?}"),
+        }
+    }
+
+    /// Regression: HR 1109 (TPH SoC reserve, shadows HR 110 per the
+    /// givenergy-modbus manifest) must route to SetMinSoc so three-phase
+    /// clients can configure the reserve. Previously the write was
+    /// acknowledged but the state never changed (same class as the 0.17.2
+    /// pause-slot CLI bug).
+    #[test]
+    fn tph_soc_reserve_hr1109_routes_to_set_min_soc() {
+        let command =
+            |address, value| modbus_command_to_sim(&sim_modbus::ModbusCommand { address, value });
+        match command(1109, 10) {
+            Some(Command::SetMinSoc(value)) => assert_eq!(value, 10.0),
+            other => panic!("HR 1109 must route to SetMinSoc, got {other:?}"),
+        }
+        match command(110, 15) {
+            Some(Command::SetMinSoc(value)) => assert_eq!(value, 15.0),
+            other => panic!("HR 110 must route to SetMinSoc, got {other:?}"),
         }
     }
 }

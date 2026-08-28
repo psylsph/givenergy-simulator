@@ -1924,7 +1924,34 @@ impl Schedule {
         if let Some(&v) = updates.get(&1121) {
             self.discharge_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
         }
-        // Charge target SOC (HR 116)
+        // EMS export slots 1-3 (HR 2062-2070)
+        if let Some(&v) = updates.get(&2062) {
+            self.export_start_1 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2063) {
+            self.export_end_1 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2064) {
+            self.export_target_soc_1 = v as f64;
+        }
+        if let Some(&v) = updates.get(&2065) {
+            self.export_start_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2066) {
+            self.export_end_2 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2067) {
+            self.export_target_soc_2 = v as f64;
+        }
+        if let Some(&v) = updates.get(&2068) {
+            self.export_start_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2069) {
+            self.export_end_3 = hhmm_to_schedule_hours(v).unwrap_or(-1.0);
+        }
+        if let Some(&v) = updates.get(&2070) {
+            self.export_target_soc_3 = v as f64;
+        }
     }
 
     /// Preserve exact raw values for all Modbus schedule start/end registers.
@@ -1990,6 +2017,7 @@ pub fn is_schedule_time_register(address: u16) -> bool {
             | 1113..=1116 | 1118..=1121
             | 2044..=2045 | 2047..=2048 | 2050..=2051
             | 2053..=2054 | 2056..=2057 | 2059..=2060
+            | 2062 | 2063 | 2065 | 2066 | 2068 | 2069
     )
 }
 
@@ -2083,6 +2111,55 @@ impl Default for Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Regression: the EMS export-slot registers (HR 2062-2070) were
+    /// modelled, projected, and honoured by `ScheduleEngine`, but
+    /// `Schedule::apply_modbus_updates` never consumed them — so an EMS
+    /// client configuring export windows saw an acknowledged write with no
+    /// state change AND the read-back (which projects from the Schedule
+    /// fields) showed the defaults. Same class as the 0.17.2 pause-slot
+    /// CLI bug and the 0.17.4 schedule persistence fixes.
+    #[test]
+    fn ems_export_slot_writes_apply_to_schedule_and_persist_raw() {
+        let mut schedule = Schedule::default();
+        let mut updates: HashMap<u16, u16> = HashMap::new();
+        updates.insert(2062, 1600); // slot 1 start
+        updates.insert(2063, 1800); // slot 1 end
+        updates.insert(2064, 50); // slot 1 target SOC
+        updates.insert(2065, 1560); // slot 2 start (minutes=60, accepted raw 0-2399)
+        updates.insert(2067, 30); // slot 2 target
+
+        schedule.apply_modbus_updates(&updates);
+        schedule.record_raw_time_writes(&updates);
+
+        // Parsed hours: slot 1 normal, slot 2 invalid -> -1.
+        assert_eq!(schedule.export_start_1, 16.0 + 0.0 / 60.0);
+        assert_eq!(schedule.export_end_1, 18.0);
+        assert_eq!(schedule.export_target_soc_1, 50.0);
+        assert_eq!(schedule.export_start_2, -1.0);
+        assert_eq!(schedule.export_target_soc_2, 30.0);
+
+        // Raw values are preserved verbatim for read-back, including the
+        // invalid-but-accepted 1560 (mirrors the 0.17.5 contract for other
+        // schedule time registers).
+        assert_eq!(schedule.raw_time_or(2062, 60), 1600);
+        assert_eq!(schedule.raw_time_or(2063, 60), 1800);
+        assert_eq!(schedule.raw_time_or(2065, 60), 1560);
+        // Time-register family membership so later-firmware validation
+        // (>2399 ignored) applies uniformly to EMS export slots too.
+        assert!(is_schedule_time_register(2062));
+        assert!(is_schedule_time_register(2063));
+        assert!(is_schedule_time_register(2065));
+        assert!(is_schedule_time_register(2066));
+        assert!(is_schedule_time_register(2068));
+        assert!(is_schedule_time_register(2069));
+        assert!(!is_schedule_time_register(2064)); // target SOCs aren't time registers
+
+        // Later-firmware accept/reject: values 0-2399 pass, >=2400 rejected.
+        assert!(schedule_time_write_is_accepted(2062, 2399));
+        assert!(!schedule_time_write_is_accepted(2062, 2400));
+    }
 
     #[test]
     fn dc_battery_limit_register_uses_zero_to_fifty_scale() {

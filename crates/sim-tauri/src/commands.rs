@@ -403,8 +403,10 @@ fn modbus_address_to_command(address: u16, value: u16) -> Option<Command> {
         // HR 50: Active power rate (%) → export limit = rate% of max
         50 => Some(Command::SetActivePowerRate(value as f64)),
         // HR 96
-        // HR 110: Battery SOC reserve (%)
-        110 => Some(Command::SetMinSoc(value as f64)),
+        // HR 110: Battery SOC reserve (%). HR 1109 is the three-phase mirror
+        // of HR 110 (`tph_battery_soc_reserve`) per givenergy-modbus and must
+        // route to the same command so a three-phase client can configure it.
+        110 | 1109 => Some(Command::SetMinSoc(value as f64)),
         // HR 111/112 use a 0-50 raw scale; the simulator stores normalized
         // 0-100 limits. AC-coupled / three-phase registers are direct.
         111 => Some(Command::SetBatteryChargeLimit(
@@ -503,7 +505,7 @@ fn is_schedule_register(addr: u16) -> bool {
         31..=32 | 44..=45 | 56..=57 | 59 | 94..=96 | 116
             | 242..=245 | 272 | 275
             | 246..=269 | 276..=299
-            | 1109 | 1111..=1116 | 1118..=1121
+            | 1111..=1116 | 1118..=1121
             | 2062..=2070
             | 2044..=2061
     )
@@ -2004,6 +2006,45 @@ mod tests {
             Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 100.0),
             other => panic!("unexpected HR1110 command: {other:?}"),
         }
+    }
+
+    /// Regression: HR 1109 (`tph_battery_soc_reserve` — shadows HR 110 per
+    /// givenergy-modbus manifest) was previously routed through the schedule
+    /// path but never consumed by `Schedule::apply_modbus_updates`, so a
+    /// three-phase client writing the SoC reserve got an acknowledged write
+    /// with no state change. Routing it through `SetMinSoc` like HR 110
+    /// fixes it and matches the upstream mirroring contract.
+    #[test]
+    fn tph_soc_reserve_hr1109_routes_to_set_min_soc() {
+        match modbus_address_to_command(1109, 10) {
+            Some(Command::SetMinSoc(value)) => assert_eq!(value, 10.0),
+            other => panic!("HR 1109 must route to SetMinSoc (shadows HR 110), got {other:?}"),
+        }
+        // Regression: confirm the existing single-phase routing is intact.
+        match modbus_address_to_command(110, 15) {
+            Some(Command::SetMinSoc(value)) => assert_eq!(value, 15.0),
+            other => panic!("HR 110 must route to SetMinSoc, got {other:?}"),
+        }
+    }
+
+    /// Regression: HR 2062-2070 are the EMS export-slot registers. The
+    /// simulator models and projects them, but the write drain never applied
+    /// them to the Schedule, so an EMS client configuring export windows
+    /// saw an acknowledged write with no effect and the read-back showed the
+    /// defaults. The fix routes 2062-2070 into the schedule-update path so
+    /// the existing `Schedule::apply_modbus_updates` consumption (the same
+    /// path that handles 2044-2061 EMS charge/discharge slots) applies them.
+    #[test]
+    fn ems_export_slot_registers_2062_2070_reach_schedule_path() {
+        // They are schedule registers so `apply_modbus_updates` will see them.
+        assert!(is_schedule_register(2062));
+        assert!(is_schedule_register(2063));
+        assert!(is_schedule_register(2064));
+        assert!(is_schedule_register(2069));
+        assert!(is_schedule_register(2070));
+        // And they are NOT mis-routed to any unrelated command (e.g. SetExportLimit
+        // already owns 2071; we don't want a duplicate).
+        assert!(modbus_address_to_command(2062, 1600).is_none());
     }
 
     #[test]

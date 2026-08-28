@@ -2553,16 +2553,16 @@ impl RegisterStore {
 
         // Export schedule slots (HR 2062-2071)
         let (es1_s, es1_e) = slot_pair(schedule.export_start_1, schedule.export_end_1);
-        self.write(2062, es1_s);
-        self.write(2063, es1_e);
+        self.write(2062, schedule.raw_time_or(2062, es1_s));
+        self.write(2063, schedule.raw_time_or(2063, es1_e));
         self.write(2064, schedule.export_target_soc_1 as u16);
         let (es2_s, es2_e) = slot_pair(schedule.export_start_2, schedule.export_end_2);
-        self.write(2065, es2_s);
-        self.write(2066, es2_e);
+        self.write(2065, schedule.raw_time_or(2065, es2_s));
+        self.write(2066, schedule.raw_time_or(2066, es2_e));
         self.write(2067, schedule.export_target_soc_2 as u16);
         let (es3_s, es3_e) = slot_pair(schedule.export_start_3, schedule.export_end_3);
-        self.write(2068, es3_s);
-        self.write(2069, es3_e);
+        self.write(2068, schedule.raw_time_or(2068, es3_s));
+        self.write(2069, schedule.raw_time_or(2069, es3_e));
         self.write(2070, schedule.export_target_soc_3 as u16);
         // HR 2071 (EMS / EmsCommercial `export_power_limit`) is projected from
         // the live plant state via `ems_export_power_limit` in project_from_state,
@@ -7924,6 +7924,36 @@ mod tests {
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap()
+    }
+
+    /// Regression: the EMS export-slot registers (HR 2062-2070) are projected
+    /// from `Schedule::export_*` fields, but the write path never applied
+    /// writes to those fields. Even with the apply-side fix, the *projection*
+    /// must echo the exact raw value a client wrote (including later-firmware
+    /// "accepted but unusual" values like 1560 with minutes=60), not a
+    /// derived 60-sentinel or a default — the 0.17.4/0.17.5 contract that
+    /// raw values survive projection.
+    #[test]
+    fn ems_export_slot_round_trip_preserves_raw_values() {
+        use std::collections::HashMap;
+        let mut schedule = sim_models::Schedule::default();
+        let mut writes: HashMap<u16, u16> = HashMap::new();
+        writes.insert(2062, 1600);
+        writes.insert(2063, 1800);
+        writes.insert(2065, 1560); // invalid minutes, accepted raw
+        writes.insert(2067, 25);
+        schedule.apply_modbus_updates(&writes);
+        schedule.record_raw_time_writes(&writes);
+
+        let state = PlantState::new(test_ts());
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        store.project_schedule(&schedule);
+
+        assert_eq!(store.read(2062), Some(1600));
+        assert_eq!(store.read(2063), Some(1800));
+        assert_eq!(store.read(2065), Some(1560)); // raw preserved, NOT 60
+        assert_eq!(store.read(2067), Some(25));
     }
 
     #[test]

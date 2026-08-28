@@ -2228,8 +2228,17 @@ impl DeviceModel for ScheduleEngine {
             self.schedule.discharge_target_soc_10
         );
 
-        // Export limit scheduling — 3 time windows
-        if self.schedule.enable_export_schedule && self.schedule.export_power_limit_w > 0.0 {
+        // Export limit scheduling — 3 time windows. Mirrors upstream givenergy-modbus
+        // semantics where the export slots are active by being present, with no
+        // separate enable register: the schedule's `enable_export_schedule`
+        // GUI/YAML flag is honoured too, but configuring any slot via Modbus is
+        // sufficient on its own to activate the window logic.
+        let any_export_slot = self.schedule.export_start_1 != self.schedule.export_end_1
+            || self.schedule.export_start_2 != self.schedule.export_end_2
+            || self.schedule.export_start_3 != self.schedule.export_end_3;
+        if (self.schedule.enable_export_schedule || any_export_slot)
+            && self.schedule.export_power_limit_w > 0.0
+        {
             let in_export_window = |s: f64, e: f64| -> bool {
                 if s == 0.0 && e == 0.0 {
                     return false;
@@ -5323,6 +5332,44 @@ mod tests {
         state.sync_battery_from_vec();
         tick_battery(&mut state, 3, 30);
         assert!(state.batteries[0].power_kw < -1.0);
+    }
+
+    /// Regression: EMS export windows (HR 2062-2070) are projected from
+    /// `Schedule.export_*` and the engine must apply the schedule's export
+    /// power cap during an active window — but only if either the GUI/YAML
+    /// `enable_export_schedule` flag is set OR any export slot is configured
+    /// (mirroring upstream givenergy-modbus, where the export slots are
+    /// active by being present, with no separate enable register).
+    #[test]
+    fn export_window_runs_when_slot_configured_without_enable_flag() {
+        let ts = NaiveDate::from_ymd_opt(2025, 6, 21)
+            .unwrap()
+            .and_hms_opt(17, 0, 0)
+            .unwrap();
+        let mut state = PlantState::with_battery_count(ts, 1);
+        state
+            .inverter
+            .mode_state
+            .set_user(InverterMode::ExportLimit);
+        state.inverter.export_limit_w = 1000.0; // user-set baseline
+        // schedule intentionally has enable_export_schedule = false (default).
+        let mut schedule = Schedule::default();
+        schedule.export_power_limit_w = 3000.0;
+        schedule.export_start_1 = 16.0;
+        schedule.export_end_1 = 18.0;
+        state.batteries[0].soc_percent = 80.0;
+        state.sync_battery_from_vec();
+
+        let ctx = TickContext {
+            now: ts,
+            dt_hours: 1.0 / 60.0,
+        };
+        ScheduleEngine::new(schedule).update(&ctx, &mut state);
+
+        assert_eq!(
+            state.inverter.export_limit_w, 3000.0,
+            "export window 16:00-18:00 with a configured slot must cap export"
+        );
     }
 
     proptest! {
