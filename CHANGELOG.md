@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — island-mode battery reconciliation
+
+`BatteryEngine::reconcile_ac_power_flow` rewrote `grid.power_w` and
+`inverter.ac_power_w` unconditionally — including when the battery was idle
+(previously a no-op) and from the battery-pause early-return. With the grid
+disconnected this conjured phantom import/export through a dead grid
+corrupting the daily energy totals (e.g. island at night with an empty
+battery reported 2 kW import). Reconciliation now guards on `grid.connected`:
+island surplus beyond battery absorption is curtailed, unmet deficit sheds
+load, and grid flow stays exactly zero. Also fixes the pre-existing variant
+where a discharge curtailed by the percentage limit leaked the shortfall as
+phantom grid import.
+
+### Tests
+
+- New property-style invariant checker
+  (`sim-core/tests/power_balance_invariants.rs`): exact bus balance
+  `solar + grid == load + battery` when connected, zero grid flow and
+  source-bounded AC output in island mode, finiteness — asserted across a
+  5,832-combination scenario sweep and two 2-day soaks. Mutation-validated:
+  disabling the island guard fails the checker.
+- 5 new pause/island regression tests (pause→grid redirection in both
+  directions, island idle/derated/paused battery), 517 total.
+
 ### Changed — inverter identity & classification overhaul
 
 Fixed a family of inverter mis-identifications discovered by cross-referencing
