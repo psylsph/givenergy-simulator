@@ -30,6 +30,53 @@ phantom grid import.
 - 5 new pause/island regression tests (pause→grid redirection in both
   directions, island idle/derated/paused battery), 517 total.
 
+## [0.17.8] - 2026-08-28
+
+### Fixed
+
+- HR 1109 (`tph_battery_soc_reserve` — the three-phase mirror of HR 110 per
+  the givenergy-modbus manifest) was previously routed through the schedule
+  write path but never consumed by `Schedule::apply_modbus_updates`, so a
+  three-phase client writing the SoC reserve saw an acknowledged write with
+  no state change. Now routed to `SetMinSoc` alongside HR 110 in both
+  binaries; 1109 removed from the schedule register list.
+- HR 2062-2070 (EMS export slots 1/2/3) were modelled, projected, and honoured
+  by `ScheduleEngine`, but the write path never applied them and no raw
+  preservation existed, so an EMS client configuring export windows got an
+  acked write that did nothing and the read-back showed defaults. The apply
+  path now consumes them with the same hhmm parsing and -1 sentinel as the
+  other slot families; the time registers are in `is_schedule_time_register`
+  for uniform later-firmware validation; the projection uses `raw_time_or`
+  so accepted-but-unusual values (e.g. 1560 with minutes=60) round-trip
+  exactly.
+- The export-window gate in `ScheduleEngine` now activates either via the
+  explicit `enable_export_schedule` flag OR when any export slot is
+  configured via Modbus, matching upstream where the slots are active by
+  being present (no separate enable register exists in the EMS allowlist).
+
+### Dependencies
+
+- Rust: `plist` 1.9.0 → 1.10.0 pulls `quick-xml` 0.39.4 → 0.41.0, fixing
+  RUSTSEC-2026-0194 (quadratic duplicate-attribute check, DoS) and
+  RUSTSEC-2026-0195 (unbounded `NsReader` namespace allocation, DoS). Both
+  high-severity; `cargo audit` now reports 0 vulnerabilities.
+- npm: `npm audit fix` clears two high-severity postcss advisories in the
+  ui toolchain.
+- Dependabot alert for `glib` 0.18.5 (RUSTSEC-2024-0429, medium,
+  `glib::VariantStrIter` unsoundness) is **dismissed with justification**:
+  the vulnerable API requires `glib::Variant::iter()` which sim-tauri never
+  calls; the only `glib` use is transitive via the Tauri/GTK3 stack for
+  windowing/webview, neither of which exposes untrusted GLib variants to
+  the simulator. Bumping glib requires a GTK3→GTK4 migration (Tauri 2.x
+  is locked to gtk 0.18; out of scope for this release).
+
+### Tests
+
+- 6 new regression tests covering the slot-logic fixes (tauri routing,
+  sim-api routing, sim-models apply path + raw preservation, sim-registers
+  projection round-trip, sim-core export-window activation). 523 total.
+- Total suite: 523 passed (up from 517 at the 0.17.7 release).
+
 ### Docs & tooling
 
 - TDD workflow codified in `AGENTS.md`; standard release procedure documented

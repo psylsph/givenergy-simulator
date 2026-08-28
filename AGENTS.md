@@ -60,6 +60,20 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.17.8** — Dependabot cleanup + slot-logic fixes. Bumps `plist` to clear
+two high-severity RUSTSEC advisories in `quick-xml` (RUSTSEC-2026-0194/0195,
+DoS) and `npm audit fix` for the ui toolchain; the remaining `glib`
+unsoundness is **dismissed with justification** (the vulnerable API is
+unreachable — sim-tauri never calls `glib::Variant::iter()` and the only
+glib use is transitive via the Tauri/GTK3 stack). Two dropped-write bugs
+in the slot pipeline: HR 1109 (`tph_battery_soc_reserve`, the three-phase
+mirror of HR 110) now routes to `SetMinSoc`; HR 2062-2070 (EMS export
+slots) now flow through `Schedule::apply_modbus_updates` with the same
+hhmm parsing and raw preservation as the other slot families, and the
+`ScheduleEngine` export gate activates when any export slot is configured
+(matching upstream where the slots are active by being present). 6 new
+regression tests; 523 total.
+
 **0.17.7** — Island-mode grid reconciliation fix + conservation invariant
 checker. `BatteryEngine::reconcile_ac_power_flow` no longer conjures phantom
 grid import/export through a disconnected grid when the battery is idle,
