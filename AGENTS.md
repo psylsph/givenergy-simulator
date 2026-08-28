@@ -8,7 +8,7 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 - `cargo fmt --all -- --check` — must be clean (no diff).
 - `cargo clippy --all-targets` — must produce **zero** warnings.
-- `cargo test` — must be green. The suite is fast (~3s, 517 tests). Don't move on without green tests.
+- `cargo test` — must be green. The suite is fast (~3s, 500+ tests). Don't move on without green tests.
 
 ## Test-Driven Development (TDD)
 
@@ -24,7 +24,9 @@ makes it pass. Never write code and "add tests later"; tests are part of the cha
 Practical rules:
 
 - A bug fix **must** include a regression test that fails on the old code and passes on the
-  new code (see the island-mode reconciliation review for an example of verifying this).
+  new code — validate the test itself by reverting the fix and watching it fail (see
+  `sim-core/tests/power_balance_invariants.rs` for a checker whose sensitivity was proven
+  exactly this way, by disabling the island guard under mutation).
 - New behaviour without a test is an incomplete change — do not commit it.
 - Cover the edge cases: boundary values, zero/idle states, midnight/wrap-around windows,
   empty collections, and failure paths.
@@ -563,7 +565,7 @@ HR(223-224) stays 0. Key bits:
 ## Running Tests
 
 ```bash
-# Full suite (517 tests)
+# Full suite (500+ tests)
 cargo test
 
 # Single crate

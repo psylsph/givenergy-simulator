@@ -18,7 +18,7 @@ crates/
 
 ## sim-models
 
-```text
+```rust
 pub trait DeviceModel: Send {
     fn update(&mut self, ctx: &TickContext, state: &mut PlantState);
 }

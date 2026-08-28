@@ -383,7 +383,7 @@ When the request is invalid or unsupported, reply with an exception frame:
 
 ### 4.10 Minimal pseudocode (no Modbus library needed)
 
-```text
+```python
 # ---- build a Read request ----
 def read_request(tid, uid, start, qty):
     return bytes([
