@@ -178,6 +178,7 @@ projection + Modbus write path to the rate-based model is tracked separately.
   has no separate daily-reset counter).
 
 ### Fixed
+
 - **Three-phase force charge/discharge register routing**: HR 1122 and
   HR 1123 are no longer treated as schedule registers in the Modbus write
   drain loop. They are now handled by `modbus_address_to_command` in both
@@ -186,6 +187,7 @@ projection + Modbus write path to the rate-based model is tracked separately.
   to set `tph_force_discharge_enable` / `tph_force_charge_enable`.
 
 ### Tests
+
 - Updated `threephase_11kw_publishes_live_data_on_tph_input_registers` to
   verify all new energy total registers.
 - 245 total (unchanged).
@@ -204,6 +206,7 @@ projection + Modbus write path to the rate-based model is tracked separately.
   the `combo_*` test helper.
 
 ### Tests
+
 - Updated `battery_engine_treats_100_percent_as_full_power_and_50_as_half_power`
   to use the new c-rate cap (7 kW at 10 kWh × 0.7C).
 - 245 total (unchanged).
@@ -225,6 +228,7 @@ projection + Modbus write path to the rate-based model is tracked separately.
   `seed_for_testing_if_zero()` helpers in `sim-models`.
 
 ### Tests
+
 - 245 total (244 → 245). New test
   `zero_energy_state_projects_fixture_energy_registers_for_all_inverter_types`
   exercises PV/grid/battery/load energy registers across 24 inverter types,
@@ -242,6 +246,7 @@ projection + Modbus write path to the rate-based model is tracked separately.
   `== "ACThreePhase"` for consistency.
 
 ### Tests
+
 - 244 total (243 → 244).
 
 This release adds the three-phase **Input Register** block (IR 1001-1413) so
@@ -252,8 +257,10 @@ nominal voltage and adds CT/meter import/export registers.
 ### Added
 
 #### Three-phase Input Register block (IR 1001-1413)
+
 3-phase clients read all live data from these high input-register addresses
 rather than the single-phase IR 0-59 block:
+
 - **PV**: IR 1001/1002 (voltage), 1009/1010 (current), 1017-1020
   (power, uint32 ×0.1W) — mirrors single-phase IR 1/2/8/9/18/20
 - **Grid**: IR 1061-1063 (per-phase voltage 240V), 1064-1066
@@ -278,16 +285,18 @@ rather than the single-phase IR 0-59 block:
   1396-1397 (load today) — all uint32 ×0.1kWh
 
 #### Three-phase register catalogue
+
 - 56 new `RegisterDef` entries covering the IR 1001-1413 three-phase block
 
-### Fixed
+### Fixed (three-phase)
 
 - **HR 55 battery capacity Ah**: the `ThreePhase8kW`/`10kW`/`11kW` variants
   now use 76.8V nominal voltage (was falling through to 51.2V single-phase
   default, giving a 50% over-count that could trigger BMS alarms).
   Uses `starts_with("ThreePhase")` guard.
 
-### Tests
+### Tests (three-phase)
+
 - 8 new tests (235 → 243 total): three-phase DTC, phase-count byte, 76.8V
   battery capacity, HR 1108/1110 limit mirrors, HR 1113-1121 schedule
   mirrors, HR 1111 charge-target mirror, comprehensive live-data register
@@ -303,6 +312,7 @@ register mirrors that 3-phase clients read for the same fields.
 ### Added
 
 #### Register catalogue
+
 - ~190 additional register definitions across Input / Holding /
   3-phase / High-Energy / Metering address spaces, including:
   - PV totals, alt-format energy registers, combined-generation counters
@@ -328,6 +338,7 @@ register mirrors that 3-phase clients read for the same fields.
   Polar / Plus variants where previously missing
 
 #### UI
+
 - "Reserve" label renamed to **"Minimum SOC"** in the Limits & Control
   card
 - New read-only rows in Limits & Control:
@@ -341,6 +352,7 @@ register mirrors that 3-phase clients read for the same fields.
 ### Changed
 
 #### Battery power-limit semantics
+
 - **HR111 / HR112 now use 0-100% where 100 = full power.**
   Previously the simulator treated them as 0-50 with 50 as full
   power, which contradicted the UI labels and led to clients
@@ -358,6 +370,7 @@ register mirrors that 3-phase clients read for the same fields.
   discharge at full power.
 
 #### DTO defensive defaulting
+
 - `PlantStateDto` reports charge / discharge power limits as `100%`
   when the underlying state value is `<= 0.0` — protects against stale
   persisted state or transient zero values surfacing in the UI as
@@ -366,6 +379,7 @@ register mirrors that 3-phase clients read for the same fields.
   non-positive payloads.
 
 ### Tests
+
 - 12 new tests covering the changes above (223 → 235 total):
   - `sim-core`: defaults at 100%, command clamping, scaling at 100%
     vs 50%, work-time tick increment, parallel-mode command
@@ -384,6 +398,7 @@ that shipped in 0.11.0.
 ### Added
 
 #### Inverter identification & firmware
+
 - **Gen2Hybrid** inverter type — DTC 0x2001 with ARM firmware 852
   (century 8), 5000W AC / 3600W battery limit. Matches the reference
   refinement logic in `givenergy-modbus` / `giv_tcp`.
@@ -406,6 +421,7 @@ that shipped in 0.11.0.
 - Firmware override inputs in the sidebar (ARM FW / DSP FW + Set buttons)
 
 #### Schedule display
+
 - All 10 charge + discharge slots now rendered inline for inverters that
   support EXTENDED_SLOTS (Gen3Hybrid, Gen2Hybrid, Plus, AllInOne, AIO,
   Polar, ThreePhase). Gen1Hybrid and AC-coupled still show 2 slots only.
@@ -422,6 +438,7 @@ that shipped in 0.11.0.
 ### Changed
 
 #### 0x2001 is now a family code (was Gen3-specific)
+
 Per upstream `givenergy-modbus` / `giv_tcp`, the actual generation is
 decided by `HR(21) / 100` (the "century"):
 
@@ -441,12 +458,14 @@ Frontend dropdown labels updated to show the FW century, e.g.
 "Gen 2 Hybrid (0x2001, FW 8xx)".
 
 #### Schedule card per-slot state
+
 Slot cards used to share a single `enable_charge` / `enable_discharge`
 flag, so writing any charge slot made BOTH slot 1 and slot 2 display as
 enabled. Each card now derives state purely from its own window
 (● Active / ◯ Idle).
 
 ### Fixed
+
 - Slot 3–10 Modbus write routing — HR 246–269 (charge) and HR 276–299
   (discharge) writes are now translated into the Schedule struct fields,
   matching the EXTENDED_SLOTS layout. Previously only the projection was
@@ -457,6 +476,7 @@ enabled. Each card now derives state purely from its own window
   - THREE_PHASE: slots 1–2 at HR 1113–1121, slots 3–10 reuse EXTENDED
 
 ### Tests
+
 - `slot_3_triggers_charge_during_window`
 - `slot_10_triggers_discharge_during_window`
 - `gen2_hybrid_shares_family_dtc_but_reports_century_8_firmware`
@@ -468,6 +488,7 @@ enabled. Each card now derives state purely from its own window
 ## [0.11.0] - 2026-06-04
 
 ### Added
+
 - **GivEVC (Electric Vehicle Charger) simulation** — full wallbox simulator
   - `EvcState` struct (enabled, charging_state, cable_status, error_code,
     active_power_w, L1/L2/L3 currents, charge_current_setting, charge_control,
@@ -485,6 +506,7 @@ enabled. Each card now derives state purely from its own window
   matching the EXTENDED_SLOTS layout from `givenergy-modbus`
 
 ### Fixed
+
 - Slot 3-10 schedule accumulator gap — writes to HR 246-299 were not being
   applied to the schedule (only projection was correct)
 - All three slot maps align with `givenergy-modbus` upstream:
@@ -493,6 +515,7 @@ enabled. Each card now derives state purely from its own window
   - THREE_PHASE_SLOTS: slots 1-2 at HR 1113-1121, slots 3-10 reuse EXTENDED
 
 ### Tests
+
 - New `slot_3_triggers_charge_during_window` test
 - New `slot_10_triggers_discharge_during_window` test
 - Total: 219 tests (was 217)
@@ -500,6 +523,7 @@ enabled. Each card now derives state purely from its own window
 ## [0.10.0] - 2026-06-04
 
 ### Added
+
 - CT clamp meter simulation (IR 60-89) with per-phase V/I/P, totals, PF, frequency, energy
 - Meter registers served on Modbus slave addresses 0x01-0x08
 - MeterState struct derived from PlantState grid data
@@ -508,6 +532,7 @@ enabled. Each card now derives state purely from its own window
 - Scenario fuzzer (proptest-based property testing)
 
 ### Fixed
+
 - App renamed consistently to "GivEnergy Plant Simulator" across UI, CLI, and config
 - Tauri config version synced (was stale at 0.6.0)
 - Footer no longer shows stale hardcoded version
@@ -516,6 +541,7 @@ enabled. Each card now derives state purely from its own window
 ## [0.9.0] - 2026-06-03
 
 ### Added
+
 - Extended charge/discharge slots 3-10 (HR 246-299) with per-slot target SOCs
   — Schedule model expanded; ScheduleEngine uses macro-driven 10-slot check
 - 9 new inverter DTC variants: Gen3Plus (0x2201-2204), ThreePhase8/10kW
@@ -525,6 +551,7 @@ enabled. Each card now derives state purely from its own window
 - High registers (HR 4107-4114) in catalogue with projection
 
 ### Changed
+
 - Register catalogue expanded from 177 to 249 entries (+72)
 - is_schedule_register updated to cover HR 246-269 and 276-299
 - Test count: 216
@@ -532,6 +559,7 @@ enabled. Each card now derives state purely from its own window
 ## [0.8.0] - 2026-06-03
 
 ### Added
+
 - Heartbeat (main function 0x01) support in Modbus server — keeps client connections alive
 - FC 0x16 (Read Meter Product Registers) support in Modbus server
 - Battery pause mode enforcement — battery power zeroed during pause window when mode=1
@@ -545,6 +573,7 @@ enabled. Each card now derives state purely from its own window
 - `apply_schedule_updates()` helper shared between `run_scenario` and `serve_config`
 
 ### Fixed
+
 - `create_plant` now resets stored schedule to default — old schedule no longer leaks from previous session
 - `serve_config` now passes and updates shared battery state vector — BMS registers read real data
 - Pause slot writes (HR 319-320) routed to `SetBatteryPause` in both Tauri drain loops
@@ -560,6 +589,7 @@ enabled. Each card now derives state purely from its own window
 ## [0.7.1] - 2026-06-03
 
 ### Added
+
 - Gen 1 Hybrid inverter type (0x1001, 2500W battery limit)
 - Dual PV array support with 45/55 power split
 - PV2 peak capacity configurable in plant creation
@@ -569,6 +599,7 @@ enabled. Each card now derives state purely from its own window
 - Solar override applies before night check
 
 ### Fixed
+
 - Battery charge/discharge capped by inverter max AC power in all modes
 - PV2 voltage register (IR 2) returns 350V when PV2 configured
 - All clippy warnings resolved (zero warnings from `cargo clippy --all-targets`)
@@ -576,11 +607,13 @@ enabled. Each card now derives state purely from its own window
 - Inverter dropdown and presets ordered by DTC hex value
 
 ### Changed
+
 - `SolarState` split into `pv1_w` / `pv2_w` (generation_w = total)
 - CI pipeline clippy filter improved
 - Test count: 211
 
 ## [0.7.0]
+
 - Dual PV array support — PV1 and PV2 modelled as independent arrays with 45/55 power split
 - PV2 peak capacity configurable in plant creation dialog (0 = disabled)
 - Solar override now applies before night check, respecting array split
@@ -604,6 +637,7 @@ enabled. Each card now derives state purely from its own window
 - Save/load plant state to JSON with full roundtrip persistence
 
 ### Modbus Protocol
+
 - GivEnergy proprietary Modbus TCP server — data-adapter framing (not standard Modbus)
 - Read Input Registers (fn 0x04) and Read Holding Registers (fn 0x03)
 - Write Single Register (fn 0x06) with command dispatch
@@ -612,6 +646,7 @@ enabled. Each card now derives state purely from its own window
 - Register projection from simulation state — registers update every tick
 
 ### GUI (Tauri v2)
+
 - Desktop app with real-time dashboard
 - Energy flow diagram, battery SOC gauge, power timeline chart, cumulative kWh cards
 - Sidebar controls: inverter type, battery module count/capacity/SOH, inverter mode, weather, tick speed, solar/load overrides
@@ -623,27 +658,32 @@ enabled. Each card now derives state purely from its own window
 - State sync on load only (doesn't overwrite user input during simulation)
 
 ### Headless CLI
+
 - `giv-sim run scenario.yaml` with Modbus server support
 - `--battery-count`, `--modbus`, `--output` flags
 - Multi-day scenarios with `days: N`
 - Exit code 1 on assertion failure (CI-friendly)
 
 ### Scenario DSL
+
 - YAML event timeline with timed solar, load, mode, weather, fault events
 - 13 assertion types for automated validation
 - Multi-day support with daily event repetition
 
 ### Testing
+
 - 215 tests across all crates
 - Modbus integration tests covering GivEnergy protocol framing
 - Persistence serialization tests
 - Playwright GUI test scaffolding
 
 ### Output Formats
+
 - JSON Lines recording (every tick)
 - CSV energy export
 - JUnit XML for CI
 - JSON summary report
 
 ### Examples
+
 - `basic_day.yaml`, `grid_outage.yaml`, `force_charge.yaml`, `weather_change.yaml`, `two_day_clear.yaml`

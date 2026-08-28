@@ -23,12 +23,14 @@ pub struct PlantState {
 ## Sub-State Types
 
 ### InverterState
+
 - `mode`: Normal | Eco | ForceCharge | ForceDischarge | ExportLimit
 - `ac_power_w`: AC output in watts
 - `export_limit_w`: grid export cap (ExportLimit mode)
 - `temperature_celsius`: inverter temperature (default 35°C, thermal model)
 
 ### BatteryState
+
 - `soc_percent`: 0.0–100.0
 - `capacity_kwh`: current capacity (degrades with cycling)
 - `nominal_capacity_kwh`: original capacity
@@ -42,21 +44,26 @@ pub struct PlantState {
 - `cycle_count`: equivalent full cycles
 
 ### SolarState
+
 - `generation_w`: current PV output in watts
 
 ### LoadState
+
 - `demand_w`: current household consumption in watts
 
 ### GridState
+
 - `power_w`: positive=import, negative=export
 - `connected`: whether grid connection is live
 
 ### EnergyTotals
+
 - `grid_import_kwh`, `grid_export_kwh`
 - `battery_charge_kwh`, `battery_discharge_kwh`
 - `solar_generation_kwh`, `load_consumption_kwh`
 
 ### PlantConfig
+
 - `solar_peak_watts`: installed panel capacity
 - `latitude`: site latitude
 - `tick_interval_secs`: simulation step size
@@ -78,6 +85,7 @@ State transitions occur only during simulation ticks.
 All external writes become `Command` variants and are queued between ticks.
 
 ### Command Enum
+
 ```rust
 pub enum Command {
     SetInverterMode(InverterMode),

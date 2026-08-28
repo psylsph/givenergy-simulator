@@ -1,12 +1,14 @@
 # Modbus Emulation
 
 ## Goals
+
 - Match GivEnergy register addresses and scaling
 - Support both read and write operations
 - Forward writes as simulation Commands
 - Deterministic: same Modbus input → same state change
 
 ## Status
+
 - GivEnergy proprietary MBAP variant: ✅ implemented
 - Inner function 0x03 (Read Holding Registers): ✅ implemented
 - Inner function 0x04 (Read Input Registers): ✅ implemented
@@ -18,7 +20,8 @@
 - Function code 0x10 (Write Multiple Registers): future
 
 ## Components
-```
+
+```text
 TCP Listener        — tokio::net::TcpListener, accepts concurrent connections
 Session Manager     — per-connection tokio::spawn task
 Request Decoder     — parses MBAP header + PDU
@@ -28,7 +31,8 @@ Command Translator  — modbus_command_to_sim() maps address+value to Command
 ```
 
 ## Write Path
-```
+
+```text
 Client → ModbusServer
   → WriteSingleRegister (fn 0x06)
     → RegisterStore::write() validates access
@@ -40,6 +44,7 @@ Client → ModbusServer
 ```
 
 ## Writables (addr → Command)
+
 | Address | Register | Command |
 |---|---|---|
 | 100 | inverter_mode | SetInverterMode |
@@ -49,9 +54,11 @@ Client → ModbusServer
 | 602 | config_weather | SetWeather |
 
 ## Integration Tests
+
 4 tests covering: read registers, write single register (readwrite), write rejected (readonly), unsupported function code.
 
 ## Future
+
 - Packet capture comparison against real GivEnergy hardware
 - Function code 0x10 (Write Multiple Registers)
 - Function code 0x04 (Read Input Registers)

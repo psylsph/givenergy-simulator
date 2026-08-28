@@ -1,7 +1,8 @@
 # Sequence Diagrams
 
 ## Read Path (function code 0x03)
-```
+
+```text
 Client                     ModbusServer                RegisterStore              PlantState
   │                             │                            │                        │
   │── ReadHoldingRegisters ──▶  │                            │                        │
@@ -12,7 +13,8 @@ Client                     ModbusServer                RegisterStore            
 ```
 
 ## Write Path (function code 0x06)
-```
+
+```text
 Client           ModbusServer          RegisterStore    CommandSender    CLI/Tick Loop    SimulationCore
   │                    │                    │                │                │                │
   │── WriteSingle ──▶  │                    │                │                │                │
@@ -28,7 +30,8 @@ Client           ModbusServer          RegisterStore    CommandSender    CLI/Tic
 ```
 
 ## Simulation Tick
-```
+
+```text
 Tick Start            SolarEngine        LoadEngine      InverterEngine    FaultEngine      BatteryEngine    EnergyTracker
   │                        │                  │                │                │                 │                │
   │── apply_commands() ──▶ │                  │                │                │                 │                │
@@ -57,7 +60,8 @@ Tick Start            SolarEngine        LoadEngine      InverterEngine    Fault
 ```
 
 ## Multi-Day Scenario
-```
+
+```text
 Day 1                                    Day 2
   │ 06:00  08:00  10:00  12:00  ...  22:00  │ 06:00  08:00  10:00  ...  22:00
   │  │      │      │      │           │      │  │      │      │           │
@@ -66,7 +70,8 @@ Day 1                                    Day 2
 ```
 
 ## Schedule Engine Interaction
-```
+
+```text
 Tick Start     ScheduleEngine (if registered)      InverterEngine
   │                    │                                  │
   │── update() ──────▶ │                                  │

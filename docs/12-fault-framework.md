@@ -1,6 +1,7 @@
 # Fault Framework
 
 Fault Categories
+
 - Communication
 - Electrical
 - Sensor
@@ -8,6 +9,7 @@ Fault Categories
 - Inverter
 
 Faults may be:
+
 - manual
 - scheduled
 - randomised

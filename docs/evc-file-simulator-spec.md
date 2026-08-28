@@ -36,7 +36,7 @@ wire.
 
 ## 2. System architecture
 
-```
+```text
                 ┌──────────────────────────┐
   JSON file ──▶ │  File loader task         │  every 30 s:
   (telemetry)   │  parse → validate → swap  │  read file, build EvcState,
@@ -115,7 +115,7 @@ There are two roles:
 
 Every packet, in either direction, has the same shape:
 
-```
+```text
 [ 7-byte header ][ function code (1 byte) ][ function-specific body ]
 ```
 
@@ -124,7 +124,7 @@ Every packet, in either direction, has the same shape:
 "Big-endian" means the **most significant byte comes first**. A 16-bit value
 (`u16`) occupies 2 bytes:
 
-```
+```text
 hi = (value >> 8) & 0xFF    lo = value & 0xFF
 ```
 
@@ -150,7 +150,7 @@ Worked conversions used throughout this section:
 
 ### 4.2 The 7-byte header (every packet starts with these 7 bytes)
 
-```
+```text
 byte offset  field           size  meaning
 0–1          Transaction ID   2     any value; the server copies it into the reply
 2–3          Protocol ID      2     ALWAYS 00 00 for standard Modbus TCP
@@ -167,7 +167,7 @@ So after the header, byte offset **7** is always the **function code**
 `Unit ID (1) + function code (1) + body`. The header is 7 bytes, so the
 **total packet size is always `6 + Length`**.
 
-```
+```text
 Length  = 1 (unit) + 1 (function) + body_byte_count
 Total   = 6 + Length
 ```
@@ -183,7 +183,7 @@ TCP gives you a stream of bytes, not discrete messages. One `send()` may arrive
 as several `recv()`s, and several sends may merge into one recv. Always frame
 using the Length field:
 
-```
+```text
 1. Buffer incoming bytes.
 2. Once you have >= 7 bytes: parse Transaction(2) Protocol(2) Length(2) Unit(1).
 3. total = 6 + Length.
@@ -204,7 +204,7 @@ Fetch `quantity` consecutive registers starting at `start_addr`.
 
 `start_addr = 0` → `00 00`, `quantity = 60` → `00 3C`.
 
-```
+```text
 00 01   Transaction ID  = 1
 00 00   Protocol ID     = 0 (Modbus)
 00 06   Length          = 6
@@ -213,13 +213,14 @@ Fetch `quantity` consecutive registers starting at `start_addr`.
 00 00   Start address   = 0
 00 3C   Quantity        = 60
 ```
+
 Wire bytes: `00 01 00 00 00 06 01 03 00 00 00 3C`
 
 #### Worked example B — "read HR 60 for 55 registers" (2nd standard read)
 
 `start_addr = 60` → `00 3C`, `quantity = 55` → `00 37`.
 
-```
+```text
 00 01 00 00 00 06 01 03 00 3C 00 37
 ```
 
@@ -235,7 +236,7 @@ where `byte_count = quantity * 2` and `Length = 3 + quantity*2`.
 
 Response for `quantity = 60`: `byte_count = 120 (0x78)`, `Length = 123 (0x007B)`.
 
-```
+```text
 00 01   Transaction ID
 00 00   Protocol ID
 00 7B   Length          = 123
@@ -244,6 +245,7 @@ Response for `quantity = 60`: `byte_count = 120 (0x78)`, `Length = 123 (0x007B)`
 78      Byte count      = 120
 <120 data bytes: HR[start], HR[start+1], ... each 2 bytes big-endian>
 ```
+
 Total response = `6 + 123 = 129` bytes.
 
 #### Decoding a register out of the response
@@ -251,7 +253,7 @@ Total response = `6 + 123 = 129` bytes.
 The data region begins at **byte offset 9** (7-byte header + function +
 byte_count). Register `start + i` lives at bytes `9 + 2*i` and `10 + 2*i`:
 
-```
+```text
 HR[start + i] = (buf[9 + 2*i] << 8) | buf[10 + 2*i]
 ```
 
@@ -273,7 +275,7 @@ the simulator does the same five steps:
 
 So a one-register read of HR 6 (qty 1) produces:
 
-```
+```text
 00 01 00 00 00 05 01 03 02 01 40
             ^^^^ Length=5   ^^ byte_count=2   ^^^^^ HR6=320
 ```
@@ -303,9 +305,10 @@ echo** of the request (same 12 bytes).
 
 `addr = 95` → `00 5F`, `value = 1` → `00 01`.
 
-```
+```text
 00 01 00 00 00 06 01 06 00 5F 00 01
 ```
+
 Expected reply: **identical** `00 01 00 00 00 06 01 06 00 5F 00 01`.
 
 #### Worked example D — "set charge current to 16 A"
@@ -313,7 +316,7 @@ Expected reply: **identical** `00 01 00 00 00 06 01 06 00 5F 00 01`.
 The charge-current write register (HR 91) stores deci-Amps, so `16.0 A × 10 =
 160` → `00 A0`, address `91` → `00 5B`.
 
-```
+```text
 00 01 00 00 00 06 01 06 00 5B 00 A0
 ```
 
@@ -331,15 +334,16 @@ Write year `2024` and month `6`: `addr = 97` → `00 61`, `quantity = 2` →
 `00 02`, `byte_count = 4` → `04`, values `2024` → `07 E8`, `6` → `00 06`.
 `Length = 7 + 4 = 11` → `00 0B`.
 
-```
+```text
 00 01 00 00 00 0B 01 10 00 61 00 02 04 07 E8 00 06
             ^^^^ Length=11                       ^^^^^^^^^^ 2 values
 ```
+
 Total = `6 + 11 = 17` bytes.
 
 **Response** = header + `function(10) + addr(2) + quantity(2)`. `Length = 6`.
 
-```
+```text
 00 01 00 00 00 06 01 10 00 61 00 02
 ```
 
@@ -354,7 +358,7 @@ When the request is invalid or unsupported, reply with an exception frame:
 **normal 7-byte header** (`Length = 3`) + `function | 0x80` + `exception code
 (1)`. Total = **9 bytes**.
 
-```
+```text
 00 01 00 00 00 03 01 83 02
                        ^^    0x03 | 0x80 = 0x83 (read with error)
                           ^^ exception code 0x02
@@ -379,7 +383,7 @@ When the request is invalid or unsupported, reply with an exception frame:
 
 ### 4.10 Minimal pseudocode (no Modbus library needed)
 
-```
+```text
 # ---- build a Read request ----
 def read_request(tid, uid, start, qty):
     return bytes([
@@ -431,53 +435,53 @@ in real units is multiplied by 10 before storage; "÷10 Amps" means raw÷10 = Am
 | HR | Name | R/W | Encoding / scale | JSON unit | Notes |
 |----|------|-----|------------------|-----------|-------|
 | 0 | `charging_state` | R | enum u16 | — | See §5.2 enum |
-| 1 | _reserved_ | R | 0 | — | |
+| 1 | *reserved* | R | 0 | — | |
 | 2 | `connection_status` | R | 0/1 | — | 0=Not Connected, 1=Connected |
-| 3 | _reserved_ | R | 0 | — | |
+| 3 | *reserved* | R | 0 | — | |
 | 4 | `error_code` | R | enum u16 | — | 0=Clear, 11=CP voltage abnormal, … |
-| 5 | _reserved_ | R | 0 | — | |
+| 5 | *reserved* | R | 0 | — | |
 | 6 | `current_l1` | R | ÷10 Amps (raw = A×10) | A | deci-Amps |
-| 7 | _reserved_ | R | 0 | — | |
+| 7 | *reserved* | R | 0 | — | |
 | 8 | `current_l2` | R | ÷10 Amps | A | |
-| 9 | _reserved_ | R | 0 | — | |
+| 9 | *reserved* | R | 0 | — | |
 | 10 | `current_l3` | R | ÷10 Amps | A | |
-| 11–12 | _reserved_ | R | 0 | — | |
+| 11–12 | *reserved* | R | 0 | — | |
 | 13 | `active_power` | R | Watts (raw = W) | W | total |
-| 14–16 | _reserved_ | R | 0 | — | |
+| 14–16 | *reserved* | R | 0 | — | |
 | 17 | `active_power_l1` | R | Watts | W | |
-| 18–19 | _reserved_ | R | 0 | — | |
+| 18–19 | *reserved* | R | 0 | — | |
 | 20 | `active_power_l2` | R | Watts | W | |
-| 21–23 | _reserved_ | R | 0 | — | |
+| 21–23 | *reserved* | R | 0 | — | |
 | 24 | `active_power_l3` | R | Watts | W | |
-| 25–28 | _reserved_ | R | 0 | — | |
+| 25–28 | *reserved* | R | 0 | — | |
 | 29 | `meter_energy` | R | ÷10 kWh (raw = kWh×10) | kWh | cumulative meter total |
-| 30–31 | _reserved_ | R | 0 | — | |
+| 30–31 | *reserved* | R | 0 | — | |
 | 32 | `evse_max_current` | R | Amps (raw = A) | A | hardware max, e.g. 32 |
-| 33 | _reserved_ | R | 0 | — | |
+| 33 | *reserved* | R | 0 | — | |
 | 34 | `evse_min_current` | R | Amps | A | hardware min, e.g. 6 |
-| 35 | _reserved_ | R | 0 | — | |
+| 35 | *reserved* | R | 0 | — | |
 | 36 | `charge_limit` | R | ÷10 Amps (raw = A×10) | A | configured charge current |
-| 37 | _reserved_ | R | 0 | — | |
+| 37 | *reserved* | R | 0 | — | |
 | 38–68 | `serial_number` | R | ASCII, **one char per register** (31 chars) | string | stop decoding at first 0x00 |
-| 69–71 | _reserved_ | R | 0 | — | |
+| 69–71 | *reserved* | R | 0 | — | |
 | 72 | `charge_session_energy` | R | ÷10 kWh (raw = kWh×10) | kWh | session total (see §9 limits) |
-| 73–78 | _reserved_ | R | 0 | — | |
+| 73–78 | *reserved* | R | 0 | — | |
 | 79 | `charge_session_duration` | R | seconds, **low 16 bits** (`& 0xFFFF`) | s | wraps at 65535 s (see §9) |
-| 80–90 | _reserved_ | R | 0 | — | |
+| 80–90 | *reserved* | R | 0 | — | |
 | 91 | `charge_current_limit` | **W** | deci-Amps (raw = A×10) | A | **write target**; clamp ≥60 (6.0 A) |
-| 92 | _reserved_ | R/W | 0 | — | |
+| 92 | *reserved* | R/W | 0 | — | |
 | 93 | `plug_and_go` | R/W | 0=enabled, 1=disabled | bool | see §5.3 |
 | 94 | `charge_control` | R | enum u16 (0/1/2) | — | what the charger reports |
 | 95 | `charge_control` (write) | **W** | enum u16 (0/1/2) | — | **write target** (see §5.4) |
-| 96 | _reserved_ | R/W | 0 | — | |
+| 96 | *reserved* | R/W | 0 | — | |
 | 97–102 | `system_time` | W | ignored | — | client clock writes; server discards |
-| 103–108 | _reserved_ | R/W | 0 | — | |
+| 103–108 | *reserved* | R/W | 0 | — | |
 | 109 | `voltage_l1` | R | ÷10 V (raw = V×10) | V | |
-| 110 | _reserved_ | R | 0 | — | |
+| 110 | *reserved* | R | 0 | — | |
 | 111 | `voltage_l2` | R | ÷10 V | V | |
-| 112 | _reserved_ | R | 0 | — | |
+| 112 | *reserved* | R | 0 | — | |
 | 113 | `voltage_l3` | R | ÷10 V | V | |
-| 114 | _reserved_ | R | 0 | — | |
+| 114 | *reserved* | R | 0 | — | |
 
 ### 5.1 Critical read/write asymmetries (do not get these wrong)
 
@@ -494,7 +498,7 @@ These are **deliberate** because that is how GivTCP/the real charger behave:
 
 ### 5.2 `charging_state` enum (HR 0)
 
-```
+```text
 0  = Unknown
 1  = Idle
 2  = Connected
@@ -521,7 +525,7 @@ JSON boolean `plug_and_go_enabled`:
 
 ### 5.4 `charge_control` (HR 94 read / HR 95 write)
 
-```
+```text
 0 = Ready
 1 = Start
 2 = Stop
@@ -595,7 +599,7 @@ friendly fields, or for test fixtures.
 
 What a client reading HR 0–114 would then observe (selected):
 
-```
+```text
 HR 0  = 4       (Charging)
 HR 2  = 1       (Connected)
 HR 6  = 320     (32.0 A)
@@ -771,10 +775,12 @@ contains a known-good EVC Modbus server and a serialisable state struct:
 
 1. Stop running `EvcEngine` (the physics state machine) against `state.evc`.
 2. Add a loader task that, every 30 s:
+
    ```rust
    let parsed: EvcState = serde_json::from_slice(&fs::read(&path)?)?;
    *state.write().await = parsed;   // atomic swap of the whole struct
    ```
+
    using a `watch`/`notify`-on-mtime optimisation if desired.
 3. Keep `run_evc_modbus_server(evc_state, port)` exactly as is — it already reads
    from the shared `Arc<Mutex<EvcState>>` on every request, so it will

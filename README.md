@@ -115,6 +115,7 @@ Choose from 12 supported models — Gen 1 Hybrid, Gen3 Hybrid (5/8/10 kW), AC Co
 
 **Battery Modules**
 Pick 1 to 3 modules. For each module:
+
 - **Capacity** — select from standard GivEnergy sizes: 2.6, 5.2, 7.0, 8.2, 9.5, 12.8, 16.0, 19.0 kWh.
 - **SOH (State of Health)** — drag the slider from 50% to 100%. This reduces effective capacity: a 9.5 kWh battery at 80% SOH behaves as 7.6 kWh. The nominal (nameplate) capacity is still shown for reference.
 
@@ -123,6 +124,7 @@ Total wattage of your PV array. If you set a PV2 peak wattage, the simulator spl
 
 **Load Profile**
 Select a household consumption pattern:
+
 - **Minimal** — low baseline around 300W
 - **Family** — morning peak, afternoon dip, evening peak around 3 kW
 - **EV** — Family profile plus overnight EV charging
@@ -146,6 +148,7 @@ Shows live power flowing between Solar, Battery, Grid, and Load. Arrows move in 
 
 **Battery Modules Panel**
 One card per battery module, showing:
+
 - **SOC %** — state of charge, colour-coded green (>50%), yellow (20–50%), red (<20%)
 - **SOC Gauge** — horizontal bar, live updating
 - **Set SOC** — drag the range slider to manually set the battery charge level. The label updates as you drag.
@@ -160,6 +163,7 @@ A scrolling line chart with four traces: Solar (yellow), Load (orange), Battery 
 
 **Cumulative kWh Cards**
 Five cards showing totals since the simulation started:
+
 - Solar generated
 - Load consumed
 - Grid imported / exported
@@ -209,13 +213,16 @@ Click **Clear** next to each fault button to resolve it. The system recovers aut
 The simulator speaks the real GivEnergy Modbus protocol — not standard Modbus TCP. Any app that connects to a GivEnergy Wi-Fi dongle can connect to the simulator instead.
 
 1. Start the CLI with the Modbus server enabled:
+
    ```bash
    cargo run --bin sim-api -- run examples/basic_day.yaml --modbus 127.0.0.1:5020
    ```
+
 2. Point your GivEnergy client app at `127.0.0.1:5020`.
 3. The client reads live registers (SOC, power, voltage, energy totals) and writes configuration (mode, schedules, SOC limits) just like a real inverter.
 
 Protocol details:
+
 - **Read Input Registers** (fn 0x04, slave 0x32) — live readings
 - **Read Holding Registers** (fn 0x03, slave 0x32) — configuration
 - **Write Single Register** (fn 0x06, slave 0x11) — write commands that dispatch to the simulation engine
@@ -248,7 +255,7 @@ Each time entry can set `load`, `solar`, `mode`, `weather`, `fault`, `clear_faul
 
 ### Available Assertions
 
-```
+```text
 soc_gt / soc_lt          Battery SOC above/below a percentage
 solar_gt / solar_lt      Solar generation above/below watts
 grid_connected           Grid connected (1) or disconnected (0)
@@ -280,7 +287,7 @@ With `--output <dir>`:
 
 ### CLI Reference
 
-```
+```text
 giv-sim run <scenario.yaml> [options]
 
   --date YYYY-MM-DD       Simulation start date (default: today)
@@ -362,7 +369,7 @@ Power is distributed evenly across modules. The inverter's battery power limit c
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │  Tauri GUI (sim-tauri) / Headless CLI (sim-api)        │
 ├─────────────────────────────────────────────────────────┤
@@ -377,7 +384,7 @@ Power is distributed evenly across modules. The inverter's battery power limit c
 
 The engine runs a deterministic tick loop. Each tick advances the simulation clock and processes all device models in a fixed order:
 
-```
+```text
 Schedule → Solar → Load → Inverter → Faults → Battery → Energy Tracker
 ```
 
@@ -395,7 +402,7 @@ Register map covers:
 
 ## Project Structure
 
-```
+```text
 crates/
   sim-models/     — DeviceModel trait, PlantState, all sub-state types
   sim-core/       — SimulationEngine, Command enum, device model implementations

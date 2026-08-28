@@ -33,7 +33,7 @@ So: **`<gateway_ip>:8899`** is the Gateway, **`<aio1_ip>:8899`** is AIO #1, **`<
 
 ### 1.3 The three real topologies
 
-```
+```text
 TOPOLOGY A — Single AIO + Gateway (most common)           TOPOLOGY B — Parallel AIOs + Gateway
                                                             (2-3 AIOs, up to 18kW / 40.5kWh)
 
@@ -62,7 +62,7 @@ with its own IP. The comms cable is installer-wiring, invisible to your Modbus c
 
 ### 1.4 What connects to what — the connection decision tree
 
-```
+```text
 Do you only need the system-level view (grid, PV, load, aggregate battery,
 energy totals, power flow)?
   └─ YES → connect to the GATEWAY only (<gw_ip>:8899).
@@ -81,6 +81,7 @@ Do you also need per-AIO battery cell voltages / temperatures / per-module detai
 > the individual AIO inverter data treated for information only."*
 
 Translation for your client:
+
 - **Control writes (charge/discharge enable, SOC target, slots) → send to the GATEWAY only.** It is the authoritative control endpoint. Writes to child AIOs are at best ignored, at worst desync the parallel group.
 - **Reads → Gateway always; AIOs only if you want their per-module detail.**
 
@@ -326,6 +327,7 @@ Gateway plays no role in this connection.
 From the gateway's instantaneous readings (all converted to kW):
 
 **Inputs:**
+
 - `pv` ← `p_pv` (IR 1617), ≥ 0
 - `grid` ← derived from `i_grid`/`p_ac1`: **+ = import, − = export**
 - `battery` ← `p_aio_total` (IR 1702): **+ = discharging, − = charging**
@@ -391,6 +393,7 @@ cargo run -p sim-api -- simulate --inverter Gateway12kW --batteries 1 --soc 65 \
 ```
 
 What you will observe (confirmed via live Modbus query):
+
 - DTC `0x7001`, serial **`GW2423G192`** → detection classifies Gateway ✓
 - Version `GA000009`, **IR(1603)=9 → V1** ✓
 - `parallel_aio_num = 1`, `aio1_soc` tracks the battery, `aio2/aio3` = 0 ✓
@@ -400,6 +403,7 @@ What you will observe (confirmed via live Modbus query):
 - `p_load` excludes the (unmodelled) EV charger ✓
 
 **Known simulator limitations (code defensively against these):**
+
 - **Topology B (parallel AIOs) is NOT modelled** — always single-AIO. The simulator runs one plant = one gateway + one implicit AIO. To test a multi-AIO client you'd run multiple sim instances on different ports and treat them as separate IPs.
 - **No direct AIO connection** in this simulator — the single-AIO gateway projection *is* the whole plant; there's no separate AIO device to connect to. (A direct-AIO-connection code path can only be tested against real hardware or a separate AIO sim instance.)
 - **V2 firmware variant not emitted** (always V1).

@@ -4,6 +4,7 @@ Scenarios are YAML files describing time-stamped events and assertions.
 Used by the CLI (`giv-sim run`) and Tauri GUI.
 
 ## Format
+
 ```yaml
 name: Scenario Name         # optional, defaults to "unnamed"
 days: 2                     # optional, defaults to 1
@@ -21,6 +22,7 @@ HH:MM:                      # event time (24-hour)
 ```
 
 ## Supported Event Fields
+
 | Field | Type | Description |
 |---|---|---|
 | `solar` | float | Override PV generation (watts) |
@@ -33,6 +35,7 @@ HH:MM:                      # event time (24-hour)
 | `expect` | map | Assertion conditions to check after event |
 
 ## Assertions
+
 | Assertion | Type | Description |
 |---|---|---|
 | `soc_gt` | float | Aggregate SOC must be greater than this |
@@ -51,10 +54,12 @@ HH:MM:                      # event time (24-hour)
 | `load_kwh_gt` | float | Cumulative load consumption must be greater than this |
 
 ## Multi-day Scenarios
+
 Set `days: N` (default 1). Events repeat daily with a date offset.
 Day labels in assertion output: `"HH:MM (day N)"`.
 
 ## Example: Two-Day Scenario
+
 ```yaml
 name: two day clear
 days: 2
@@ -70,6 +75,7 @@ days: 2
 ```
 
 ## Complete Example Files
+
 | File | Description |
 |---|---|
 | `examples/basic_day.yaml` | Clear summer day with family load |

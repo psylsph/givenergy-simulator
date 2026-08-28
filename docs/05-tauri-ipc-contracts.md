@@ -1,6 +1,7 @@
 # Tauri IPC Contracts
 
 ## Status
+
 ✅ All 10 commands and 4 events implemented in `crates/sim-tauri/`.
 
 ## Commands
@@ -60,7 +61,7 @@ interface PlantStateDto {
 The Tauri app uses `lib.rs` as the entry point with a separate `commands` module
 (necessary to avoid a Tauri proc-macro namespace collision on rustc 1.95+).
 
-```
+```text
 main.rs → sim_tauri_lib::run()
   → tauri::Builder
     → AppState (shared state: engine, register_store, recording, running, schedule)

@@ -1,12 +1,15 @@
 # Master Architecture
 
 ## Vision
+
 A hardware-faithful digital twin of a GivEnergy installation.
 
 ## Status
+
 All 4 phases complete. 82 unit tests, 5 regression scenarios. 10 workspace crates.
 
 ## Architectural Principles
+
 1. **Simulation state is authoritative** — PlantState is the single source of truth.
 2. **Register banks are projections of state** — Modbus registers are read from PlantState each tick.
 3. **Deterministic execution** — Same inputs always produce identical outputs.
@@ -14,7 +17,8 @@ All 4 phases complete. 82 unit tests, 5 regression scenarios. 10 workspace crate
 5. **Device models are pluggable** — Each device implements `DeviceModel: Send`, called in registration order.
 
 ## Runtime Layers
-```
+
+```text
 Tauri GUI (sim-tauri) / Headless CLI (sim-api)
     → Scenario Parser (sim-scenarios)
     → SimulationEngine (sim-core)
@@ -25,6 +29,7 @@ Tauri GUI (sim-tauri) / Headless CLI (sim-api)
 ```
 
 ## Major Components
+
 - **PlantState** — Simulation state with `PlantConfig`, `EnergyTotals`, multi-battery support
 - **SolarEngine** — PV generation with latitude/day-of-year/weather model
 - **LoadEngine** — Household load with 4 built-in profiles + custom time-series
@@ -38,5 +43,6 @@ Tauri GUI (sim-tauri) / Headless CLI (sim-api)
 - **ScenarioEngine** — YAML DSL parser with time-stamped events and assertion checking
 
 ## Device Update Order (critical)
+
 Solar → Load → Inverter → Faults → Battery → EnergyTracker
 (With ScheduleEngine inserted before Solar when schedules are active.)

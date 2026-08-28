@@ -16,7 +16,7 @@ PV string." Instead think: **a hub with a built-in energy meter that measures
 the whole AC system and reports an aggregate view of the All-in-One (AIO)
 unit(s) behind it.**
 
-```
+```text
             ┌─────────────────────────────────────────┐
    GRID ───▶│              GATEWAY (0x7001)           │─── PV (metered)
             │  • built-in energy meter (grid/PV/load)  │
@@ -63,7 +63,7 @@ treat the **serial prefix as authoritative**:
 
 **Recommended detection flow:**
 
-```
+```text
 read HR(0–59)
 decode serial from HR(13–17)
 if serial.startswith("GW"):
@@ -87,6 +87,7 @@ The IR 1600–1859 bank decomposes into six logical groups. Map each to a UI
 region. Addresses below are V1; see §4 for V1/V2 differences.
 
 ### Group A — Identity & state (IR 1600–1631) → header / status badge
+
 | Field | Regs | For display |
 |---|---|---|
 | `software_version` | 1600–1603 | Firmware string (`GA000009`), shown in device header |
@@ -95,6 +96,7 @@ region. Addresses below are V1; see §4 for V1/V2 differences.
 | `gateway_fault_codes` | 1622–1623 | Fault badge / list (bitmask → names). Empty = healthy. |
 
 ### Group B — Instantaneous power (IR 1608–1619) → the live power-flow diagram
+
 | Field | Reg | Units | Sign | Display meaning |
 |---|---|---|---|---|
 | `v_grid` | 1608 | V (÷10) | — | Grid voltage gauge |
@@ -108,6 +110,7 @@ region. Addresses below are V1; see §4 for V1/V2 differences.
 | `p_liberty` | 1619 | W | signed | Smart/Liberty load (often 0 / unmodelled) |
 
 ### Group C — AIO stack summary (IR 1700–1704) → battery/inverter summary card
+
 | Field | Reg | For display |
 |---|---|---|
 | `parallel_aio_num` | 1700 | "1 AIO" / "2 AIOs" |
@@ -117,6 +120,7 @@ region. Addresses below are V1; see §4 for V1/V2 differences.
 | `battery_firmware_version` | 1704 | Info-only |
 
 ### Group D — Per-AIO detail (IR 1705–1713, 1750–1758, 1816–1818, 1831–1849) → expandable per-inverter list
+
 For a single-AIO install (the common case), only AIO1 is populated; AIO2/AIO3
 read zero. For each AIO `n` (1–3) you have: daily charge/discharge, lifetime
 charge/discharge, inverter power, and a serial number. Display this as an
@@ -127,6 +131,7 @@ expandable list — most installs show one row.
 | Address (V1) | 1705/1708/1711 | 1706–7/1709–10/1712–13 | 1750/1753/1756 | 1751–2/1754–5/1757–8 | 1816/1817/1818 | 1831–5/1838–42/1845–49 |
 
 ### Group E — Battery aggregate + per-AIO SOC (IR 1795–1803) → battery gauge
+
 | Field | Regs | For display |
 |---|---|---|
 | `e_battery_charge_today` / `_total` | 1795 / 1796–1797 | Battery charge energy |
@@ -138,6 +143,7 @@ expandable list — most installs show one row.
 > energy. Don't expect cell-level telemetry here.
 
 ### Group F — Energy totals (IR 1640–1657) → the energy bar charts
+
 Daily counters (÷10 kWh) and lifetime totals (`uint32`, ÷10 kWh). Six flows:
 
 | Flow | Today | Lifetime (V1 regs) |
@@ -171,6 +177,7 @@ is_v2 = (ir1603 is not None) and (ir1603 >= 10)
 ```
 
 Then for every `uint32` total:
+
 ```python
 def u32(hi_reg, lo_reg, v2=False):
     return (lo_reg << 16 | hi_reg) if v2 else (hi_reg << 16 | lo_reg)
@@ -187,6 +194,7 @@ The headline "what is the system doing" visual. From the gateway's instantaneous
 readings (all in kW; convert W→kW):
 
 **Inputs:**
+
 - `pv` ← `p_pv` (IR 1617), **always ≥ 0**
 - `grid` ← derived: **+ = import, − = export** (from `i_grid` sign or net power)
 - `battery` ← `p_aio_total` (IR 1702), **+ = discharging, − = charging**
@@ -207,7 +215,7 @@ readings (all in kW; convert W→kW):
 
 The stateless edge decomposition (solar prioritised) for the Sankey-style flow:
 
-```
+```text
 solar_to_batt   = min(pv, -battery if charging else 0)
 grid_to_batt    = min(grid_import, charge_remaining)
 solar_to_grid   = min(pv - solar_to_batt, grid_export)
@@ -283,6 +291,7 @@ cargo run -p sim-api -- simulate --inverter Gateway12kW --batteries 1 --soc 65 \
 ```
 
 What you will observe (confirmed via live Modbus query):
+
 - DTC `0x7001`, serial **`GW2423G192`** → detection classifies Gateway ✓
 - Version `GA000009`, **IR(1603)=9 → V1** ✓
 - `parallel_aio_num = 1`, `aio1_soc` tracks the battery, `aio2/aio3` = 0 ✓
@@ -292,6 +301,7 @@ What you will observe (confirmed via live Modbus query):
 - `p_load` excludes the (unmodelled) EV charger ✓
 
 **Known simulator limitations to code defensively against:**
+
 - V2 firmware variant is **not** emitted (always V1). Don't assume you'll ever
   see `IR(1603) >= 10` here — but your client must still handle it.
 - Daily and lifetime energy registers read identically (no midnight reset).

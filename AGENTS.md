@@ -8,7 +8,30 @@ This file captures project conventions, gotchas, and workflow rules for AI codin
 
 - `cargo fmt --all -- --check` — must be clean (no diff).
 - `cargo clippy --all-targets` — must produce **zero** warnings.
-- `cargo test` — must be green. The suite is fast (~3s, 405 tests). Don't move on without green tests.
+- `cargo test` — must be green. The suite is fast (~3s, 517 tests). Don't move on without green tests.
+
+## Test-Driven Development (TDD)
+
+**Always write the test first.** Every change — bug fix, new feature, new branch in existing
+logic, new register, new command — starts with a failing test, then the implementation that
+makes it pass. Never write code and "add tests later"; tests are part of the change.
+
+1. **Red** — write a test that captures the desired behaviour and watch it fail (this proves
+   the test actually exercises the change).
+2. **Green** — write the minimal implementation that makes the test pass.
+3. **Refactor** — clean up with tests green; re-run `cargo test` after each step.
+
+Practical rules:
+
+- A bug fix **must** include a regression test that fails on the old code and passes on the
+  new code (see the island-mode reconciliation review for an example of verifying this).
+- New behaviour without a test is an incomplete change — do not commit it.
+- Cover the edge cases: boundary values, zero/idle states, midnight/wrap-around windows,
+  empty collections, and failure paths.
+- Where a change touches multiple layers (model, register store, DTO, physics, persistence),
+  each layer gets coverage — see the 0.17.5 release notes for the expected pattern.
+- Keep tests fast and deterministic: no real time, no network, no sleeps. The suite must
+  stay in the ~3s range.
 
 ## External Communication
 
@@ -18,7 +41,7 @@ specific action.** Draft the proposed response or action locally and ask first.
 
 ## Workspace
 
-```
+```text
 crates/
   sim-models/    — DeviceModel trait, PlantState (with solar_override/load_override), all sub-state types
   sim-core/      — SimulationEngine, Command enum (29 variants), all device model implementations
@@ -31,7 +54,7 @@ crates/
   sim-api/       — Headless CLI binary (`giv-sim run`, `giv-sim replay`)
   sim-tauri/     — Tauri v2 desktop GUI (30 IPC commands, vanilla JS frontend)
 ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 1420)
-```
+```text
 
 ## Version
 
@@ -42,22 +65,22 @@ mis-identifications found by cross-referencing the GivEnergy
 three-phase/HV/AC-coupled flags) is centralized in `sim-models`; all other
 crates + the JS frontend delegate to it.
 
-* **0x81xx** reclassified single-phase "AIO" → three-phase HV Gen3 hybrids
+- **0x81xx** reclassified single-phase "AIO" → three-phase HV Gen3 hybrids
   (`AIO6/8/10kW` → `Gen3HvHybrid6/8/10kW`, `GIV-HY-10.0-G3-HV`). Now serves
   the HR 1000-1124 / IR 1000-1413 three-phase banks, 76.8 V nominal battery,
   3 CT clamps, three-phase schedule + export-limit registers.
-* **0x82xx** (`AIOHybrid*`), **0x4101** (`AIOCommercial` →
+- **0x82xx** (`AIOHybrid*`), **0x4101** (`AIOCommercial` →
   `CommercialAllInOne30kW`, 30 kW), **0x6001** (`ACThreePhase` →
   `ACCoupledThreePhase6kW`) likewise reclassified three-phase.
-* **0x2102** corrected: was `Gen3Hybrid10kW` @ 10 kW — actually **4.6 kW**
+- **0x2102** corrected: was `Gen3Hybrid10kW` @ 10 kW — actually **4.6 kW**
   ("ALPS HY6.0k-GL/PZ8000 4.6KW"); renamed `Polar4600` (4600 W). No
   single-phase 10 kW DTC exists. `Gen3Hybrid8kW` → `Polar8kW` (0x2106, 8 kW);
   Gen3 Plus relabelled to ratings (`Gen3Plus6kW` 0x2201 → `Gen3Plus5kW`,
   `Gen3Plus6kW2` 0x2204 → `Gen3Plus6kW`).
-* `AllInOne` (0x8002) limit 6000 W → 3600 W (`_DTC_BATPOWER`).
-* `GridPortPowerFamily` (Rust + JS) + `meter_slaves_from_store` reclassified
+- `AllInOne` (0x8002) limit 6000 W → 3600 W (`_DTC_BATPOWER`).
+- `GridPortPowerFamily` (Rust + JS) + `meter_slaves_from_store` reclassified
   via the central predicates.
-* Documented follow-up: upstream renamed HR 1063 `p_export_limit` (watts)
+- Documented follow-up: upstream renamed HR 1063 `p_export_limit` (watts)
   → `export_power_rate` (0–100 %); simulator keeps watts×10 for now.
 
 **0.17.1** — Timed Discharge (HR 318-320 battery-pause slot) GUI fixes.
@@ -102,11 +125,11 @@ new `Command::SetInverterTemperature(Option<f64>)`. When `Some(t)` the
 thermal model is skipped and `temperature_celsius` is held at `t` (clamped to
 the model's [-10, 80] °C range); `None` restores the model. Exposed via:
 
-* **GUI** — a new "Inv Temp °C" Set/Clear row in the sidebar (mirrors the
+- **GUI** — a new "Inv Temp °C" Set/Clear row in the sidebar (mirrors the
   ARM/DSP firmware overrides), the live temperature readout beside it, and a
   `🌡️` badge in the override indicator banner. New Tauri command
   `set_inverter_temperature` + REST bridge route (`POST /api/.../set_inverter_temperature`).
-* **CLI** — `giv-sim simulate --inverter-temperature <°C>` (omit for the
+- **CLI** — `giv-sim simulate --inverter-temperature <°C>` (omit for the
   thermal model).
 
 Not wired as a Modbus write: IR 41 (`ge_ir_inverter_temperature`) is
@@ -133,8 +156,10 @@ and persistence layers.
 ## Common Gotchas
 
 ### GivEnergy Modbus protocol is NOT standard Modbus TCP
+
 The Wi-Fi dongle wraps all frames in a proprietary envelope:
-```
+
+```text
 Bytes 0-1:   Transaction ID      — fixed 0x5959
 Bytes 2-3:   Protocol ID         — fixed 0x0001
 Bytes 4-5:   Length               — bytes after this field
@@ -147,19 +172,25 @@ Byte  27:    Inner function code  — 0x03/0x04 (read), 0x06 (write)
 Bytes 28+:   Inner payload
 Last 2 bytes: CRC-16/Modbus over bytes 26+
 ```
+
 Reference: `givenergy-local` project's `src-tauri/src/modbus/framer.rs`.
 
 ### Read response payload format
+
 The server must prepend the 10-byte inverter serial to the response payload:
-```
+
+```text
 serial(10) + base_register(2) + register_count(2) + data(N×2)
-```
+```text
+
 The client parses this as: skip 10 bytes, read start/count, then register values.
 Write responses follow the same pattern: `serial(10) + register(2) + value(2)`.
 
 ### Input vs Holding register spaces
+
 Input registers (fn 0x04) and holding registers (fn 0x03) share addresses 0-119.
 They are stored in separate internal ranges:
+
 - Input: key = address (0-9999)
 - Holding: key = address + 10000 (10000-19999)
 Always use `store.read_by_space(addr, RegisterSpace::Input)` for IR and
@@ -167,24 +198,28 @@ Always use `store.read_by_space(addr, RegisterSpace::Input)` for IR and
 `store.read(addr)` tries holding first, then input — use only for backward-compat.
 
 ### Battery power sign convention
+
 Internal convention: `total_battery_power_kw` positive = charging.
 GivEnergy wire convention: raw positive = discharging.
 The register projection **negates** the value for IR 52 (battery power) and IR 51 (battery current).
 The client decodes: `battery_power = -signed(raw)`, converting back to positive=charging.
 
 ### Battery protocol: LV packs vs HV cluster
+
 There are **two distinct** battery wire protocols. Which one a client uses is decided
 by the inverter DTC (family 4 = three-phase, 8 = All-in-One → HV; families 2/3 → LV).
 The simulator serves **both** unconditionally; the client only probes the path that
 matches the inverter's DTC.
 
 **LV BMS protocol** (single packs, e.g. Gen1/Gen2/Gen3 hybrids):
+
 - Slave `0x32`–`0x37`: one slave per battery module, IR 60–119 each.
 - `project_battery_bms(battery, idx)` — 16 cells, validity via SOC.
 
 **HV cluster protocol** (GIV-BAT-HV modular stacks, ThreePhase/AllInOne):
 Discovered via a 3-step chain (matches `givenergy-modbus` client.py and giv_tcp
 commands.refresh_plant_data):
+
 1. Slave `0xA0` (BMS), IR(60,5) → IR(61) = number of BCUs.
 2. Slave `0x70+i` (BCU), IR(60,60) → cluster data; IR(64) = modules; validity via
    `pack_software_version` (IR 60–63) decoding to a non-blank string (gateway_version
@@ -192,12 +227,13 @@ commands.refresh_plant_data):
 3. Slave `0x50+m` (BMU), IR(60,60) → per-module 24 cells + serial; validity via
    `serial_number` (IR 114–118) decoding to a non-blank string.
 
-**Per-module SoC is NOT exposed on the HV wire.** BMU data is cells (IR 60–83, milli V)
-+ temperatures (IR 90–113, deci °C) + serial (IR 114–118) only — confirmed against both
-`givenergy-modbus` (model/hv_bcu.py `Bmu`) and giv_tcp (model/hvbmu.py, read.py). SoC is
-**cluster-wide only**, packed at BCU IR(80) as `duint8`: high byte = `battery_soc_max`,
-low byte = `battery_soc_min` across the stack. `project_battery_bmu` correctly omits
-SoC; `project_battery_bcu` emits IR(80) as the sole SoC signal.
+**Per-module SoC is NOT exposed on the HV wire.** BMU data is cells
+(IR 60–83, milli V) + temperatures (IR 90–113, deci °C) + serial (IR 114–118) only —
+confirmed against both `givenergy-modbus` (model/hv_bcu.py `Bmu`) and giv_tcp
+(model/hvbmu.py, read.py). SoC is **cluster-wide only**, packed at BCU IR(80) as
+`duint8`: high byte = `battery_soc_max`, low byte = `battery_soc_min` across the
+stack. `project_battery_bmu` correctly omits SoC; `project_battery_bcu` emits
+IR(80) as the sole SoC signal.
 
 Single-stack model: **1 BMS → 1 BCU → N BMUs** (N = `batteries.len()`), matching the
 GIV-BAT-HV datasheet systems (1–6 × GIV-BAT-3.4-HV). A 5-module stack (GIV-BAT-17.0-HV)
@@ -208,11 +244,13 @@ If battery data comes back empty for an HV inverter, the cluster path (not the L
 `0x32` path) is what needs serving — this was the original gap.
 
 ### State sync pattern
+
 `PlantState.battery` (singular) is a convenience field for `batteries[0]`.
 Setting `state.battery` directly requires calling `state.sync_vec_from_battery()`.
 Setting `state.batteries[i]` directly requires calling `state.sync_battery_from_vec()`.
 
 ### Energy totals are DAILY (midnight reset)
+
 `PlantState.energy_totals` buckets (solar/import/export/charge/discharge/load/ac_charge)
 are treated as **today** registers. `EnergyTracker` (last device in the update
 order) accumulates `power × dt` each tick and **zeros every bucket at the first
@@ -252,13 +290,16 @@ buckets and follow the midnight reset — converting those to true lifetime
 is a follow-up change.
 
 ### Device update order (critical)
-```
+
+```text
 Solar → Load → Inverter → Faults → Battery → EnergyTracker
 ```
+
 When schedules are active: `ScheduleEngine → Solar → ...`
 Never reorder this. BatteryEngine must see finalized power values.
 
 ### Manual overrides
+
 `PlantState.solar_override: Option<f64>` and `load_override: Option<f64>`.
 When `Some(w)`, the SolarEngine/LoadEngine uses the fixed value instead of computing.
 Set to `None` to restore engine control. Commands: `SetSolarOverride`, `SetLoadOverride`.
@@ -271,15 +312,18 @@ Command: `SetInverterTemperature`. GUI sidebar "Inv Temp" row + CLI
 `--inverter-temperature`. Not Modbus-writable (IR 41 is read-only).
 
 ### Solar override applies before night check
+
 Override is checked at the top of `SolarEngine::update()`, before the night-time zeroing.
 This means `solar_override = Some(3000)` works at midnight.
 
 ### Dual PV arrays
+
 When `PlantConfig.pv2_peak_watts > 0`, SolarEngine splits generation 45% PV1 / 55% PV2.
 Override also splits 45/55. `SolarState` has `pv1_w` and `pv2_w` (generation_w = total).
 PV2 voltage (IR 2) returns 350 V whenever `pv2_peak_watts > 0` so clients detect PV2.
 
 ### Inverter throughput caps
+
 All inverter types have `max_ac_watts` and `max_batt_w` limits defined in
 `crates/sim-tauri/src/commands.rs` (`max_batt_w` / `max_ac_watts` functions).
 Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery C-rate (0.7C continuous, realistic for LFP modules).
@@ -289,10 +333,11 @@ Battery charge/discharge in ALL modes is capped by both `inv_max_w` and battery 
 
 0x2001 is a **family code** shared by Gen1/Gen2/Gen3 hybrids. The actual
 generation is decided by HR(21) ARM firmware century (fw/100):
-  - century 2 → Gen1Hybrid (arm_fw 252)
-  - century 3 → Gen3Hybrid (arm_fw 318)
-  - century 8/9 → Gen2Hybrid (arm_fw 852)
-  - other centuries → Gen1Hybrid (default)
+
+- century 2 → Gen1Hybrid (arm_fw 252)
+- century 3 → Gen3Hybrid (arm_fw 318)
+- century 8/9 → Gen2Hybrid (arm_fw 852)
+- other centuries → Gen1Hybrid (default)
 
 | Inverter | DTC | AC max | Battery limit | ARM FW |
 |---|---|---|---|---|
@@ -355,14 +400,17 @@ residential All-in-One family (0x80xx) is single-phase HV (307 V nominal).
 Dropdown and INVERTER_PRESETS are ordered by DTC hex value ascending.
 
 ### SolarEngine reads weather from PlantState.weather (string)
+
 Weather is stored as a display string ("Clear", "PartlyCloudy", etc.), not as an enum field.
 Set `state.weather = "Overcast".to_string()` to change weather.
 
 ### Schedule slots use HHMM encoding, disabled = 60
+
 Charge/discharge slot registers use HHMM format (e.g. 1600 = 16:00, 630 = 06:30).
 Value 60 is the "disabled" sentinel (minutes > 59 is invalid).
 
 ### Timed Discharge = battery PAUSE window (HR 318-320), wraps midnight
+
 HR 318-320 is the **battery pause** register set (givenergy-modbus
 `battery_pause_mode` + single `battery_pause_slot_1` start/end). It is **one**
 slot — which is exactly why the portal gives "Timed Discharge" a single window
@@ -379,6 +427,7 @@ window set to the **complement/inverse** of the slot, which **wraps midnight**
 03:00-04:00, so the battery only discharges in that window.
 
 `BatteryEngine::update` must therefore honour both window shapes:
+
 - `start < end` (normal): pause when `hour ∈ [start, end)`
 - `start > end` (wrap-around): pause when `hour >= start || hour < end`
   (i.e. `[start, 24:00) ∪ [00:00, end)`)
@@ -392,41 +441,49 @@ command that preserves whichever fields weren't written this cycle (Tauri:
 must NOT clobber the start/end window.
 
 ### Time sync from Modbus writes (HR 35-40)
+
 Clients write year/month/day/hour/min/sec one register at a time.
 The accumulator (`pending_time_regs: [Option<u16>; 6]`) collects across drain cycles.
 When all 6 are present, a `SetSimulationTime` command is enqueued and the buffer resets.
 This applies in both Tauri (`Arc<Mutex<...>>`) and CLI (local variable).
 
 ### #[tauri::command] in lib targets
+
 Tauri v2 proc macros conflict with rustc 1.95+ in lib crates.
 All `#[tauri::command]` functions must live in a separate `mod commands {}` block.
 The main `lib.rs` only calls `generate_handler![commands::fn_a, commands::fn_b, ...]`.
 
 ### Tauri setup hook for async runtime
+
 `tokio::spawn()` panics before Tauri's runtime is active.
 Use `tauri::async_runtime::spawn()` inside the `.setup(|app| { ... })` hook.
 The `.setup()` closure needs `move` keyword to own captured variables.
 
 ### Edition 2024 / resolver 2
+
 Workspace uses `edition = "2024"` and `resolver = "2"`.
 The sim-tauri crate overrides to `edition = "2021"` for Tauri compatibility.
 Integer→float conversion is explicit: `SolarEngine::new(5000.0, 51.5)` not `new(5000, 51)`.
 
 ### Register snapshot uses u32 keys
+
 `RegisterStore::snapshot()` returns `HashMap<u32, u16>` (composite key).
 `snapshot_holding()` returns `HashMap<u16, u16>` (holding-only, backward compat).
 Tests accessing snapshot must use `10000u32 + address` for holding registers.
 
 ### Frontend querySelectorAll returns a STATIC NodeList
+
 Never use `querySelectorAll` in a loop that modifies the DOM — it's not live.
 Use `while (container.children.length > count)` with `removeChild` instead.
 
 ### Gateway device simulation (single-AIO projection model)
+
 The Gateway (`Gateway12kW`, DTC `0x7001`) is an AC aggregation / backup-transfer hub,
 NOT an inverter. It is simulated as a **projection mode**: the existing `PlantState`
 models the child AIO's physics and `RegisterStore::project_gateway_bank()` derives
 gateway registers from the same state. Detection: `GW`-prefixed serial (HR 13-17).
 Serves IR 1600–1859 aggregation bank (V1 firmware variant `GA000009`). Key invariants:
+
 - **Firmware variant V1**: IR(1603)=9, uint32 totals hi-reg-first, AIO serials at IR 1831+.
 - **`p_load` excludes EV charger** — household-only, EVC tracked separately.
 - **Battery power sign** follows GE wire convention (+ = discharging).
@@ -435,14 +492,17 @@ Serves IR 1600–1859 aggregation bank (V1 firmware variant `GA000009`). Key inv
 Full authoritative map at `docs/gateway-register-reference.md`.
 
 ### Register map
+
 Input (IR 0-59) and Holding (HR 0-320) register definitions are in the source:
 `crates/sim-registers/src/register_defs.rs`. Key points:
+
 - IR 52 (battery power) and IR 51 (battery current) are **negated** per GE convention.
 - HR 0 holds device type (DTC). HR 35-40 = system time. HR 56-57 = discharge slot 1, HR 94-95 = charge slot 1 (all HHMM, 60 = disabled).
 - Gateway aggregation at IR 1600–1859 (served only for Gateway12kW).
 - Simulator-internal registers at HR 100-705 (inverter, battery, PV, grid, energy, config, schedules).
 
 ### Grid port max power output (per-family register)
+
 The wire register that carries the inverter's grid-port max power output
 **depends on the inverter family** — there is no single register that
 covers every model. The classification lives in
@@ -470,12 +530,14 @@ equivalent) — HR 102 → `SetExportLimit(value)`,
 HR 1063 → `SetExportLimit(value / 10.0)`, HR 2071 → `SetExportLimit(value)`.
 
 ### Inverter fault registers (bit conventions)
+
 Named faults project to different registers by inverter family, using bit tables from
 givenergy-modbus (`_inverter_fault_code` / `_inverter_fault_code2`) and giv_tcp.
 
 **Single-phase** (Gen1/2/3 Hybrid, Polar, Gen3Plus, AC-coupled, PV, EMS, AIO, Gateway child):
 register **HR(223)–HR(224)** (`inverter_errors`/`inverter_fault_messages`). IR(39)–IR(40)
 mirrors as raw hex (no name decoder). Key fault bits:
+
 | Fault | HR word bit | Decodes to |
 |-------|-------------|------------|
 | `grid_loss` | 7 | "No Utility" |
@@ -489,6 +551,7 @@ battery_over_temp → IR 57 charger_warning_code = 1.
 
 **Three-phase** (`ThreePhase*`, `ACCoupledThreePhase6kW`): **IR(1300)–IR(1307)**, eight 16-bit words.
 HR(223-224) stays 0. Key bits:
+
 | Fault | Word (IR) | bit | Decodes to |
 |-------|-----------|-----|------------|
 | `grid_loss` | 1301 | 0 | "No Grid connection" |
@@ -500,7 +563,7 @@ HR(223-224) stays 0. Key bits:
 ## Running Tests
 
 ```bash
-# Full suite (399 tests)
+# Full suite (517 tests)
 cargo test
 
 # Single crate
@@ -514,7 +577,7 @@ cargo test -p sim-modbus --test givenergy_protocol
 
 # With output
 cargo test -- --nocapture
-```
+```text
 
 ## Running the GUI
 
@@ -527,14 +590,16 @@ cd crates/sim-tauri && cargo tauri dev
 
 ```bash
 cargo build && cargo test    # should complete in ~5s total
-```
+```text
 
 ## Persistence
+
 Save path: `~/.local/share/com.givenergy.simulator/plant_state.json`
 Format: `{ "plant": PlantState, "schedule": Option<Schedule> }`
 Battery sizes: `BATTERY_SIZES = [2.6, 2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 12.8, 13.6, 16.0, 17.0, 19.0, 20.4]` (nearest-value matching). Up to 6 battery modules supported (LV packs at slave 0x32–0x37, or HV stacks).
 
 ## Network ports
+
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | 8899 | GivEnergy proprietary Modbus TCP (with envelope) | Inverter + battery + grid registers |
@@ -543,16 +608,19 @@ Battery sizes: `BATTERY_SIZES = [2.6, 2.6, 3.4, 5.2, 6.8, 7.0, 8.2, 9.5, 10.2, 1
 | 8001 | HTTP | Browser GUI — same frontend + REST bridge to all IPC commands (`GIVSIM_WEB_PORT` to override) |
 
 ### Dongle heartbeat
+
 The simulator acts as the dongle. It sends heartbeat requests (func 0x01, 8-byte
 frame `59 59 00 01 00 02 01 01`) every 3 minutes per TCP connection. The client
 must echo the frame back. After 3 unanswered heartbeats the connection is closed.
 
 ### EVC port
+
 Port 5020 is the default (non-privileged). The real GivEVC hardware
 uses port 502 (which requires root or `CAP_NET_BIND_SERVICE` on Linux).
 Set the port in the UI's EVC card, or set `GIVSIM_EVC_PORT=502` env var.
 
 ## Slot maps (per `givenergy-modbus` reference)
+
 | Inverter class | Charge slots (start,end) | Discharge slots (start,end) |
 |----------------|--------------------------|------------------------------|
 | GEN1/GEN2 (2-slot) | (94,95), (31,32) | (56,57), (44,45) |
@@ -560,15 +628,18 @@ Set the port in the UI's EVC card, or set `GIVSIM_EVC_PORT=502` env var.
 | EXTENDED/Gen3 (10-slot) | (94,95), **(243,244)**, (246,247), (249,250), (252,253), (255,256), (258,259), (261,262), (264,265), (267,268) | (56,57), (44,45), (276,277), ..., (297,298) |
 | THREE_PHASE | (1113,1114), (1115,1116), (246,247), ..., (267,268) | (1118,1119), (1120,1121), (276,277), ..., (297,298) |
 | EMS | (2053,2054), (2056,2057), (2059,2060) | (2044,2045), (2047,2048), (2050,2051) |
+
 Target SOC register follows each slot's end register (e.g. HR 248 for charge slot 3).
 
 ### Gen3 charge slot 2 register quirk
+
 Gen3 firmware (ARM FW century 3+) stores charge slot 2 at HR 243-244, NOT HR 31-32.
 HR 31-32 on Gen3 contains stale/garbage data. The `uses_gen3_extended_slots()` helper
 gates this: Gen1Hybrid/Gen2Hybrid → HR 31-32; all others → HR 243-244.
 The `project_schedule_for` method writes to the correct address based on inverter type.
 
 ## Battery control logic (from `giv_tcp` reference)
+
 Charge/discharge is gated by slot enable registers (HR 96 for charge, HR 59 for discharge)
 and the slot timer registers (start/end in HHMM, 60=disabled). `giv_tcp`'s `setChargeSlot`
 and `setDischargeSlot` write the start/end pair together in one function. `setEnableCharge`

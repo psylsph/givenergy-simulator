@@ -1,0 +1,19 @@
+// markdownlint config for this repository.
+// Rationale:
+// - MD013 (line length): the agent guide intentionally uses dense,
+//   unwrapped reference lines and wide register tables (some rows are
+//   400+ characters); wrapping them would hurt readability.
+// - MD060 (table column style): pipe padding varies across the reference
+//   tables; enforcing one padding style would reformat every table for
+//   no reader benefit.
+// - MD024 (siblings_only): changelog-style docs legitimately repeat
+//   "Added"/"Changed"/"Fixed" headings under each release section.
+// - MD033 (allowed_elements): the README uses HTML solely for the
+//   centred sponsor badge.
+// All other rules stay at their defaults.
+{
+  "MD013": false,
+  "MD060": false,
+  "MD024": { "siblings_only": true },
+  "MD033": { "allowed_elements": ["div", "a", "img"] }
+}

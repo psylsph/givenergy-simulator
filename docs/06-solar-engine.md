@@ -1,6 +1,7 @@
 # Solar Engine
 
 Inputs:
+
 - Latitude
 - Longitude
 - Date
@@ -10,6 +11,7 @@ Output:
 PV generation curve
 
 Weather Modifiers:
+
 - Clear
 - Partly Cloudy
 - Overcast

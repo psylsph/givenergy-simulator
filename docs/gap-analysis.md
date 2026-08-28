@@ -37,7 +37,7 @@
 | | InverterMode enum (5 variants) | **Done** | Normal, Eco, ForceCharge, ForceDischarge, ExportLimit |
 | | InverterState with mode, ac_power_w, export_limit_w, temperature_celsius | **Partial** | Uses ModeState (effective + source) instead of flat mode field — richer than design |
 | | BatteryState with all fields (soc, capacity, efficiency, thermal, aging) | **Done** | Plus voltage_v and current_a not in original design |
-| | Multi-battery support (1–3 modules) | **Done** | batteries: Vec<BatteryState> |
+| | Multi-battery support (1–3 modules) | **Done** | `batteries: Vec<BatteryState>` |
 | | Batch helpers: aggregate_soc, total_battery_capacity, etc. | **Done** | Plus max_aggregate_soc, min_aggregate_soc |
 | | Command enum (7 variants) | **Partial** | Code has 9 (extra: SetSolarOverride, SetLoadOverride, SetSimulationTime) |
 | | sync_battery_from_vec, sync_vec_from_battery, distribute_battery_power | **Done** | All present |
@@ -168,6 +168,7 @@
 ## Summary of Gaps
 
 ### Missing Features (design calls for, code doesn't deliver)
+
 1. **Scheduled fault triggers** (doc 12) — enum exists, no implementation
 2. **Randomised fault triggers** (doc 12) — enum + probability field exist, no implementation
 3. **comm_timeout fault effect** (doc 12) — defined but no-op
@@ -177,6 +178,7 @@
 7. **Longitude parameter in SolarEngine** (doc 06) — listed as input but not used
 
 ### Code Exceeds Design (implemented but not documented)
+
 1. **GE-native register sets** — ~60 additional registers (Input + Holding) for real GivEnergy compatibility
 2. **Battery BMS data** — IR 60-119 projection with multi-slave addressing (slaves 0x32–0x37)
 3. **183 tests** — docs claim 82
@@ -190,6 +192,7 @@
 11. **ModeState with ModeSource tracking** — User/Schedule/Fault source tracking
 
 ### Stale Documentation
+
 1. **Test counts** (docs 00, 14, 17) — 82 claimed, 183 actual
 2. **Register count** (docs 00, 01, 03, 17) — 45 claimed, ~100+ actual
 3. **Writable register count** (doc 17) — 5 claimed, 30+ actual

@@ -1,6 +1,7 @@
 # Register Catalogue Strategy
 
 ## Categories (7)
+
 | Category | Address Range | Example Registers |
 |---|---|---|
 | Inverter | 100–119 | mode, ac_power, export_limit, temperature, firmware_state |
@@ -12,6 +13,7 @@
 | Schedules | 700–719 | charge/discharge start/end, target SOCs |
 
 ## Register Definition
+
 ```rust
 pub struct RegisterDef {
     pub address: u16,
@@ -24,6 +26,7 @@ pub struct RegisterDef {
 ```
 
 ## State-to-Register Projection
+
 `RegisterStore::project_from_state()` maps `PlantState` fields → register values:
 
 1. Each match arm returns an `f64` **engineering value**
@@ -33,7 +36,9 @@ pub struct RegisterDef {
 Example: battery temperature (scaling_factor=0.1, engineering=37.5°C → raw=375)
 
 ## Writable Registers
+
 Register writes (via Modbus fn 0x06) are validated against `Access::ReadWrite`:
+
 - **100** (inverter_mode) → `Command::SetInverterMode`
 - **102** (export_limit) → `Command::SetExportLimit`
 - **210** (min_soc) → `Command::SetMinSoc`
@@ -43,4 +48,5 @@ Register writes (via Modbus fn 0x06) are validated against `Access::ReadWrite`:
 All other registers are ReadOnly. Write attempts return Modbus exception 0x02.
 
 ## Current Catalogue
+
 45 registers total. Full list in `crates/sim-registers/src/lib.rs::default_register_catalogue()`.

@@ -96,6 +96,7 @@ magnitude. Source: `dewet22/givenergy-modbus` `model/gateway.py`.
 | **GatewayV2** | `GA000010` and later | `IR(1603) >= 10` | **low register first**, then high (swapped) | aio1 @ IR(1841–1845) |
 
 **Selection rule** (verbatim from `select_gateway()`):
+
 ```python
 fw_raw = register_cache.get(IR(1603))
 if fw_raw is not None and fw_raw >= 10:
@@ -274,13 +275,15 @@ From `dewet22/givenergy-modbus` `model/register.py` (`Converter`). All multi-byt
 | `uint32(hi, lo)` | `(hi<<16) + lo` | energy totals — **hi/lo order is variant-dependent (§3)** |
 | `deci` | `v / 10` | V, A, kWh throughout the gateway bank |
 | `serial(r0..r4)` | concat big-endian bytes → Latin-1 string, strip `\0`, **upper-case** | serial numbers |
-| `gateway_version(r0,r1,r2,r3)` | prefix = latin1 decode of r0|r1 bytes (strip NUL); digits = decimal string of each byte of r2,r3 → e.g. `GA` + `000009` | firmware string |
+| `gateway_version(r0,r1,r2,r3)` | prefix = latin1 decode of r0\|r1 bytes (strip NUL); digits = decimal string of each byte of r2,r3 → e.g. `GA` + `000009` | firmware string |
 
 **`gateway_version` decode detail** (confirmed by `test_software_version_decoding`):
-```
+
+```text
 r0=0x4741 ('G','A'), r1=0x3030 ('0','0'), r2=0x0000, r3=9
 → prefix = "GA", digits = "00"+"00"+"09" = "GA000009"
 ```
+
 For V2: r3=10 → digits of byte `0x0A`=`10` → `"GA0000010"`.
 
 **Bounds checking.** Fields declare `min`/`max` (e.g. `v_grid` 0–500, `p_pv` ≤ 50000,
@@ -354,7 +357,7 @@ For a healthy simulator: IR(1622)=0, IR(1623)=0 → empty fault list.
 
 The gateway **sums** across its child AIO(s):
 
-```
+```text
 p_aio_total      (1702) = Σ p_aioN_inverter        (1816..1818)
 e_aio_charge_*            = Σ e_aioN_charge_*       (per-AIO regs)
 aio_state        (1703)   = aggregate battery State enum
@@ -379,12 +382,14 @@ instantaneous readings, the canonical decomposition (from `dewet22/givenergy-mod
 `docs/flow-state-spec.md`, signed off by both the cli and hass frontends) is:
 
 **Inputs (gateway equivalents):**
+
 - `pv` ← `p_pv` (IR 1617), ≥ 0
 - `grid` ← grid power; **+ = export, − = import** (derived from `i_grid`/`p_ac1`)
 - `battery` ← `p_aio_total` (IR 1702); **+ = discharge, − = charge**
 
 **Stateless decomposition** (`idle` threshold default 0.05 kW), solar prioritised:
-```
+
+```text
 solar_to_batt = min(solar_gen, batt_charge)
 grid_to_batt  = min(grid_import, batt_charge - solar_to_batt)
 solar_to_grid = min(solar_gen - solar_to_batt, grid_export)
@@ -394,6 +399,7 @@ batt_to_home  = batt_discharge - batt_to_grid
 grid_to_home  = grid_import - grid_to_batt
 home          = solar_to_home + batt_to_home + grid_to_home
 ```
+
 Residuals (`residual_charge`, `residual_export`) are **surfaced, never folded into an
 edge**; |residual| > 0.1 kW flags "sensors disagree". Hysteresis is a frontend concern
 (Schmitt 200 W on / 80 W off in hass); the core is stateless.
@@ -452,6 +458,7 @@ Derived from the above. This is the Phase 2 build checklist.
 ### Minimum-viable first cut (single-AIO Gateway)
 
 The dominant real topology (1 Gateway + 1 AIO — the case behind giv_tcp issues #364/#367):
+
 - 1 child AIO state, so `parallel_aio_num = parallel_aio_online_num = 1`, `aio2/aio3` regs
   read zero + error on totals (or simply zeroed with bounds-suppression tolerated).
 - `p_aio_total = p_aio1_inverter`, `aio_state` from the single AIO's battery.

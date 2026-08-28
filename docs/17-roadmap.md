@@ -10,6 +10,7 @@ All four phases have been implemented.
 | **4** | Full digital twin with Tauri GUI | ✅ Complete | Tauri v2 desktop app, 10 IPC commands, 4 events, real-time dashboard, scenario playback, CSV/JSONL export |
 
 ## Metrics
+
 | Metric | Value |
 |---|---|
 | Workspace crates | 10 |
@@ -24,7 +25,8 @@ All four phases have been implemented.
 | Modbus function codes | 2 (0x03 read, 0x06 write) |
 
 ## Repository
-```
+
+```text
 crates/
   sim-models      — types, trait, state
   sim-core        — engine, device models
