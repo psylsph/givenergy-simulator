@@ -212,6 +212,7 @@ pub async fn create_plant(
         let weather_str = plant_state.weather.clone();
         let batteries = plant_state.batteries.clone();
         let max_ac_watts = plant_state.config.max_ac_watts;
+        let inverter_type = plant_state.config.inverter_type.clone();
         let charge_lim_pct = plant_state.battery_charge_limit_percent;
         let discharge_lim_pct = plant_state.battery_discharge_limit_percent;
         let seed_params = sim_core::EnergySeedParams {
@@ -221,6 +222,7 @@ pub async fn create_plant(
             weather_str: &weather_str,
             batteries: &batteries,
             max_ac_watts,
+            inverter_type: &inverter_type,
             battery_charge_limit_percent: charge_lim_pct,
             battery_discharge_limit_percent: discharge_lim_pct,
         };

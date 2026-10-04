@@ -790,6 +790,7 @@ async fn simulate(
         weather_str: &state.weather,
         batteries: &state.batteries,
         max_ac_watts: state.config.max_ac_watts,
+        inverter_type: &state.config.inverter_type,
         battery_charge_limit_percent: state.battery_charge_limit_percent,
         battery_discharge_limit_percent: state.battery_discharge_limit_percent,
     };

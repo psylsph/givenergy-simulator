@@ -1292,19 +1292,30 @@ impl DeviceModel for BatteryEngine {
 
         // Apply normalized battery charge/discharge limit percentages.
         // The Modbus adapters convert DC HR111/112 from their 0-50 wire scale.
-        let charge_scale = (state.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
-        let discharge_scale = (state.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
+        let inverter_type = state.config.inverter_type.clone();
+        let charge_limit_percent = state.battery_charge_limit_percent;
+        let discharge_limit_percent = state.battery_discharge_limit_percent;
 
         for b in &mut state.batteries {
             if b.power_kw > 0.0 {
-                // Charging: apply charge limit as percentage of device max.
-                // Zero percent disables charging entirely (matches real hardware).
-                let max_charge_kw = b.max_charge_kw * charge_scale;
+                // Charging: apply the charge limit (capacity-relative on
+                // single-phase DC hybrids, percent of device max elsewhere).
+                // Zero disables charging entirely (matches real hardware).
+                let max_charge_kw = sim_models::battery_limit_ceiling_w(
+                    &inverter_type,
+                    charge_limit_percent,
+                    b.max_charge_kw * 1000.0,
+                    b.capacity_kwh,
+                ) / 1000.0;
                 b.power_kw = b.power_kw.min(max_charge_kw);
             } else if b.power_kw < 0.0 {
-                // Discharging: apply discharge limit as percentage of device max.
-                // Zero percent disables discharging entirely (matches real hardware).
-                let max_discharge_kw = b.max_discharge_kw * discharge_scale;
+                // Discharging: same, against the discharge limit.
+                let max_discharge_kw = sim_models::battery_limit_ceiling_w(
+                    &inverter_type,
+                    discharge_limit_percent,
+                    b.max_discharge_kw * 1000.0,
+                    b.capacity_kwh,
+                ) / 1000.0;
                 b.power_kw = b.power_kw.max(-max_discharge_kw);
             }
 
@@ -1574,6 +1585,9 @@ pub struct EnergySeedParams<'a> {
     pub batteries: &'a [sim_models::BatteryState],
     /// Inverter AC throughput cap (W). Mirrors `config.max_ac_watts`.
     pub max_ac_watts: f64,
+    /// Inverter type name; selects how the limit percentages below are read
+    /// (see `sim_models::battery_limit_ceiling_w`).
+    pub inverter_type: &'a str,
     /// Normalized battery charge limit (0–100%).
     pub battery_charge_limit_percent: f64,
     /// Normalized battery discharge limit (0–100%).
@@ -1642,11 +1656,18 @@ pub fn seed_energy_totals_for_time_of_day(
         .unwrap_or(0.95);
 
     // Effective limits after HR 111 / HR 112 percentage scaling.
-    let eff_max_charge_w =
-        max_charge_kw * 1000.0 * (params.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
-    let eff_max_discharge_w = max_discharge_kw
-        * 1000.0
-        * (params.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
+    let eff_max_charge_w = sim_models::battery_limit_ceiling_w(
+        params.inverter_type,
+        params.battery_charge_limit_percent,
+        max_charge_kw * 1000.0,
+        total_capacity_kwh,
+    );
+    let eff_max_discharge_w = sim_models::battery_limit_ceiling_w(
+        params.inverter_type,
+        params.battery_discharge_limit_percent,
+        max_discharge_kw * 1000.0,
+        total_capacity_kwh,
+    );
 
     // Aggregate battery min/max SOC for clamping.
     let max_soc = batteries
@@ -2324,7 +2345,10 @@ mod tests {
             dt_hours: 1.0 / 60.0,
         };
 
+        // Direct-percentage bank (AC-coupled HR313): the limit is a plain
+        // percentage of the device maximum, independent of pack capacity.
         let mut full = PlantState::new(ts(12));
+        full.config.inverter_type = "ACCoupled".to_string();
         full.batteries[0].max_charge_kw = 7.0;
         full.batteries[0].capacity_kwh = 10.0;
         full.batteries[0].power_kw = 8.0;
@@ -2333,12 +2357,74 @@ mod tests {
         assert!((full.batteries[0].power_kw - 7.0).abs() < 0.001);
 
         let mut half = PlantState::new(ts(12));
+        half.config.inverter_type = "ACCoupled".to_string();
         half.batteries[0].max_charge_kw = 7.0;
         half.batteries[0].capacity_kwh = 10.0;
         half.batteries[0].power_kw = 8.0;
         half.battery_charge_limit_percent = 50.0;
         BatteryEngine::new().update(&ctx, &mut half);
         assert!((half.batteries[0].power_kw - 3.5).abs() < 0.001);
+    }
+
+    /// A Gen1 Hybrid with a 9.5 kWh pack behind a 2.6 kW inverter, with plenty
+    /// of surplus solar so the battery is limited only by its charge ceiling.
+    fn gen1_surplus_engine() -> SimulationEngine {
+        let mut engine = test_engine();
+        engine.state.config.inverter_type = "Gen1Hybrid".to_string();
+        engine.state.config.max_ac_watts = 5000.0;
+        engine.state.timestamp = ts(12);
+        engine.state.solar_override = Some(6000.0);
+        engine.state.load_override = Some(500.0);
+        engine.state.batteries[0].capacity_kwh = 9.5;
+        engine.state.batteries[0].nominal_capacity_kwh = 9.5;
+        engine.state.batteries[0].max_charge_kw = 2.6;
+        engine.state.batteries[0].max_discharge_kw = 2.6;
+        engine.state.batteries[0].soc_percent = 30.0;
+        engine
+    }
+
+    fn charge_w_after_writing_hr111(raw: u16) -> f64 {
+        let mut engine = gen1_surplus_engine();
+        engine.enqueue(Command::SetBatteryChargeLimit(
+            sim_models::dc_battery_limit_raw_to_percent(raw),
+        ));
+        engine.tick();
+        engine.state.total_battery_power_kw() * 1000.0
+    }
+
+    #[test]
+    fn gen1_hr111_limits_charge_power_as_a_percentage_of_battery_capacity() {
+        // Issue #346. HR111 = 17 is 17% of 9.5 kWh = 1615 W.
+        let charge_w = charge_w_after_writing_hr111(17);
+        assert!(
+            (charge_w - 1615.0).abs() < 1.0,
+            "HR111=17 on 9.5 kWh should charge at 1615 W, got {charge_w:.0} W"
+        );
+    }
+
+    #[test]
+    fn gen1_hr111_above_the_inverter_maximum_charges_at_the_inverter_maximum() {
+        // HR111 = 31 (62% on the HEM slider) asks for 2945 W; the 2.6 kW
+        // inverter is the real limit, which is what the reporter observed.
+        let charge_w = charge_w_after_writing_hr111(31);
+        assert!(
+            (charge_w - 2600.0).abs() < 1.0,
+            "HR111=31 on 9.5 kWh should reach the 2600 W inverter ceiling, got {charge_w:.0} W"
+        );
+    }
+
+    #[test]
+    fn ac_coupled_hr313_stays_a_percentage_of_the_inverter_maximum() {
+        let mut engine = gen1_surplus_engine();
+        engine.state.config.inverter_type = "ACCoupled".to_string();
+        engine.state.batteries[0].max_charge_kw = 3.0;
+        engine.enqueue(Command::SetBatteryChargeLimit(62.0));
+        engine.tick();
+        let charge_w = engine.state.total_battery_power_kw() * 1000.0;
+        assert!(
+            (charge_w - 1860.0).abs() < 1.0,
+            "HR313=62 should charge at 62% of 3000 W, got {charge_w:.0} W"
+        );
     }
 
     #[test]
@@ -2351,6 +2437,8 @@ mod tests {
         engine.state.solar_override = Some(5000.0); // fixed 5 kW solar
         engine.state.load_override = Some(1000.0); // fixed 1 kW load
         engine.state.battery_charge_limit_percent = 50.0; // halve charge rate
+        // Direct-percentage bank, so 50% is half of the device maximum.
+        engine.state.config.inverter_type = "ACCoupled".to_string();
         engine.state.batteries[0].soc_percent = 50.0; // headroom to charge
         // Tick once
         engine.tick();
@@ -3351,6 +3439,7 @@ mod tests {
             weather_str: "Clear",
             batteries: bank,
             max_ac_watts: 5000.0,
+            inverter_type: "Gen3",
             battery_charge_limit_percent: 100.0,
             battery_discharge_limit_percent: 100.0,
         }
@@ -4534,6 +4623,9 @@ mod tests {
             .set_user(InverterMode::ForceCharge);
         state.batteries[0].soc_percent = 50.0;
         state.batteries[0].max_charge_kw = 5.0; // 5 kW charge ceiling
+        // Large enough that the capacity-relative HR111 limit (0.5C) does not
+        // cap the ceiling below 5 kW.
+        state.batteries[0].capacity_kwh = 20.0;
         state.sync_battery_from_vec();
 
         let mut inv = InverterEngine::new();

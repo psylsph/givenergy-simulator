@@ -236,6 +236,45 @@ pub fn battery_limit_percent_to_dc_raw(percent: f64) -> f64 {
     percent.clamp(0.0, 100.0) / 2.0
 }
 
+/// Whether the inverter's HR111/112 limit is a percentage of *battery
+/// capacity* (register 50 = 0.5C) rather than of the inverter's maximum.
+///
+/// True for the single-phase DC families that expose the 0-50 HR111/112
+/// registers. AC-coupled (HR313/314), three-phase / HV (HR1110/1108) and the
+/// Gateway use direct percentages of the inverter maximum.
+///
+/// Source of truth is GivTCP, the only reference validated on hardware:
+/// `write.py` stores `watts / (capacity / 2) * 50` and `read.py` reads back
+/// `min(reg / 100 * capacity_w, inverter_max)` for every non-three-phase,
+/// non-Gateway model, while the direct banks use `batmaxrate * limit / 100`.
+pub fn battery_limit_is_capacity_relative(inverter_type: &str) -> bool {
+    !is_three_phase_inverter_type(inverter_type)
+        && !is_ac_coupled_inverter_type(inverter_type)
+        && inverter_type != "Gateway12kW"
+}
+
+/// Power ceiling (W) the battery charge/discharge limit imposes, given the
+/// normalized 0-100 limit (`dc_battery_limit_raw_to_percent` for HR111/112),
+/// the hardware maximum and the pack capacity.
+///
+/// Capacity-relative families (see [`battery_limit_is_capacity_relative`])
+/// ceiling at `limit/200 * capacity` (register 50 = 0.5C), never above the
+/// hardware maximum. With no capacity there is nothing to scale by, so the
+/// limit falls back to a fraction of the maximum.
+pub fn battery_limit_ceiling_w(
+    inverter_type: &str,
+    limit_percent: f64,
+    max_w: f64,
+    capacity_kwh: f64,
+) -> f64 {
+    let fraction = (limit_percent / 100.0).clamp(0.0, 1.0);
+    if battery_limit_is_capacity_relative(inverter_type) && capacity_kwh > 0.0 {
+        (fraction * capacity_kwh * 1000.0 / 2.0).min(max_w)
+    } else {
+        max_w * fraction
+    }
+}
+
 /// Physical battery (DC-side) power limit per inverter type, in watts.
 ///
 /// This is the *hardware* cap on battery charge/discharge throughput
@@ -1182,18 +1221,27 @@ impl PlantState {
         self.batteries.iter().map(|b| b.max_discharge_kw).sum()
     }
 
-    /// Effective max charge rate in watts, after applying HR 111 percentage limit.
+    /// Effective max charge rate in watts, after applying the HR 111 / 313 / 1110 limit
+    /// (capacity-relative on single-phase DC hybrids; see [`battery_limit_ceiling_w`]).
     /// Used by InverterEngine so power allocation respects user-configured limits.
     pub fn effective_max_charge_w(&self) -> f64 {
-        let scale = (self.battery_charge_limit_percent / 100.0).clamp(0.0, 1.0);
-        self.total_max_charge_kw() * 1000.0 * scale
+        battery_limit_ceiling_w(
+            &self.config.inverter_type,
+            self.battery_charge_limit_percent,
+            self.total_max_charge_kw() * 1000.0,
+            self.total_battery_capacity(),
+        )
     }
 
     /// Effective max discharge rate in watts, after applying HR 112 percentage limit.
     /// Used by InverterEngine so power allocation respects user-configured limits.
     pub fn effective_max_discharge_w(&self) -> f64 {
-        let scale = (self.battery_discharge_limit_percent / 100.0).clamp(0.0, 1.0);
-        self.total_max_discharge_kw() * 1000.0 * scale
+        battery_limit_ceiling_w(
+            &self.config.inverter_type,
+            self.battery_discharge_limit_percent,
+            self.total_max_discharge_kw() * 1000.0,
+            self.total_battery_capacity(),
+        )
     }
 
     /// Max charging power (W) the battery bank can absorb *right now*: the
@@ -2171,6 +2219,98 @@ mod tests {
         assert_eq!(battery_limit_percent_to_dc_raw(0.0), 0.0);
         assert_eq!(battery_limit_percent_to_dc_raw(50.0), 25.0);
         assert_eq!(battery_limit_percent_to_dc_raw(100.0), 50.0);
+    }
+
+    // GivTCP `write.py` (set charge rate): for a DC hybrid the HR111/112
+    // register holds `watts / (capacity / 2) * 50`, i.e. a percentage of battery
+    // *capacity* where 50 means 0.5C. `read.py` inverts it as
+    // `min(reg / 100 * capacity_w, inverter_max)`. The expected watts below come
+    // from that arithmetic, not from this crate's own formula.
+    fn dc_limit_w(inverter_type: &str, raw: u16, max_w: f64, capacity_kwh: f64) -> f64 {
+        battery_limit_ceiling_w(
+            inverter_type,
+            dc_battery_limit_raw_to_percent(raw),
+            max_w,
+            capacity_kwh,
+        )
+    }
+
+    #[test]
+    fn dc_hybrid_limit_register_is_a_percentage_of_battery_capacity() {
+        // Issue #346: Gen1 Hybrid, 9.5 kWh. reg 17 = 17% of 9500 Wh = 1615 W.
+        assert!((dc_limit_w("Gen1Hybrid", 17, 2600.0, 9.5) - 1615.0).abs() < 1e-6);
+        // reg 10 = 950 W.
+        assert!((dc_limit_w("Gen1Hybrid", 10, 2600.0, 9.5) - 950.0).abs() < 1e-6);
+        // reg 0 stops charging.
+        assert_eq!(dc_limit_w("Gen1Hybrid", 0, 2600.0, 9.5), 0.0);
+    }
+
+    #[test]
+    fn dc_hybrid_limit_above_the_inverter_maximum_does_not_throttle() {
+        // The reporter's reg 31 asks for 2945 W on a 9.5 kWh pack, above the
+        // 2600 W inverter, so the inverter's own ceiling applies and the
+        // observed 2.4 kW overnight charge was correct behaviour.
+        assert_eq!(dc_limit_w("Gen1Hybrid", 31, 2600.0, 9.5), 2600.0);
+        assert_eq!(dc_limit_w("Gen1Hybrid", 50, 2600.0, 9.5), 2600.0);
+    }
+
+    #[test]
+    fn dc_hybrid_limit_on_a_small_pack_reaches_full_scale_at_register_50() {
+        // 5.12 kWh: reg 50 = 0.5C = 2560 W, still within the 2600 W inverter.
+        assert!((dc_limit_w("Gen1Hybrid", 50, 2600.0, 5.12) - 2560.0).abs() < 1e-6);
+        assert!((dc_limit_w("Gen1Hybrid", 25, 2600.0, 5.12) - 1280.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn direct_percentage_banks_stay_a_percentage_of_the_inverter_maximum() {
+        // AC-coupled HR313/314 and three-phase HR1110/1108 are direct
+        // percentages of the inverter maximum (GivTCP `batmaxrate * limit / 100`),
+        // whatever the pack size.
+        for inverter_type in ["ACCoupled", "ThreePhase", "Gen3HvHybrid6kW", "Gateway12kW"] {
+            assert!(!battery_limit_is_capacity_relative(inverter_type));
+            let ceiling = battery_limit_ceiling_w(inverter_type, 62.0, 3000.0, 20.0);
+            assert!(
+                (ceiling - 1860.0).abs() < 1e-6,
+                "{inverter_type}: {ceiling}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_single_phase_dc_family_uses_the_capacity_relative_limit() {
+        for inverter_type in [
+            "Gen1Hybrid",
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "Gen3Plus5kW",
+            "Polar8kW",
+            "AllInOne6",
+            "AllInOne",
+            "Gen4Hybrid6kW",
+        ] {
+            assert!(
+                battery_limit_is_capacity_relative(inverter_type),
+                "{inverter_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn battery_limit_ceiling_handles_degenerate_inputs() {
+        // Out-of-range percentages clamp; no capacity means no capacity-relative
+        // ceiling can be computed, so fall back to the hardware maximum.
+        assert_eq!(
+            battery_limit_ceiling_w("Gen1Hybrid", 150.0, 2600.0, 9.5),
+            2600.0
+        );
+        assert_eq!(
+            battery_limit_ceiling_w("Gen1Hybrid", -5.0, 2600.0, 9.5),
+            0.0
+        );
+        assert_eq!(
+            battery_limit_ceiling_w("Gen1Hybrid", 50.0, 2600.0, 0.0),
+            2600.0 * 0.5
+        );
     }
 
     #[test]
