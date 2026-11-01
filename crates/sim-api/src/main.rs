@@ -82,6 +82,8 @@ Run a headless simulation with the 'simulate' subcommand (starts Modbus server a
 \n\
 \nBATTERY COUNT: 1–6 modules (use with --batteries)\
 \n\
+\nBATTERY SOH: 50–100 % (use with --battery-soh; default 100 = new pack)\
+\n\
 \nLOAD PROFILES (use with --load-profile):\
 \n  minimal    ~200W baseload\
 \n  family     Typical family usage pattern (default)\
@@ -100,6 +102,7 @@ Run a headless simulation with the 'simulate' subcommand (starts Modbus server a
 \n  giv-sim simulate --inverter ThreePhase --batteries 3 --battery-size 13.6 \
 \n                   --soc 80 --solar-peak 8000 --load-level 1500\
 \n  giv-sim simulate --inverter AllInOne --modbus 0.0.0.0:8899\
+\n  giv-sim simulate --inverter ACCoupled --batteries 2 --battery-size 8.2 --battery-soh 85\
 \n  giv-sim simulate --inverter Gen3Hybrid --inverter-temperature 70\
 \n  # --inverter-temperature pins the inverter temp (°C); omit for thermal model\
 \n  giv-sim run scenario.yaml --modbus 0.0.0.0:8899 --output results/\
@@ -145,6 +148,15 @@ enum Commands {
         /// Sets the initial SOC for all battery modules.
         #[arg(long, default_value = "50")]
         soc: f64,
+
+        /// Battery state of health as a percentage (50–100).
+        ///
+        /// Sets the initial SoH for all battery modules. 100 = a new pack
+        /// (zero throughput/cycles); lower values derive throughput and
+        /// cycle count from the degradation model. Values below 50 are
+        /// raised to 50 (the engine's end-of-life floor).
+        #[arg(long, default_value = "100")]
+        battery_soh: f64,
 
         /// Solar PV peak capacity in watts.
         ///
@@ -344,6 +356,34 @@ fn nearest_battery_size(requested: f64) -> f64 {
 // (see `sim_models::max_batt_w_for_inverter` / `sim_models::max_ac_watts_for`).
 // Local thin wrappers here preserve the call-site shape without re-implementing
 // the tables.
+
+/// Build the battery modules for `simulate`: `count` (clamped 1-6) modules
+/// of the nearest supported size, at `soc_percent` (clamped 0-100) and
+/// `soh_percent` (via `BatteryState::apply_soh`, floored at 50%), with
+/// power limits capped at each module's share of the inverter's battery
+/// rating.
+fn build_simulate_batteries(
+    inv_type: &str,
+    count: usize,
+    battery_size: f64,
+    soc_percent: f64,
+    soh_percent: f64,
+) -> Vec<sim_models::BatteryState> {
+    let count = count.clamp(1, 6);
+    let size = nearest_battery_size(battery_size);
+    let per_module_max_kw = sim_models::max_batt_w_for_inverter(inv_type) / 1000.0 / count as f64;
+    (0..count)
+        .map(|_| {
+            let mut b = sim_models::BatteryState {
+                soc_percent: soc_percent.clamp(0.0, 100.0),
+                nominal_capacity_kwh: size,
+                ..sim_models::BatteryState::default()
+            };
+            b.apply_soh(soh_percent / 100.0, per_module_max_kw);
+            b
+        })
+        .collect()
+}
 
 /// Apply inverter-type configuration to a PlantState.
 fn configure_inverter(state: &mut PlantState, inv_type: &str) {
@@ -574,6 +614,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             batteries,
             battery_size,
             soc,
+            battery_soh,
             solar_peak,
             load_level,
             load_profile,
@@ -599,6 +640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 batteries,
                 battery_size,
                 soc,
+                battery_soh,
                 solar_peak,
                 load_level,
                 &load_profile,
@@ -683,6 +725,7 @@ async fn simulate(
     battery_count: usize,
     battery_size: f64,
     soc: f64,
+    battery_soh: f64,
     solar_peak: f64,
     load_level: f64,
     load_profile: &str,
@@ -704,7 +747,6 @@ async fn simulate(
     evc_port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let battery_count = battery_count.clamp(1, 6);
-    let soc = soc.clamp(0.0, 100.0);
     let actual_battery_size = nearest_battery_size(battery_size);
 
     if (actual_battery_size - battery_size).abs() > 0.01 {
@@ -713,31 +755,14 @@ async fn simulate(
         );
     }
 
-    let max_batt_w = sim_models::max_batt_w_for_inverter(inv_type);
-    let max_batt_kw = max_batt_w / 1000.0;
-    let per_module_max_kw = max_batt_kw / battery_count as f64;
-    // C-rate of 0.7 continuous for LFP modules
-    let c_rate_max_kw = actual_battery_size * 0.7;
-    let module_max_kw = per_module_max_kw.min(c_rate_max_kw).min(10.0);
-
     let start_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
     let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap();
 
-    // Build battery modules
+    // Build battery modules (SoH, capacity, history and power limits all
+    // come from the shared `BatteryState::apply_soh`, same as the GUI).
     let mut state = PlantState::with_battery_count(start_ts, battery_count);
-    for b in &mut state.batteries {
-        b.soc_percent = soc;
-        b.capacity_kwh = actual_battery_size;
-        b.nominal_capacity_kwh = actual_battery_size;
-        b.max_charge_kw = module_max_kw;
-        b.max_discharge_kw = module_max_kw;
-    }
-    // Re-seed throughput + SOH for the actual capacity. `with_battery_count`
-    // already ran the seed against the placeholder 9.5 kWh default; once the
-    // user-specified size is in, recompute so the throughput register is
-    // proportional to the real pack size.
-    sim_models::seed_batteries_for_age(&mut state.batteries, sim_models::BATTERY_DEFAULT_AGE_YEARS);
-    state.sync_battery_from_vec();
+    state.batteries =
+        build_simulate_batteries(inv_type, battery_count, battery_size, soc, battery_soh);
     state.sync_battery_from_vec();
 
     // Configure inverter
@@ -835,12 +860,14 @@ async fn simulate(
 
     let total_capacity = actual_battery_size * battery_count as f64;
     let max_ac_w = sim_models::max_ac_watts_for(inv_type);
+    let max_batt_w = sim_models::max_batt_w_for_inverter(inv_type);
     tracing::info!("Starting GivEnergy Plant Simulator");
     tracing::info!("  Inverter:       {inv_type} ({max_ac_w:.0}W AC, {max_batt_w:.0}W battery)");
     tracing::info!(
         "  Batteries:      {battery_count} × {actual_battery_size} kWh = {total_capacity:.1} kWh total"
     );
-    tracing::info!("  Initial SOC:    {soc:.0}%");
+    tracing::info!("  Initial SOC:    {:.0}%", engine.state.battery.soc_percent);
+    tracing::info!("  Battery SoH:    {:.0}%", engine.state.battery.soh * 100.0);
     let pv2_info = if pv2_peak > 0.0 {
         format!(" + PV2 {pv2_peak:.0}W")
     } else {
@@ -1699,6 +1726,68 @@ fn apply_schedule_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulate_batteries_default_to_a_new_pack() {
+        // Regression: `simulate` seeded a 3-year-old pack (SoH ~80%,
+        // ~990 cycles) — and left capacity_kwh at the full nominal size, so
+        // the module was inconsistent until the first tick — while the GUI
+        // builds a new pack. Both entry points now share apply_soh.
+        let batts = build_simulate_batteries("ACCoupled", 2, 8.2, 50.0, 100.0);
+        assert_eq!(batts.len(), 2);
+        let per_module_kw = sim_models::max_batt_w_for_inverter("ACCoupled") / 1000.0 / 2.0;
+        for b in &batts {
+            assert_eq!(b.soc_percent, 50.0);
+            assert_eq!(b.nominal_capacity_kwh, 8.2);
+            assert_eq!(b.capacity_kwh, 8.2);
+            assert_eq!(b.soh, 1.0);
+            assert_eq!(b.throughput_kwh, 0.0);
+            assert_eq!(b.cycle_count, 0.0);
+            assert!(b.max_charge_kw <= per_module_kw + 1e-9);
+        }
+    }
+
+    #[test]
+    fn simulate_batteries_honour_battery_soh_percent() {
+        let batts = build_simulate_batteries("Gen1Hybrid", 1, 9.5, 30.0, 90.0);
+        let mut expected = sim_models::BatteryState {
+            nominal_capacity_kwh: 9.5,
+            ..sim_models::BatteryState::default()
+        };
+        expected.apply_soh(
+            0.9,
+            sim_models::max_batt_w_for_inverter("Gen1Hybrid") / 1000.0,
+        );
+        let b = &batts[0];
+        assert_eq!(b.soc_percent, 30.0);
+        assert_eq!(b.soh, expected.soh);
+        assert_eq!(b.capacity_kwh, expected.capacity_kwh);
+        assert_eq!(b.throughput_kwh, expected.throughput_kwh);
+        assert_eq!(b.cycle_count, expected.cycle_count);
+        assert_eq!(b.max_charge_kw, expected.max_charge_kw);
+    }
+
+    #[test]
+    fn simulate_batteries_clamp_count_size_and_soh() {
+        let batts = build_simulate_batteries("ACCoupled", 9, 8.0, 120.0, 10.0);
+        assert_eq!(batts.len(), 6);
+        assert!(
+            batts.iter().all(|b| b.nominal_capacity_kwh == 8.2),
+            "nearest size"
+        );
+        assert!(batts.iter().all(|b| b.soc_percent == 100.0));
+        assert!(batts.iter().all(|b| b.soh == sim_models::BATTERY_MIN_SOH));
+    }
+
+    #[test]
+    fn simulate_cli_battery_soh_defaults_to_100() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["giv-sim", "simulate"]).unwrap();
+        match cli.command {
+            Commands::Simulate { battery_soh, .. } => assert_eq!(battery_soh, 100.0),
+            _ => panic!("expected simulate"),
+        }
+    }
 
     #[test]
     fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {

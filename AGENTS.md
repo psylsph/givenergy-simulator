@@ -60,6 +60,29 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.0** — Plant creation SoH consistency. One shared helper,
+`BatteryState::apply_soh` (`sim-models`), now sets SoH and derives usable
+capacity, throughput/cycle history and 0.7C power limits (capped at the
+module's share of the inverter's **battery** rating) for every
+plant-creation entry point — GUI `create_plant`, the Gateway AIO stack,
+CLI `simulate` and the GUI SoH slider (`set_battery_soh`). Fixes a
+family of "setting SOC seems to reset SoH" symptoms: `create_plant` used
+to treat the default SoH of 100% as "no preference" and silently seed a
+3-year-old pack (~80% SoH, ~990 cycles) while the sidebar showed 100%,
+`set_battery_soh` capped per-module power by the AC rating and left
+`cycle_count` stale, the Gateway stack and CLI `simulate` seeded
+inconsistently sized/aged modules, and the sidebar wasn't re-synced
+after Create Plant (it now full-syncs and sizes modules from rated
+`nominal_capacity_kwh`, so a re-create no longer shrinks the pack). The
+default plant is now **AC Coupled (0x3001) with 2 × 8.2 kWh** modules;
+plant creation honours requested SoH (default 100% = new pack), and the
+CLI gains `giv-sim simulate --battery-soh <percent>`. The
+`PlantState::new` / `with_battery_count` constructors keep the 3-year
+seed as the scenario-runner and test baseline. Also: `scripts/run-ci.sh`
+output now lives under `target/ci-scenarios/` with per-scenario cleanup
+on pass, and failed-scenario output is kept for triage. 29 new tests
+(26 Rust + 3 Playwright); 549 Rust + 49 Playwright total.
+
 **0.17.8** — Dependabot cleanup + slot-logic fixes. Bumps `plist` to clear
 two high-severity RUSTSEC advisories in `quick-xml` (RUSTSEC-2026-0194/0195,
 DoS) and `npm audit fix` for the ui toolchain; the remaining `glib`

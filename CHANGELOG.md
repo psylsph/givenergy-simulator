@@ -4,6 +4,62 @@ All notable changes to the GivEnergy Plant Simulator are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.0] - 2026-11-01
+
+### Added
+
+- `BatteryState::apply_soh` (`sim-models`): one shared helper that sets a
+  module's SoH (floored at `BATTERY_MIN_SOH`, 0.5) and derives usable
+  capacity, throughput, cycle count and 0.7C power limits (capped at the
+  module's share of the inverter's **battery** rating) from it.
+- CLI `giv-sim simulate --battery-soh <percent>` (default 100 = new pack).
+
+### Changed
+
+- Default plant is now an **AC Coupled (0x3001)** inverter with
+  **2 × 8.2 kWh** battery modules (previously Gen1 Hybrid / 1 × 9.5 kWh in
+  the GUI form and Gen3Hybrid / 1 × 9.5 kWh as the `create_plant` fallback).
+  Applies to the GUI Plant Setup form and to `create_plant` when
+  `inverter_type`, `battery_modules` or `battery_count` are omitted;
+  `battery_count` alone now yields 8.2 kWh modules. CLI defaults unchanged.
+- Plant creation is consistent across entry points: the GUI, the Gateway
+  AIO stack and CLI `simulate` all honour a requested SoH (default 100%)
+  via `apply_soh` instead of seeding a 3-year-old pack, so the same config
+  reads the same IR(6-7)/IR(36) whichever way it was built. The
+  `PlantState::new` / `with_battery_count` constructors keep the 3-year
+  seed as the scenario-runner (`giv-sim run`) and test baseline.
+- `scripts/run-ci.sh` writes scenario output to `target/ci-scenarios/`
+  on the project disk (not `/tmp` tmpfs) and deletes each scenario's
+  output as soon as it passes — failed scenarios' output is kept for
+  triage. `CI_OUTPUT_DIR` / `CI_SCENARIOS_DIR` environment overrides.
+
+### Fixed
+
+- Setting a battery's SOC appeared to reset its SoH. Root cause:
+  `create_plant` treated the default SoH of 100% as "no preference" and
+  quietly seeded a 3-year-old pack (SoH ~80%, ~990 cycles), while the
+  sidebar SoH sliders kept showing 100% until the next full sync (triggered
+  by an SOC change). `create_plant` now honours the requested SoH, and the
+  GUI fully syncs the sidebar after Create Plant. The sidebar picks each
+  module's size from its rated (`nominal_capacity_kwh`) capacity, not the
+  SoH-reduced one, so a re-create no longer shrinks the pack.
+- `set_battery_soh` capped per-module power by the inverter's AC rating
+  (e.g. 5 kW instead of 2.5 kW on a Gen1 Hybrid), left `cycle_count` stale
+  and skipped syncing `state.battery`; it now uses `apply_soh`.
+- CLI `simulate` left `capacity_kwh` at the full nominal size while seeding
+  SoH ~80%, so the module was inconsistent until the first tick.
+
+### Tests
+
+- 3 `sim-models` tests for `apply_soh`; 11 `sim-tauri` tests covering the
+  `create_plant` defaults, SoH handling and the extracted
+  `build_plant_state` (default plant, count-only, explicit, Gateway) —
+  mutation-checked by restoring the old `Gen3Hybrid` fallback; 4 `sim-api`
+  tests for the `simulate` battery build and `--battery-soh` default.
+- 3 Playwright tests (GUI form defaults, sidebar SoH/size sync after create,
+  post-create form state). The Playwright `create_plant` mock now echoes the
+  requested inverter and modules.
+
 ## [0.17.7] - 2026-08-28
 
 ### Fixed — island-mode battery reconciliation

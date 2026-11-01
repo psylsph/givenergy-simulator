@@ -626,11 +626,16 @@ pub struct BatteryState {
 // ---------------------------------------------------------------------------
 // Battery age / throughput seed constants and helpers.
 //
-// Used by `PlantState::with_battery_count` and the GUI create-plant path so a
-// fresh plant ships with `throughput_kwh` already at a realistic mid-life
-// value (and `soh` consistent with it), instead of zero. IR(6-7) therefore
-// reads as a believable 3-year-old pack from the moment a plant is built,
-// and the BatteryEngine accumulates further throughput from there.
+// Used by the `PlantState::new` / `PlantState::with_battery_count`
+// constructors so a model-level fixture ships with `throughput_kwh` at a
+// realistic mid-life value (and `soh` consistent with it). These
+// constructors are the baseline for the scenario runner (`giv-sim run`) and
+// the test suite.
+//
+// User-facing plant creation (GUI `create_plant`, the Gateway AIO stack,
+// CLI `giv-sim simulate`) does NOT use this age seed: it honours a requested
+// SoH (default 100% = new pack) via `BatteryState::apply_soh`, so the same
+// plant config reads the same IR(6-7)/IR(36) whichever entry point built it.
 //
 // The three constants below MUST stay in sync with the runtime degradation
 // model in `sim_core::BatteryEngine`:
@@ -681,7 +686,7 @@ pub const BATTERY_MIN_SOH: f64 = 0.5;
 
 /// Apply the throughput + SOH seed to every module in `batteries` so they
 /// look like a `years`-old pack at construction time. Convenience wrapper for
-/// the two `PlantState` constructors and the GUI create-plant path; mutates
+/// the two `PlantState` constructors; mutates
 /// `throughput_kwh` and `soh` in place.
 pub fn seed_batteries_for_age(batteries: &mut [BatteryState], years: f64) {
     let throughput = seed_battery_throughput_for_age(years, 1.0);
@@ -732,6 +737,39 @@ pub fn seed_inverter_work_time_for_age(years: f64) -> f64 {
 /// the seeded baseline.
 pub fn seed_inverter_for_age(inverter: &mut InverterState, years: f64) {
     inverter.work_time_hours = seed_inverter_work_time_for_age(years);
+}
+
+impl BatteryState {
+    /// Set the module's state of health and derive everything that depends
+    /// on it, so the module is self-consistent from the next tick:
+    ///
+    /// - `soh` is clamped to `[BATTERY_MIN_SOH, 1.0]` (the engine never
+    ///   degrades below the floor; NaN is treated as the floor);
+    /// - `capacity_kwh = nominal_capacity_kwh × soh`;
+    /// - `throughput_kwh` / `cycle_count` follow the degradation model
+    ///   (`BATTERY_DEGRADATION_PER_CYCLE`), so SoH 100% is a brand-new pack;
+    /// - charge/discharge limits are 0.7C of usable capacity, capped at
+    ///   10 kW and at `per_module_max_kw` (the module's share of the
+    ///   inverter's battery rating).
+    ///
+    /// Shared by every plant-creation entry point (GUI `create_plant`,
+    /// Gateway stack, CLI `simulate`) and the GUI SoH slider.
+    pub fn apply_soh(&mut self, soh: f64, per_module_max_kw: f64) {
+        let soh = if soh >= BATTERY_MIN_SOH {
+            soh.min(1.0)
+        } else {
+            BATTERY_MIN_SOH
+        };
+        let nominal = self.nominal_capacity_kwh.max(0.1);
+        self.soh = soh;
+        self.capacity_kwh = nominal * soh;
+        let cycles = (1.0 - soh) / BATTERY_DEGRADATION_PER_CYCLE;
+        self.cycle_count = cycles;
+        self.throughput_kwh = cycles * nominal;
+        let limit_kw = (self.capacity_kwh * 0.7).min(10.0).min(per_module_max_kw);
+        self.max_charge_kw = limit_kw;
+        self.max_discharge_kw = limit_kw;
+    }
 }
 
 impl Default for BatteryState {
@@ -2160,6 +2198,53 @@ impl Default for Schedule {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn apply_soh_new_pack_has_zero_history() {
+        let mut b = BatteryState {
+            nominal_capacity_kwh: 8.2,
+            ..BatteryState::default()
+        };
+        b.apply_soh(1.0, 1.5);
+        assert_eq!(b.soh, 1.0);
+        assert_eq!(b.capacity_kwh, 8.2);
+        assert_eq!(b.throughput_kwh, 0.0);
+        assert_eq!(b.cycle_count, 0.0);
+        assert_eq!(b.max_charge_kw, 1.5);
+        assert_eq!(b.max_discharge_kw, 1.5);
+    }
+
+    #[test]
+    fn apply_soh_derives_consistent_history_and_limits() {
+        let mut b = BatteryState {
+            nominal_capacity_kwh: 8.2,
+            ..BatteryState::default()
+        };
+        b.apply_soh(0.8, 10.0);
+        assert!((b.soh - 0.8).abs() < 1e-12);
+        assert!((b.capacity_kwh - 8.2 * 0.8).abs() < 1e-9);
+        let cycles = 0.2 / BATTERY_DEGRADATION_PER_CYCLE;
+        assert!((b.cycle_count - cycles).abs() < 1e-6);
+        assert!((b.throughput_kwh - cycles * 8.2).abs() < 1e-6);
+        // 0.7C on usable capacity, below the per-module cap.
+        assert!((b.max_charge_kw - 8.2 * 0.8 * 0.7).abs() < 1e-9);
+        assert_eq!(b.max_charge_kw, b.max_discharge_kw);
+    }
+
+    #[test]
+    fn apply_soh_is_floored_at_min_soh() {
+        for requested in [0.3, 0.0, -1.0, f64::NAN] {
+            let mut b = BatteryState {
+                nominal_capacity_kwh: 8.2,
+                ..BatteryState::default()
+            };
+            b.apply_soh(requested, 10.0);
+            assert_eq!(b.soh, BATTERY_MIN_SOH, "requested {requested}");
+        }
+        let mut b = BatteryState::default();
+        b.apply_soh(1.7, 10.0);
+        assert_eq!(b.soh, 1.0);
+    }
 
     /// Regression: the EMS export-slot registers (HR 2062-2070) were
     /// modelled, projected, and honoured by `ScheduleEngine`, but

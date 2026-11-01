@@ -488,7 +488,7 @@
           <option value="PVInverter4600">PV Inverter 4.6kW (0x2302)</option>
           <option value="PVInverter3600">PV Inverter 3.6kW (0x2303)</option>
           <option value="PVInverter6kW">PV Inverter 6kW (0x2304)</option>
-          <option value="ACCoupled">AC Coupled (0x3001)</option>
+          <option value="ACCoupled" selected>AC Coupled (0x3001)</option>
           <option value="ACCoupled2">AC Coupled Mk2 (0x3002)</option>
           <option value="ThreePhase">Three Phase 6kW (0x4001)</option>
           <option value="ThreePhase8kW">Three Phase 8kW (0x4002)</option>
@@ -516,7 +516,7 @@
           <label>Battery Modules</label>
           <select id="battery-count">
             <option value="1">1 Module</option>
-            <option value="2">2 Modules</option>
+            <option value="2" selected>2 Modules</option>
             <option value="3">3 Modules</option>
             <option value="4">4 Modules</option>
             <option value="5">5 Modules</option>
@@ -931,7 +931,7 @@
           <div style="display:flex;align-items:center;gap:4px;">
             <span style="font-size:10px;color:var(--text-muted);min-width:16px">M${idx+1}</span>
             <select class="battery-size" data-idx="${idx}">
-              ${BATTERY_SIZES.map(s => `<option value="${s}" ${s===9.5?'selected':''}>${s} kWh</option>`).join('')}
+              ${BATTERY_SIZES.map(s => `<option value="${s}" ${s===8.2?'selected':''}>${s} kWh</option>`).join('')}
             </select>
           </div>
           <div style="display:flex;align-items:center;gap:4px;margin-top:2px;">
@@ -1241,8 +1241,9 @@
         s.battery_modules.forEach((m, i) => {
           const sel = document.querySelector(`.battery-size[data-idx="${i}"]`);
           if (sel) {
-            // Match to nearest battery size (float comparison is unreliable)
-            const cap = m.capacity_kwh;
+            // Match to nearest battery size (float comparison is unreliable).
+            // Use the rated (nominal) size: capacity_kwh is SoH-reduced.
+            const cap = m.nominal_capacity_kwh ?? m.capacity_kwh;
             let best = BATTERY_SIZES[0], bestDiff = Math.abs(cap - best);
             for (const sz of BATTERY_SIZES) { if (Math.abs(cap - sz) < bestDiff) { best = sz; bestDiff = Math.abs(cap - sz); } }
             sel.value = best;
@@ -1692,7 +1693,9 @@
             ct_meter_installed: el('ct-meter-select').value === 'installed',
           }
         });
-        updateDashboard(state);
+        // Full sync so the sidebar (SoH sliders, module sizes) reflects the
+        // plant the backend actually built rather than stale form values.
+        updateDashboard(state, true);
         el('btn-start').disabled = false;
         el('footer-info').textContent = 'Plant created — ready to simulate';
       } catch (e) { console.error('create_plant failed:', e); }

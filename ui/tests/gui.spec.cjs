@@ -53,7 +53,7 @@ const mockTauriScript = `
           // register hint and Set-button enabled-state without juggling
           // extra mocks per case.
           const requested = params && params.params && params.params.inverter_type;
-          const invType = requested || 'Gen3Hybrid';
+          const invType = requested || 'ACCoupled';
           // Pick plausible caps per family so the field's current-watts
           // display is meaningful without each test having to specify it.
           const isThreePhase = invType.startsWith('ThreePhase') || invType === 'ACCoupledThreePhase6kW';
@@ -64,6 +64,20 @@ const mockTauriScript = `
           // (century = fw/100: 2=Gen1, 3=Gen3, 8=Gen2). Drives the Timed
           // Discharge visibility test, which gates HR 318-320 on 0x2001 + FW3xx.
           const armFw = { Gen1Hybrid: 252, Gen2Hybrid: 852, Gen3Hybrid: 318 }[invType] || 0;
+          // Echo the requested battery modules the way the backend builds
+          // them (nominal = requested size, usable = size x SoH) so the
+          // post-create full sync sees a realistic plant. Tests may override
+          // individual module fields via __TAURI_MOCK__.createdModules.
+          const reqModules = (params && params.params && params.params.battery_modules) || null;
+          let modules = reqModules
+            ? reqModules.map(m => Object.assign(mockBattery(), {
+                nominal_capacity_kwh: m.capacity_kwh,
+                capacity_kwh: m.capacity_kwh * (m.soh ?? 1.0),
+                soh: m.soh ?? 1.0,
+              }))
+            : [mockBattery()];
+          const overrides = window.__TAURI_MOCK__.createdModules;
+          if (overrides) modules = overrides.map((o, i) => Object.assign(modules[i] || mockBattery(), o));
           return {
             timestamp: '2025-06-01T12:00:00', inverter_mode: 'Eco', battery_mode: 'Eco',
             inverter_type: invType, inverter_ac_power_w: 3000,
@@ -73,8 +87,8 @@ const mockTauriScript = `
             inverter_temperature_override: null,
             export_limit_w: exportLimitW,
             aggregate_soc: 75.0, battery_power_kw: 2.5, battery_temperature_celsius: 28.0,
-            battery_module_count: 1,
-            battery_modules: [mockBattery()],
+            battery_module_count: modules.length,
+            battery_modules: modules,
             solar_generation_w: 4000, solar_override: null,
             load_demand_w: 1500, load_override: null,
             grid_power_w: -500, grid_connected: true,
@@ -143,6 +157,54 @@ test('battery count supports all 6 modules', async ({ page }) => {
     Array.from(el.options).map(o => o.value)
   );
   expect(vals).toEqual(['1', '2', '3', '4', '5', '6']);
+});
+
+test('default plant is AC Coupled (0x3001) with 2 x 8.2 kWh modules', async ({ page }) => {
+  await setupPage(page);
+  expect(await page.locator('#inverter-type').inputValue()).toBe('ACCoupled');
+  expect(await page.locator('#battery-count').inputValue()).toBe('2');
+  await expect(page.locator('.battery-module')).toHaveCount(2);
+  const sizes = await page.locator('.battery-size').evaluateAll(els => els.map(e => e.value));
+  expect(sizes).toEqual(['8.2', '8.2']);
+
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  const calls = await getCalls(page);
+  const c = calls.find(x => x.cmd === 'create_plant');
+  expect(c).toBeTruthy();
+  expect(p(c).inverter_type).toBe('ACCoupled');
+  expect(p(c).battery_modules.map(m => m.capacity_kwh)).toEqual([8.2, 8.2]);
+});
+
+test('sidebar SoH sliders reflect the created plant, not stale form values', async ({ page }) => {
+  // Regression: after Create Plant the sidebar kept showing the pre-create
+  // slider values (100%) while the backend held a different SoH; the next
+  // SOC change re-synced the sidebar and SoH appeared to "reset".
+  await setupPage(page);
+  await page.evaluate(() => {
+    window.__TAURI_MOCK__.createdModules = [
+      { soh: 0.9, capacity_kwh: 7.38 },
+      { soh: 0.85, capacity_kwh: 6.97 },
+    ];
+  });
+  expect(await page.locator('.battery-soh').evaluateAll(e => e.map(x => x.value))).toEqual(['100', '100']);
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  expect(await page.locator('.battery-soh').evaluateAll(e => e.map(x => x.value))).toEqual(['90', '85']);
+  expect(await page.locator('.soh-label').evaluateAll(e => e.map(x => x.textContent))).toEqual(['90%', '85%']);
+  // Module size must follow the nominal (rated) capacity, not the
+  // SoH-reduced usable capacity — otherwise 8.2 kWh @ 90% (7.38 kWh) snaps
+  // the dropdown to 7.0 and the next Create builds a smaller pack.
+  expect(await page.locator('.battery-size').evaluateAll(e => e.map(x => x.value))).toEqual(['8.2', '8.2']);
+});
+
+test('post-create sync keeps the requested plant in the form', async ({ page }) => {
+  await setupPage(page);
+  await page.click('#btn-create');
+  await page.waitForTimeout(300);
+  expect(await page.locator('#inverter-type').inputValue()).toBe('ACCoupled');
+  expect(await page.locator('#battery-count').inputValue()).toBe('2');
+  await expect(page.locator('.battery-module')).toHaveCount(2);
 });
 
 test('load profile defaults to family with 4 options', async ({ page }) => {

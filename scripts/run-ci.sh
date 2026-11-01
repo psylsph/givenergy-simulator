@@ -4,14 +4,26 @@
 #
 # Usage: ./scripts/run-ci.sh
 #
+# Environment overrides:
+#   CI_OUTPUT_DIR     where scenario output goes
+#                     (default: target/ci-scenarios/<timestamp>-<pid>)
+#   CI_SCENARIOS_DIR  directory of scenario YAML files (default: examples/)
+#
+# Output lives on the project disk (not /tmp, which is often a small tmpfs;
+# multi-day recordings run to GBs). Each passing scenario's output is
+# deleted as soon as it passes, so peak usage is one scenario. Failed
+# scenarios' output is KEPT so the JUnit XML referenced in the summary
+# exists for inspection.
+#
 # Exit code 0 = all scenarios pass, non-zero = failure.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SCENARIOS_DIR="$PROJECT_DIR/examples"
-OUTPUT_DIR=$(mktemp -d)
+SCENARIOS_DIR="${CI_SCENARIOS_DIR:-$PROJECT_DIR/examples}"
+OUTPUT_DIR="${CI_OUTPUT_DIR:-$PROJECT_DIR/target/ci-scenarios/$(date +%Y%m%d-%H%M%S)-$$}"
+mkdir -p "$OUTPUT_DIR"
 
 echo "=== GivEnergy Plant Simulator CI Regression ==="
 echo "Output dir: $OUTPUT_DIR"
@@ -35,6 +47,7 @@ for scenario in "$SCENARIOS_DIR"/*.yaml; do
     if cargo run --release --bin sim-api -- run "$scenario" --output "$OUTPUT_DIR/$name" 2>&1; then
         echo "  ✓ $name PASSED"
         PASS=$((PASS + 1))
+        rm -rf "${OUTPUT_DIR:?}/$name"
     else
         echo "  ✗ $name FAILED"
         FAIL=$((FAIL + 1))
@@ -54,7 +67,12 @@ if [ "$FAIL" -gt 0 ]; then
     done
 fi
 
-# Cleanup
-rm -rf "$OUTPUT_DIR"
+# Cleanup: only when everything passed — failed output is kept for triage.
+if [ "$FAIL" -eq 0 ]; then
+    rm -rf "$OUTPUT_DIR"
+else
+    echo ""
+    echo "Failed scenario output kept in: $OUTPUT_DIR"
+fi
 
 exit $FAIL

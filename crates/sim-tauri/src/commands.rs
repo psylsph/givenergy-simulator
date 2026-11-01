@@ -30,13 +30,51 @@ fn default_soh() -> f64 {
     1.0
 }
 
-/// Derive realistic throughput_kwh from SOH using the degradation model.
-/// degradation_per_cycle = 0.0002 (0.02% SOH loss per cycle)
-/// throughput_kwh = ((1.0 - SOH) / degradation_per_cycle) * nominal_capacity_kwh
-fn throughput_from_soh(soh: f64, nominal_capacity_kwh: f64) -> f64 {
-    const DEGRADATION_PER_CYCLE: f64 = 0.0002;
-    let cycles = (1.0 - soh) / DEGRADATION_PER_CYCLE;
-    cycles * nominal_capacity_kwh
+/// Inverter type used when `create_plant` is called without one
+/// (AC Coupled, DTC 0x3001). Mirrors the GUI form's preselected option.
+pub const DEFAULT_INVERTER_TYPE: &str = "ACCoupled";
+/// Battery module count used when neither modules nor a count are supplied.
+pub const DEFAULT_BATTERY_COUNT: usize = 2;
+/// Per-module capacity (kWh) used when modules are not given explicitly.
+pub const DEFAULT_BATTERY_MODULE_KWH: f64 = 8.2;
+
+/// Resolve the battery modules for a new (non-Gateway) plant: explicit
+/// modules win; otherwise `battery_count` (default 2, clamped 1..=6)
+/// modules of `DEFAULT_BATTERY_MODULE_KWH` at 100% SoH.
+fn resolve_battery_modules(
+    modules: Option<Vec<BatteryModuleConfig>>,
+    battery_count: Option<usize>,
+) -> Vec<BatteryModuleConfig> {
+    match modules {
+        Some(m) if !m.is_empty() => m,
+        _ => {
+            let count = battery_count.unwrap_or(DEFAULT_BATTERY_COUNT).clamp(1, 6);
+            (0..count)
+                .map(|_| BatteryModuleConfig {
+                    capacity_kwh: DEFAULT_BATTERY_MODULE_KWH,
+                    soh: default_soh(),
+                })
+                .collect()
+        }
+    }
+}
+
+/// Build one battery module for a new plant from its requested capacity and
+/// SoH. The requested SoH is honoured (100% = a brand-new pack with zero
+/// throughput/cycles), floored at `BATTERY_MIN_SOH`.
+fn build_battery_module(m: &BatteryModuleConfig, per_module_max_kw: f64) -> BatteryState {
+    let mut b = BatteryState {
+        nominal_capacity_kwh: m.capacity_kwh.max(1.0),
+        ..BatteryState::default()
+    };
+    b.apply_soh(m.soh, per_module_max_kw);
+    tracing::info!(
+        "Creating battery module: SOH={}, capacity={}, throughput={} kWh",
+        b.soh,
+        b.nominal_capacity_kwh,
+        b.throughput_kwh
+    );
+    b
 }
 
 #[derive(serde::Deserialize)]
@@ -53,12 +91,13 @@ pub struct CreatePlantParams {
     pub ct_meter_installed: Option<bool>,
 }
 
-#[tauri::command]
-pub async fn create_plant(
-    app: AppHandle,
-    state: State<'_, AppState>,
+/// Build the initial `PlantState` (and load profile) for `create_plant`
+/// from its parameters, applying the documented defaults. Pure — no app
+/// state, I/O or clock — so the defaults are unit-testable.
+fn build_plant_state(
     params: CreatePlantParams,
-) -> Result<PlantStateDto, String> {
+    now: chrono::NaiveDateTime,
+) -> (sim_models::PlantState, LoadProfile) {
     let peak_watts = params.peak_watts.unwrap_or(5000.0);
     let latitude = params.latitude.unwrap_or(51.5);
     let tick_interval = params.tick_interval.unwrap_or(1);
@@ -70,15 +109,16 @@ pub async fn create_plant(
         _ => LoadProfile::Family,
     };
 
-    let inv_type = params.inverter_type.as_deref().unwrap_or("Gen3Hybrid");
+    let inv_type = params
+        .inverter_type
+        .as_deref()
+        .unwrap_or(DEFAULT_INVERTER_TYPE);
 
     // Max battery charge/discharge power per inverter type (watts). The
     // authoritative table now lives in `sim_models::max_batt_w_for_inverter`
     // (single source of truth) so sim-tauri and sim-api stay in sync.
     let max_batt_w = sim_models::max_batt_w_for_inverter(inv_type);
     let max_batt_kw = max_batt_w / 1000.0;
-
-    let now = chrono::Local::now().naive_local();
 
     // Gateway: batteries live in the child AIO, not the gateway itself.
     // Default to a realistic 3 × GIV-BAT-3.4-HV stack (10.2 kWh) for the AIO.
@@ -91,84 +131,34 @@ pub async fn create_plant(
         let per_module_max_kw = max_batt_kw / count as f64;
         let batts: Vec<BatteryState> = (0..count)
             .map(|_| {
-                let c_rate_kw = (hv_capacity * 0.7).min(10.0);
-                // Gateway HV stack: seed a 3-year-old pack so IR(6-7)
-                // reads a realistic value on day one, in line with the
-                // single-phase `PlantState::new` behaviour.
-                let seeded_throughput = sim_core::seed_battery_throughput_for_age(
-                    sim_core::BATTERY_DEFAULT_AGE_YEARS,
-                    hv_capacity,
-                );
-                let seeded_soh =
-                    sim_core::seed_battery_soh_for_age(sim_core::BATTERY_DEFAULT_AGE_YEARS);
-                BatteryState {
-                    capacity_kwh: hv_capacity,
+                // Gateway HV stack: a new pack (SoH 100%, zero history),
+                // consistent with GUI and CLI plant creation.
+                let mut b = BatteryState {
                     nominal_capacity_kwh: hv_capacity,
                     voltage_v: hv_voltage,
-                    soh: seeded_soh,
-                    throughput_kwh: seeded_throughput,
-                    max_charge_kw: c_rate_kw.min(per_module_max_kw),
-                    max_discharge_kw: c_rate_kw.min(per_module_max_kw),
                     ..BatteryState::default()
-                }
+                };
+                b.apply_soh(1.0, per_module_max_kw);
+                b
             })
             .collect();
         let mut state = sim_models::PlantState::new(now);
         state.batteries = batts;
         state.sync_battery_from_vec();
         state
-    } else if let Some(modules) = params.battery_modules {
+    } else {
+        let modules = resolve_battery_modules(params.battery_modules, params.battery_count);
         let module_count = modules.len().clamp(1, 6);
         let per_module_max_kw = max_batt_kw / module_count as f64;
-        let batts: Vec<BatteryState> =
-            modules
-                .into_iter()
-                .take(6)
-                .map(|m| {
-                    let soh = m.soh.clamp(0.0, 1.0);
-                    let capacity = m.capacity_kwh.max(1.0);
-                    let effective_capacity = capacity * soh;
-                    let c_rate_kw = (effective_capacity * 0.7).min(10.0);
-                    // Derive throughput + SOH from a single consistent age.
-                    // When the GUI sends the default `soh = 1.0` we treat it as
-                    // "no user preference" and seed a 3-year-old pack so IR(6-7)
-                    // reads a realistic value on day one. When the user has
-                    // actively lowered SOH (e.g. via the slider), derive the
-                    // equivalent age and seed from that so throughput, cycles,
-                    // and SOH all agree.
-                    let years = if soh < 1.0 {
-                        // Reverse the degradation model: cycles = (1 - soh) /
-                        // BATTERY_DEGRADATION_PER_CYCLE, years = cycles / CYCLES_PER_YEAR.
-                        let cycles = (1.0 - soh) / sim_core::BATTERY_DEGRADATION_PER_CYCLE;
-                        cycles / sim_core::BATTERY_CYCLES_PER_YEAR
-                    } else {
-                        sim_core::BATTERY_DEFAULT_AGE_YEARS
-                    };
-                    let seeded_throughput =
-                        sim_core::seed_battery_throughput_for_age(years, capacity);
-                    let seeded_soh = sim_core::seed_battery_soh_for_age(years);
-                    tracing::info!(
-                    "Creating battery module: SOH={} (from {}y), capacity={}, throughput={} kWh",
-                    seeded_soh, years, capacity, seeded_throughput,
-                );
-                    BatteryState {
-                        capacity_kwh: effective_capacity,
-                        nominal_capacity_kwh: capacity,
-                        soh: seeded_soh,
-                        throughput_kwh: seeded_throughput,
-                        max_charge_kw: c_rate_kw.min(per_module_max_kw),
-                        max_discharge_kw: c_rate_kw.min(per_module_max_kw),
-                        ..BatteryState::default()
-                    }
-                })
-                .collect();
+        let batts: Vec<BatteryState> = modules
+            .into_iter()
+            .take(6)
+            .map(|m| build_battery_module(&m, per_module_max_kw))
+            .collect();
         let mut state = sim_models::PlantState::new(now);
         state.batteries = batts;
         state.sync_battery_from_vec();
         state
-    } else {
-        let battery_count = params.battery_count.unwrap_or(1).clamp(1, 6);
-        sim_models::PlantState::with_battery_count(now, battery_count)
     };
     plant_state.config.solar_peak_watts = peak_watts;
     plant_state.config.latitude = latitude;
@@ -232,6 +222,21 @@ pub async fn create_plant(
             &seed_params,
         );
     }
+
+    (plant_state, profile)
+}
+
+#[tauri::command]
+pub async fn create_plant(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    params: CreatePlantParams,
+) -> Result<PlantStateDto, String> {
+    let now = chrono::Local::now().naive_local();
+    let (plant_state, profile) = build_plant_state(params, now);
+    let peak_watts = plant_state.config.solar_peak_watts;
+    let latitude = plant_state.config.latitude;
+    let tick_interval = plant_state.config.tick_interval_secs;
 
     // Reset schedule to default — a new plant shouldn't inherit old schedule settings
     {
@@ -1225,27 +1230,19 @@ pub async fn set_battery_soh(
     if let Some(ref mut e) = *eng {
         // Apply directly without running a full tick (same rationale as set_battery_soc).
         let count = e.state.batteries.len().max(1);
+        let per_module_max_kw = sim_models::max_batt_w_for_inverter(&e.state.config.inverter_type)
+            / 1000.0
+            / count as f64;
         if let Some(b) = e.state.batteries.get_mut(params.module) {
-            let soh = params.soh.clamp(0.0, 1.0);
-            b.soh = soh;
-            b.capacity_kwh = b.nominal_capacity_kwh * b.soh;
-            // Derive realistic throughput from SOH using the degradation model
-            b.throughput_kwh = throughput_from_soh(soh, b.nominal_capacity_kwh);
+            b.apply_soh(params.soh, per_module_max_kw);
             tracing::info!(
                 "Set battery SOH: module={}, SOH={}, throughput={} kWh",
                 params.module,
-                soh,
+                b.soh,
                 b.throughput_kwh
             );
-            let c_rate_kw = (b.capacity_kwh * 0.7).min(10.0);
-            let inv_max_kw = e.state.config.max_ac_watts / 1000.0;
-            let per_module_kw = inv_max_kw / count as f64;
-            let limit = c_rate_kw.min(per_module_kw);
-            b.max_charge_kw = limit;
-            b.max_discharge_kw = limit;
         }
-        // Ensure aggregate limits are sane
-        let _ = count;
+        e.state.sync_battery_from_vec();
         // Update register store so IR 6-7 reflect the new throughput immediately
         {
             let mut rs = state.register_store.lock().await;
@@ -1991,6 +1988,204 @@ mod tests {
     use super::*;
 
     #[test]
+    fn create_plant_defaults_to_ac_coupled_with_two_8_2_kwh_modules() {
+        // The default plant (no params supplied) is an AC Coupled 0x3001
+        // inverter with 2 x 8.2 kWh battery modules.
+        assert_eq!(DEFAULT_INVERTER_TYPE, "ACCoupled");
+        assert_eq!(sim_models::inverter_dtc_for(DEFAULT_INVERTER_TYPE), 0x3001);
+
+        let modules = resolve_battery_modules(None, None);
+        assert_eq!(modules.len(), 2);
+        for m in &modules {
+            assert_eq!(m.capacity_kwh, 8.2);
+            assert_eq!(m.soh, 1.0);
+        }
+    }
+
+    #[test]
+    fn create_plant_soh_100_builds_a_new_pack() {
+        // Regression: soh = 1.0 used to be treated as "no preference" and
+        // silently seeded a 3-year-old pack (SoH ~80%, ~990 cycles), which
+        // the GUI only revealed later (e.g. after an SOC change re-synced
+        // the sidebar), making it look as if setting SOC reset SoH.
+        let m = BatteryModuleConfig {
+            capacity_kwh: 8.2,
+            soh: 1.0,
+        };
+        let b = build_battery_module(&m, 1.5);
+        assert_eq!(b.soh, 1.0);
+        assert_eq!(b.throughput_kwh, 0.0);
+        assert_eq!(b.cycle_count, 0.0);
+        assert_eq!(b.nominal_capacity_kwh, 8.2);
+        assert_eq!(b.capacity_kwh, 8.2);
+    }
+
+    #[test]
+    fn create_plant_honours_requested_soh_exactly() {
+        let m = BatteryModuleConfig {
+            capacity_kwh: 8.2,
+            soh: 0.8,
+        };
+        let b = build_battery_module(&m, 1.5);
+        assert!((b.soh - 0.8).abs() < 1e-9, "soh {}", b.soh);
+        // Capacity must be consistent with the final SoH from tick zero.
+        assert!((b.capacity_kwh - 8.2 * b.soh).abs() < 1e-9);
+        // Throughput / cycles agree with the degradation model.
+        let expected_tp = (1.0 - 0.8) / sim_models::BATTERY_DEGRADATION_PER_CYCLE * 8.2;
+        assert!((b.throughput_kwh - expected_tp).abs() < 1e-6);
+        assert!((b.cycle_count - expected_tp / 8.2).abs() < 1e-6);
+        // Power limits: min(C-rate on effective capacity, per-module share).
+        assert!((b.max_charge_kw - (b.capacity_kwh * 0.7).min(1.5)).abs() < 1e-9);
+        assert_eq!(b.max_charge_kw, b.max_discharge_kw);
+    }
+
+    #[test]
+    fn create_plant_soh_floor_matches_engine_min_soh() {
+        // BatteryEngine never lets SoH fall below BATTERY_MIN_SOH; a plant
+        // must not be created below it either (soh 0 would mean a 0 kWh,
+        // 0 kW module).
+        for requested in [0.3, 0.0, -1.0] {
+            let b = build_battery_module(
+                &BatteryModuleConfig {
+                    capacity_kwh: 8.2,
+                    soh: requested,
+                },
+                1.5,
+            );
+            assert_eq!(b.soh, sim_models::BATTERY_MIN_SOH, "requested {requested}");
+            assert!((b.capacity_kwh - 8.2 * sim_models::BATTERY_MIN_SOH).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn set_battery_soh_shares_create_plant_math_and_battery_cap() {
+        // Regression: set_battery_soh capped per-module power by the AC
+        // rating (max_ac_watts), so moving the SoH slider on a Gen1Hybrid
+        // (AC 5 kW, battery 2.5 kW) doubled the battery limit, and it left
+        // cycle_count stale.
+        let per_module_kw = sim_models::max_batt_w_for_inverter("Gen1Hybrid") / 1000.0;
+        let mut b = build_battery_module(
+            &BatteryModuleConfig {
+                capacity_kwh: 9.5,
+                soh: 1.0,
+            },
+            per_module_kw,
+        );
+        b.apply_soh(0.99, per_module_kw);
+        let expected = build_battery_module(
+            &BatteryModuleConfig {
+                capacity_kwh: 9.5,
+                soh: 0.99,
+            },
+            per_module_kw,
+        );
+        assert_eq!(b.max_charge_kw, per_module_kw.min(9.5 * 0.99 * 0.7));
+        assert!(b.max_charge_kw <= 2.5);
+        assert_eq!(b.soh, expected.soh);
+        assert_eq!(b.capacity_kwh, expected.capacity_kwh);
+        assert_eq!(b.throughput_kwh, expected.throughput_kwh);
+        assert_eq!(b.cycle_count, expected.cycle_count);
+        assert_eq!(b.max_discharge_kw, expected.max_discharge_kw);
+    }
+
+    fn plant_from(json: serde_json::Value) -> sim_models::PlantState {
+        let params: CreatePlantParams = serde_json::from_value(json).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        build_plant_state(params, now).0
+    }
+
+    #[test]
+    fn build_plant_state_with_no_params_is_the_default_plant() {
+        let p = plant_from(serde_json::json!({}));
+        assert_eq!(p.config.inverter_type, "ACCoupled");
+        assert_eq!(
+            sim_models::inverter_dtc_for(&p.config.inverter_type),
+            0x3001
+        );
+        assert_eq!(
+            p.config.max_ac_watts,
+            sim_models::max_ac_watts_for("ACCoupled")
+        );
+        assert_eq!(p.batteries.len(), 2);
+        let per_module_kw = sim_models::max_batt_w_for_inverter("ACCoupled") / 1000.0 / 2.0;
+        for b in &p.batteries {
+            assert_eq!(b.nominal_capacity_kwh, 8.2);
+            assert_eq!(b.capacity_kwh, 8.2);
+            assert_eq!(b.soh, 1.0);
+            assert_eq!(b.throughput_kwh, 0.0);
+            assert_eq!(b.cycle_count, 0.0);
+            assert!(b.max_charge_kw <= per_module_kw + 1e-9);
+        }
+        assert_eq!(p.battery.nominal_capacity_kwh, 8.2, "battery mirror synced");
+    }
+
+    #[test]
+    fn build_plant_state_battery_count_only_uses_default_module_size() {
+        // Regression: the count-only path went through
+        // PlantState::with_battery_count (9.5 kWh, 3-year-old seed).
+        let p = plant_from(serde_json::json!({ "battery_count": 3 }));
+        assert_eq!(p.batteries.len(), 3);
+        assert!(p.batteries.iter().all(|b| b.nominal_capacity_kwh == 8.2));
+        assert!(p.batteries.iter().all(|b| b.soh == 1.0));
+    }
+
+    #[test]
+    fn build_plant_state_honours_explicit_inverter_and_modules() {
+        let p = plant_from(serde_json::json!({
+            "inverter_type": "Gen1Hybrid",
+            "battery_modules": [{ "capacity_kwh": 9.5, "soh": 0.9 }],
+        }));
+        assert_eq!(p.config.inverter_type, "Gen1Hybrid");
+        assert_eq!(p.batteries.len(), 1);
+        assert!((p.batteries[0].soh - 0.9).abs() < 1e-12);
+        assert!(
+            p.batteries[0].max_charge_kw <= 2.5,
+            "Gen1 battery rating cap"
+        );
+    }
+
+    #[test]
+    fn build_plant_state_gateway_stack_is_a_new_pack() {
+        // Regression: the Gateway AIO stack was seeded as a 3-year-old pack
+        // (SoH ~80%, ~990 cycles) while GUI plants start new.
+        let p = plant_from(serde_json::json!({ "inverter_type": "Gateway12kW" }));
+        assert_eq!(p.batteries.len(), 3);
+        assert_eq!(p.config.parallel_aio_num, 1);
+        for b in &p.batteries {
+            assert_eq!(b.nominal_capacity_kwh, 3.4);
+            assert_eq!(b.voltage_v, 51.2);
+            assert_eq!(b.soh, 1.0);
+            assert_eq!(b.throughput_kwh, 0.0);
+            assert_eq!(b.capacity_kwh, 3.4);
+        }
+    }
+
+    #[test]
+    fn create_plant_battery_count_uses_default_module_size() {
+        let modules = resolve_battery_modules(None, Some(3));
+        assert_eq!(modules.len(), 3);
+        assert!(modules.iter().all(|m| m.capacity_kwh == 8.2));
+        // Clamped to the 1..=6 supported range.
+        assert_eq!(resolve_battery_modules(None, Some(0)).len(), 1);
+        assert_eq!(resolve_battery_modules(None, Some(9)).len(), 6);
+    }
+
+    #[test]
+    fn create_plant_explicit_modules_win_over_defaults() {
+        let explicit = vec![BatteryModuleConfig {
+            capacity_kwh: 9.5,
+            soh: 0.9,
+        }];
+        let modules = resolve_battery_modules(Some(explicit), Some(4));
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].capacity_kwh, 9.5);
+        assert_eq!(modules[0].soh, 0.9);
+    }
+
+    #[test]
     fn modbus_dc_battery_limits_normalize_zero_to_fifty_registers() {
         match modbus_address_to_command(111, 50) {
             Some(Command::SetBatteryChargeLimit(value)) => assert_eq!(value, 100.0),
@@ -2047,32 +2242,6 @@ mod tests {
         // And they are NOT mis-routed to any unrelated command (e.g. SetExportLimit
         // already owns 2071; we don't want a duplicate).
         assert!(modbus_address_to_command(2062, 1600).is_none());
-    }
-
-    #[test]
-    fn test_throughput_from_soh_calculation() {
-        // Test SOH 0.781 (approx 3 years old, 1 cycle/day)
-        let soh = 0.781;
-        let capacity = 9.5;
-        let throughput = throughput_from_soh(soh, capacity);
-
-        // Expected: cycles = (1.0 - 0.781) / 0.0002 = 1095 cycles
-        // throughput = 1095 * 9.5 = 10402.5 kWh
-        assert!(
-            (throughput - 10402.5).abs() < 1.0,
-            "Expected ~10402.5, got {}",
-            throughput
-        );
-        println!("SOH {}: throughput = {} kWh", soh, throughput);
-
-        // Test new battery (SOH 1.0 = 0 throughput)
-        let throughput_new = throughput_from_soh(1.0, 9.5);
-        assert_eq!(throughput_new, 0.0, "New battery should have 0 throughput");
-
-        // Test 50% SOH (end of life)
-        let throughput_eol = throughput_from_soh(0.5, 9.5);
-        let expected_eol = (1.0 - 0.5) / 0.0002 * 9.5; // 2500 cycles * 9.5 = 23750
-        assert!((throughput_eol - expected_eol).abs() < 1.0);
     }
 
     #[test]
