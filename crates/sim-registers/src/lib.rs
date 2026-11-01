@@ -2027,7 +2027,7 @@ impl RegisterStore {
         let connected = state.grid.connected;
         let line_v = if connected { 240.0 } else { 0.0 };
 
-        // Gateway wire convention for p_ac1 (1616), p_aio_total (1702), and
+        // Gateway wire convention for p_aio_total (1702) and
         // the per-AIO p_aioN_inverter (1816–1818) is the OPPOSITE of the
         // standard inverter's p_battery (IR 52): raw + = charging/in,
         // − = discharging/out. Confirmed by GivTCP read.py:1556, which
@@ -2073,7 +2073,9 @@ impl RegisterStore {
         set(1610, deci(line_v)); // v_load
         set(1611, deci(load_w / 240.0)); // i_load (deci A)
         set(1612, deci(pv_w / 240.0)); // i_pv (deci A)
-        set(1616, i16_word(aio_power_w)); // p_ac1 (signed)
+        // p_ac1 = metered grid flow, + = export (GivTCP read.py:1550,
+        // `Grid_Power = GEInv.p_ac1`); internal grid is + = import.
+        set(1616, i16_word(-grid_w)); // p_ac1 (signed)
         set(1617, u16_word(pv_w)); // p_pv
         set(1618, u16_word(load_w)); // p_load (excludes EV)
         set(1619, i16_word(0.0)); // p_liberty (smart load, unmodelled)
@@ -9770,8 +9772,25 @@ mod tests {
     }
 
     #[test]
+    fn gateway_p_ac1_is_grid_power_positive_export() {
+        // IR(1616) p_ac1 is the Gateway's metered grid flow, + = export,
+        // − = import (GivTCP read.py:1550: `Grid_Power = GEInv.p_ac1`).
+        let mut s = gateway_state(); // grid.power_w = +500 = importing
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&s);
+        let ir = |store: &RegisterStore, a: u16| {
+            store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16
+        };
+        assert_eq!(ir(&store, 1616), -500, "importing 500 W reads −500");
+
+        s.grid.power_w = -1200.0; // exporting
+        store.project_from_state(&s);
+        assert_eq!(ir(&store, 1616), 1200, "exporting 1200 W reads +1200");
+    }
+
+    #[test]
     fn gateway_aio_power_sign_convention() {
-        // GivEnergy Gateway wire convention for p_ac1 (1616), p_aio_total
+        // GivEnergy Gateway wire convention for p_aio_total
         // (1702) and per-AIO p_aioN_inverter (1816–1818) is the OPPOSITE of
         // the standard inverter p_battery (IR 52): raw + = charging/in,
         // − = discharging/out. Confirmed by GivTCP read.py:1556 (negates
@@ -9784,11 +9803,10 @@ mod tests {
 
         let ir = |a: u16| store.read_by_space(a, RegisterSpace::Input).unwrap_or(0) as i16;
         assert!(
-            ir(1616) > 0,
-            "p_ac1 must be positive while charging (Gateway convention), got {}",
-            ir(1616)
+            ir(1702) > 0,
+            "p_aio_total must be positive while charging (Gateway convention), got {}",
+            ir(1702)
         );
-        assert_eq!(ir(1616), ir(1702), "p_ac1 == p_aio_total for single-AIO");
         assert_eq!(
             ir(1702),
             ir(1816),

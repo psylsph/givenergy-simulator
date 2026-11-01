@@ -133,7 +133,7 @@ only to the `uint32` totals (§3).
 | 1610 | `v_load` | float | ÷ 10 | Load voltage, V. Range 0–500. |
 | 1611 | `i_load` | float | ÷ 10 | Load current, A. Range 0–500 (unsigned). |
 | 1612 | `i_pv` | float | `int16` ÷ 10 | PV current, A. Range 0–500. |
-| 1616 | `p_ac1` | int | `int16` | AC port 1 power, W (signed). |
+| 1616 | `p_ac1` | int | `int16` | Grid power, W (signed; + = export, − = import). GivTCP publishes it as `Grid_Power`. |
 | 1617 | `p_pv` | uint | uint16 | PV total power, W. Max 50000. |
 | 1618 | `p_load` | uint | uint16 | Load power, W. Max 50000. **Excludes EV charger.** |
 | 1619 | `p_liberty` | int | `int16` | Liberty/smart-load power, W (signed). |
@@ -348,8 +348,9 @@ For a healthy simulator: IR(1622)=0, IR(1623)=0 → empty fault list.
 | Quantity | Reg | Sign |
 |---|---|---|
 | Grid current `i_grid` | 1609 | signed (int16) |
-| AC1 / AIO inverter power `p_ac1`, `p_aio*_inverter` | 1616, 1816–1818 | signed (int16); **+ = charging/in, − = discharging/out** — the **opposite** of the standard inverter `p_battery` (IR 52). Confirmed by GivTCP `read.py:1556`, which negates `GEInv.p_aio_total` to recover `Battery_Power` in its internal + = discharging convention. A simulator that emits the same convention as IR 52 (i.e. + = discharge) will appear inverted to every real-client decoder. |
-| Liberty / smart load `p_liberty` | 1619 | signed (int16); same convention as `p_ac1` (raw + = into the smart load) |
+| Grid power `p_ac1` | 1616 | signed (int16); **+ = export, − = import** (GivTCP `read.py:1550`: `Grid_Power = GEInv.p_ac1`) |
+| AIO inverter power `p_aio_total`, `p_aio*_inverter` | 1702, 1816–1818 | signed (int16); **+ = charging/in, − = discharging/out** — the **opposite** of the standard inverter `p_battery` (IR 52). Confirmed by GivTCP `read.py:1556`, which negates `GEInv.p_aio_total` to recover `Battery_Power` in its internal + = discharging convention. A simulator that emits the same convention as IR 52 (i.e. + = discharge) will appear inverted to every real-client decoder. |
+| Liberty / smart load `p_liberty` | 1619 | signed (int16); raw + = into the smart load (GivTCP negates it) |
 | PV power `p_pv` | 1617 | unsigned |
 | Load power `p_load` | 1618 | unsigned; **excludes EV charger** (key gateway property) |
 
@@ -384,7 +385,7 @@ instantaneous readings, the canonical decomposition (from `dewet22/givenergy-mod
 **Inputs (gateway equivalents):**
 
 - `pv` ← `p_pv` (IR 1617), ≥ 0
-- `grid` ← grid power; **+ = export, − = import** (derived from `i_grid`/`p_ac1`)
+- `grid` ← `p_ac1` (IR 1616); **+ = export, − = import**
 - `battery` ← `p_aio_total` (IR 1702); **+ = discharge, − = charge**
 
 **Stateless decomposition** (`idle` threshold default 0.05 kW), solar prioritised:

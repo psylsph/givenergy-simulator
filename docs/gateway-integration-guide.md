@@ -179,7 +179,7 @@ for the config/identity block, same slave for the IR 1600–1859 bank). All mult
 | Load voltage | `v_load` | IR 1610 | ÷10 V | 0–500 |
 | Load current | `i_load` | IR 1611 | ÷10 A | unsigned, 0–500 |
 | PV current | `i_pv` | IR 1612 | ÷10 A, int16 | 0–500 |
-| AIO inverter power (port 1) | `p_ac1` | IR 1616 | W, **int16** | **+ = discharge/out, − = charge/in** |
+| Grid power | `p_ac1` | IR 1616 | W, **int16** | **+ = export, − = import** (GivTCP `Grid_Power`) |
 | **PV generation** | `p_pv` | IR 1617 | W, u16 | unsigned, ≤50000 |
 | **House load (excl. EV!)** | `p_load` | IR 1618 | W, u16 | unsigned, ≤50000 |
 | Smart/Liberty load | `p_liberty` | IR 1619 | W, int16 | signed |
@@ -198,7 +198,7 @@ for the config/identity block, same slave for the IR 1600–1859 bank). All mult
 |---|---|---|---|---|
 | Number of AIOs configured | `parallel_aio_num` | IR 1700 | u16 | 1–3 |
 | Number of AIOs online | `parallel_aio_online_num` | IR 1701 | u16 | health: should equal 1700 |
-| Aggregate AIO power | `p_aio_total` | IR 1702 | W, **int16** | sum of all AIO inverter power, same sign as `p_ac1` |
+| Aggregate AIO power | `p_aio_total` | IR 1702 | W, **int16** | sum of all AIO inverter power, **+ = charging, − = discharging** |
 | Aggregate battery state | `aio_state` | IR 1703 | enum | **1=charging, 2=discharging, 0=idle** |
 | Battery firmware | `battery_firmware_version` | IR 1704 | u16 | info-only |
 
@@ -276,7 +276,8 @@ on `GA000010+` firmware needs it.
 | Quantity | Register name | Raw type | Display meaning |
 |---|---|---|---|
 | Grid power | `i_grid` (and derived) | signed | **+ = import (from grid), − = export (to grid)** |
-| AIO / battery power | `p_ac1`, `p_aio_total`, `p_aio{N}_inverter` | signed | **+ = discharging (out), − = charging (in)** |
+| AIO / battery power | `p_aio_total`, `p_aio{N}_inverter` | signed | **+ = charging (in), − = discharging (out)** |
+| Grid power | `p_ac1` | signed | **+ = export, − = import** |
 | PV power | `p_pv` | unsigned | always ≥ 0 (generation) |
 | Load power | `p_load` | unsigned | always ≥ 0 (**excludes EV**) |
 | Smart load | `p_liberty` | signed | + = active |
@@ -329,7 +330,7 @@ From the gateway's instantaneous readings (all converted to kW):
 **Inputs:**
 
 - `pv` ← `p_pv` (IR 1617), ≥ 0
-- `grid` ← derived from `i_grid`/`p_ac1`: **+ = import, − = export**
+- `grid` ← `p_ac1` (IR 1616): **+ = export, − = import**
 - `battery` ← `p_aio_total` (IR 1702): **+ = discharging, − = charging**
 
 **8-state headline** (grid > battery > solar precedence; idle threshold ~0.05 kW):

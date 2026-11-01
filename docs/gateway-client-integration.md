@@ -104,7 +104,7 @@ region. Addresses below are V1; see §4 for V1/V2 differences.
 | `v_load` | 1610 | V (÷10) | — | Load-side voltage |
 | `i_load` | 1611 | A (÷10) | unsigned | House current |
 | `i_pv` | 1612 | A (÷10) | — | PV current |
-| `p_ac1` | 1616 | W | **signed** | AIO inverter power (+ = out/discharge, − = in/charge) |
+| `p_ac1` | 1616 | W | **signed** | Grid power, metered (+ = export, − = import) |
 | `p_pv` | 1617 | W | unsigned | Total PV generation |
 | **`p_load`** | **1618** | **W** | unsigned | **House load (excludes EV charger!)** |
 | `p_liberty` | 1619 | W | signed | Smart/Liberty load (often 0 / unmodelled) |
@@ -115,7 +115,7 @@ region. Addresses below are V1; see §4 for V1/V2 differences.
 |---|---|---|
 | `parallel_aio_num` | 1700 | "1 AIO" / "2 AIOs" |
 | `parallel_aio_online_num` | 1701 | Online count (health indicator if < num) |
-| `p_aio_total` | 1702 | Aggregate inverter power, W **signed** (same sign as `p_ac1`) |
+| `p_aio_total` | 1702 | Aggregate inverter power, W **signed** (+ = charging, − = discharging) |
 | `aio_state` | 1703 | **1 = charging, 2 = discharging, 0 = idle** — drives the battery icon |
 | `battery_firmware_version` | 1704 | Info-only |
 
@@ -234,8 +234,8 @@ The single biggest source of "my arrows point the wrong way" bugs:
 
 | Quantity | Reg | Raw | Display |
 |---|---|---|---|
-| Grid power | `i_grid`/derived | signed | **+ import (from grid), − export (to grid)** |
-| AIO/battery power | `p_ac1`, `p_aio_total`, `p_aio*_inverter` | signed | **+ discharging (out), − charging (in)** |
+| Grid power | `p_ac1` | signed | **+ export (to grid), − import (from grid)** |
+| AIO/battery power | `p_aio_total`, `p_aio*_inverter` | signed | **+ charging (in), − discharging (out)** |
 | PV power | `p_pv` | unsigned | always ≥ 0 (generation) |
 | Load power | `p_load` | unsigned | always ≥ 0 (consumption, **excludes EV**) |
 | Smart load | `p_liberty` | signed | + active |
