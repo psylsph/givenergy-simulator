@@ -60,6 +60,15 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.1** — Dependabot cleanup. `npm audit fix` for the ui toolchain:
+`vite` 6.4.3 → 6.4.5 (dev-server security cluster: cross-origin script
+execution GHSA-9jrq-w75r-8gcw, `server.fs.allow` bypass
+GHSA-rq7h-c2jc-7f22, launch-editor advisories) and `source-map-js`
+1.2.1 → 1.2.2 (event-loop DoS, GHSA-68fv-2mgg-jv7q — the new high alert
+Dependabot raised against the default branch). Lockfile-only, within
+the declared `^6.0.0` range; 549 Rust + 5/5 scenarios + 49 Playwright
+re-run green.
+
 **0.18.0** — Plant creation SoH consistency. One shared helper,
 `BatteryState::apply_soh` (`sim-models`), now sets SoH and derives usable
 capacity, throughput/cycle history and 0.7C power limits (capped at the

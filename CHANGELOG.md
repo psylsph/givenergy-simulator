@@ -4,6 +4,25 @@ All notable changes to the GivEnergy Plant Simulator are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.18.1] - 2026-11-01
+
+### Changed
+
+- Dependabot cleanup: `npm audit fix` for the ui toolchain pulls
+  `vite` 6.4.3 → 6.4.5 (fixes a dev-server security cluster: cross-origin
+  script execution through Vite custom middleware GHSA-9jrq-w75r-8gcw,
+  `server.fs.allow` bypass GHSA-rq7h-c2jc-7f22 and the launch-editor
+  advisories) and `source-map-js` 1.2.1 → 1.2.2 (event-loop DoS through
+  indexed source-map section offsets, GHSA-68fv-2mgg-jv7q — the high
+  alert Dependabot opened against the default branch). Lockfile-only;
+  declared ranges (`vite: ^6.0.0`) already cover both bumps.
+
+### Tests
+
+- Regression gates re-run green on the bumped toolchain: 549 Rust,
+  5/5 scenario regressions, 49/49 Playwright (no new tests required —
+  dependency-only change).
+
 ## [0.18.0] - 2026-11-01
 
 ### Added
