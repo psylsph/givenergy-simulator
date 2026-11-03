@@ -540,12 +540,13 @@ async fn gateway_three_phase_control_bank_rejected_on_wire() {
 }
 
 #[tokio::test]
-async fn gateway_schedule_write_reads_back_and_still_reaches_the_plant() {
+async fn gateway_schedule_write_stays_on_the_gateway() {
     // HEM issue #428: a real Gateway keeps its own copy of the schedule
-    // registers rather than mirroring the AIO behind it. A client's write
-    // to the Gateway must read back from the Gateway after the engine
-    // re-projects the plant (whose schedule differs), and must still be
-    // forwarded to the plant as a command.
+    // registers rather than mirroring the AIO behind it, and a slot saved
+    // on the Gateway never reached the AIO (02:10-04:59 written to the
+    // Gateway read back there; the AIO kept 04:58). A client's write to
+    // the Gateway must read back from the Gateway after the engine
+    // re-projects the plant, and must not be forwarded to the plant.
     let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -566,8 +567,21 @@ async fn gateway_schedule_write_reads_back_and_still_reaches_the_plant() {
         "Gateway write to HR 94 must be ACKed"
     );
 
-    let cmd = rx.try_recv().expect("the write is forwarded to the plant");
-    assert_eq!((cmd.address, cmd.value), (94, 210));
+    assert!(
+        rx.try_recv().is_err(),
+        "a Gateway schedule write must not reach the plant"
+    );
+
+    // Registers the Gateway doesn't keep its own copy of still reach it.
+    let req = build_write_request(&serial, 0x11, 116, 90);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func, FC_WRITE_SINGLE,
+        "Gateway write to HR 116 must be ACKed"
+    );
+    let cmd = rx.try_recv().expect("HR 116 is forwarded to the plant");
+    assert_eq!((cmd.address, cmd.value), (116, 90));
 
     // An engine tick: the plant's own schedule has no slot 1.
     {

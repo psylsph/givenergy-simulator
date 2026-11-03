@@ -317,6 +317,17 @@ impl RegisterStore {
         true
     }
 
+    /// Whether an accepted client write to `address` reaches the plant.
+    ///
+    /// On a Gateway, writes to [`GATEWAY_OWN_HOLDING`] stay on the Gateway:
+    /// on real hardware a slot saved to the Gateway read back there but
+    /// never reached the AIO (HEM issue #428). Everything else, and every
+    /// write on other devices, drives the plant.
+    pub fn forwards_to_plant(&self, address: u16) -> bool {
+        let _ = address;
+        true
+    }
+
     /// On a Gateway, put back its own values for [`GATEWAY_OWN_HOLDING`]
     /// after the plant has been projected over them.
     fn apply_gateway_config(&mut self) {
@@ -11011,6 +11022,41 @@ mod tests {
         store.project_from_state(&state);
         store.project_schedule(&aio_overnight_schedule());
         assert_eq!(holding(&store, 110), Some(10));
+    }
+
+    #[test]
+    fn gateway_own_registers_are_not_forwarded_to_the_plant() {
+        let state = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        for &(address, _) in GATEWAY_OWN_HOLDING {
+            assert!(
+                !store.forwards_to_plant(address),
+                "Gateway HR {address} must stay on the Gateway"
+            );
+        }
+        assert!(
+            store.forwards_to_plant(116),
+            "HR 116 still reaches the plant"
+        );
+        assert!(
+            store.forwards_to_plant(2071),
+            "HR 2071 still reaches the plant"
+        );
+    }
+
+    #[test]
+    fn non_gateway_writes_are_forwarded_to_the_plant() {
+        let mut state = gateway_state();
+        state.config.inverter_type = "AllInOne".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        for &(address, _) in GATEWAY_OWN_HOLDING {
+            assert!(
+                store.forwards_to_plant(address),
+                "AIO HR {address} drives the plant"
+            );
+        }
     }
 
     #[test]
