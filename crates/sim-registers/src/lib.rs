@@ -247,6 +247,11 @@ impl RegisterStore {
         false
     }
 
+    /// A holding-register write from a Modbus client.
+    pub fn client_write(&mut self, address: u16, value: u16) -> bool {
+        self.write(address, value)
+    }
+
     /// Check whether any RegisterDef exists in the given address range for
     /// the given register space. Used to distinguish "register exists but is
     /// zero" from "register does not exist at all" — the Modbus server can
@@ -10784,5 +10789,144 @@ mod tests {
         let mut s = RegisterStore::new(default_register_catalogue());
         s.project_from_state(state);
         s.read_by_space(31, RegisterSpace::Input).unwrap()
+    }
+
+    // ==================================================================
+    // Gateway's own holding-register config (HEM issue #428)
+    //
+    // A real Gateway keeps its own copy of the schedule and battery config
+    // registers. A capture from a Gateway + AIO install showed the AIO
+    // charging from slot 1 (02:10-04:58, HR 96 armed, reserve 4%, limits
+    // 35/45%, EPS on) while the Gateway read HR 94/95/96 as zero, reserve
+    // 10%, limits 100/100%, active power rate 100% and EPS off. The Gateway
+    // must therefore not mirror the AIO's (plant's) state into these
+    // registers; it reads back what was written to it, or its defaults.
+    // ==================================================================
+
+    /// The AIO's own schedule as in the #428 capture: slot 1 02:10-04:58,
+    /// Timed Charge armed.
+    fn aio_overnight_schedule() -> sim_models::Schedule {
+        sim_models::Schedule {
+            charge_start: 2.0 + 10.0 / 60.0,
+            charge_end: 4.0 + 58.0 / 60.0,
+            charge_target_soc: 100.0,
+            enable_charge: true,
+            ..Default::default()
+        }
+    }
+
+    fn holding(store: &RegisterStore, address: u16) -> Option<u16> {
+        store.read_by_space(address, RegisterSpace::Holding)
+    }
+
+    #[test]
+    fn gateway_holding_config_does_not_mirror_the_aio() {
+        let state = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        store.project_schedule(&aio_overnight_schedule());
+
+        for (address, expected, what) in [
+            (94, 0, "charge slot 1 start"),
+            (95, 0, "charge slot 1 end"),
+            (96, 0, "enable_charge"),
+            (31, 0, "charge slot 2 start"),
+            (32, 0, "charge slot 2 end"),
+            (56, 0, "discharge slot 1 start"),
+            (57, 0, "discharge slot 1 end"),
+            (44, 0, "discharge slot 2 start"),
+            (45, 0, "discharge slot 2 end"),
+            (59, 0, "enable_discharge"),
+            (20, 0, "enable_charge_target"),
+            (27, 1, "battery_power_mode (Eco)"),
+            (50, 100, "active power rate"),
+            (110, 10, "battery SOC reserve"),
+            (313, 100, "AC charge limit"),
+            (314, 100, "AC discharge limit"),
+            (317, 0, "EPS enable"),
+            (318, 0, "battery pause mode"),
+            (319, 0, "battery pause slot start"),
+            (320, 0, "battery pause slot end"),
+        ] {
+            assert_eq!(
+                holding(&store, address),
+                Some(expected),
+                "Gateway HR {address} ({what}) must hold the Gateway's own value, not the AIO's"
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_reads_back_what_a_client_wrote_across_projections() {
+        let state = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert!(store.client_write(94, 210));
+        assert!(store.client_write(95, 459));
+        assert!(store.client_write(96, 1));
+        assert!(store.client_write(110, 5));
+
+        // The engine ticks and re-projects with a plant schedule that differs
+        // from what was written to the Gateway.
+        for _ in 0..3 {
+            store.project_from_state(&state);
+            store.project_schedule(&sim_models::Schedule::default());
+        }
+
+        assert_eq!(holding(&store, 94), Some(210));
+        assert_eq!(holding(&store, 95), Some(459));
+        assert_eq!(holding(&store, 96), Some(1));
+        assert_eq!(holding(&store, 110), Some(5));
+        // Registers nobody wrote keep the Gateway's defaults.
+        assert_eq!(holding(&store, 313), Some(100));
+    }
+
+    #[test]
+    fn gateway_client_write_above_2399_keeps_the_previous_slot_time() {
+        // Schedule-time writes above 2399 are ACKed but ignored; the Gateway's
+        // own copy must keep the value it held, not record the rejected one.
+        let state = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        assert!(store.client_write(94, 210));
+        assert!(store.client_write(94, 2400));
+        store.project_from_state(&state);
+        store.project_schedule(&sim_models::Schedule::default());
+        assert_eq!(holding(&store, 94), Some(210));
+    }
+
+    #[test]
+    fn gateway_own_config_is_dropped_when_the_plant_is_no_longer_a_gateway() {
+        let mut state = gateway_state();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        assert!(store.client_write(110, 5));
+
+        // Re-created as an AIO: its registers mirror the plant again.
+        state.config.inverter_type = "AllInOne".to_string();
+        store.project_from_state(&state);
+        store.project_schedule(&aio_overnight_schedule());
+        assert_eq!(holding(&store, 110), Some(4));
+
+        // Back to a Gateway: the earlier write is gone, defaults apply.
+        state.config.inverter_type = "Gateway12kW".to_string();
+        store.project_from_state(&state);
+        store.project_schedule(&aio_overnight_schedule());
+        assert_eq!(holding(&store, 110), Some(10));
+    }
+
+    #[test]
+    fn aio_holding_config_still_mirrors_the_plant() {
+        let mut state = gateway_state();
+        state.config.inverter_type = "AllInOne".to_string();
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        store.project_schedule(&aio_overnight_schedule());
+
+        assert_eq!(holding(&store, 94), Some(210));
+        assert_eq!(holding(&store, 95), Some(458));
+        assert_eq!(holding(&store, 96), Some(1));
+        assert_eq!(holding(&store, 110), Some(4));
     }
 }

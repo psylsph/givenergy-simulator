@@ -538,3 +538,52 @@ async fn gateway_three_phase_control_bank_rejected_on_wire() {
         "Gateway single-phase write (HR 116) must succeed"
     );
 }
+
+#[tokio::test]
+async fn gateway_schedule_write_reads_back_and_still_reaches_the_plant() {
+    // HEM issue #428: a real Gateway keeps its own copy of the schedule
+    // registers rather than mirroring the AIO behind it. A client's write
+    // to the Gateway must read back from the Gateway after the engine
+    // re-projects the plant (whose schedule differs), and must still be
+    // forwarded to the plant as a command.
+    let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let mut state = PlantState::new(ts);
+    state.config.inverter_type = "Gateway12kW".to_string();
+    state.sync_battery_from_vec();
+
+    let (addr, store, mut rx) = start_server(&state).await;
+    let serial = serial_arr();
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+
+    let req = build_write_request(&serial, 0x11, 94, 210);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func, FC_WRITE_SINGLE,
+        "Gateway write to HR 94 must be ACKed"
+    );
+
+    let cmd = rx.try_recv().expect("the write is forwarded to the plant");
+    assert_eq!((cmd.address, cmd.value), (94, 210));
+
+    // An engine tick: the plant's own schedule has no slot 1.
+    {
+        let mut s = store.lock().await;
+        s.project_from_state(&state);
+        s.project_schedule(&sim_models::Schedule::default());
+    }
+
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 94, 3);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, payload) = decode_response(&raw);
+    assert_eq!(func, FC_READ_HOLDING);
+    let (_, _, data) = parse_read_payload(&payload);
+    assert_eq!(
+        data,
+        vec![210, 0, 0],
+        "Gateway HR 94-96 must read back the Gateway's own values"
+    );
+}
