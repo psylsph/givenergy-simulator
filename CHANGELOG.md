@@ -4,6 +4,20 @@ All notable changes to the GivEnergy Plant Simulator are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- A Gateway no longer mirrors the AIO's schedule and battery settings in
+  its own holding registers. A capture from a real Gateway + AIO install
+  (home-energy-manager #428) showed the AIO charging from slot 1 while the
+  Gateway read its schedule as empty, with its own reserve (10%), AC
+  limits (100/100%), power rate (100%) and EPS (off). The Gateway's
+  schedule, enable flags, reserve, power rate, AC limits, EPS and pause
+  registers now read back what a client wrote to the Gateway, or those
+  defaults; writes are still forwarded to the plant. Settings changed on
+  the plant directly (as on the AIO) no longer show up on the Gateway.
+
 ## [0.18.1] - 2026-11-01
 
 ### Changed

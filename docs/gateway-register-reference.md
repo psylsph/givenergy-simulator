@@ -43,6 +43,13 @@ and control point.
   *"The Gateway inverter should be the only inverter that is controlled via GivTCP, the
   individual AIO inverter data treated for information only."* Writes to the Gateway's
   schedule/SOC registers are authoritative; per-AIO writes are informational.
+- It keeps **its own copy** of the schedule and battery config holding registers; it
+  does not mirror the AIO's. A real Gateway + AIO capture (home-energy-manager #428)
+  showed the AIO charging from slot 1 (HR 94/95/96 set, reserve 4%, AC limits 35/45%,
+  EPS on) while the Gateway read HR 94/95/96 as zero, reserve 10%, limits 100/100%,
+  power rate 100% and EPS off. The simulator models this with `GATEWAY_OWN_HOLDING`
+  in `sim-registers`. Whether a write to the Gateway reaches the AIO is not yet
+  confirmed on hardware; the simulator still forwards it to the plant.
 - A real Gateway has **zero directly-attached batteries** — the batteries live in the AIOs.
   GivTCP logs this explicitly: `"GW2423G192 which is a Gen1 - Gateway with 0 batteries"`.
 - Its **load figure correctly excludes the EV charger**; the AIO's does not. This is why

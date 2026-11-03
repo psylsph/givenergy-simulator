@@ -710,7 +710,7 @@ pub async fn run_modbus_server(
 
                             let success = {
                                 let mut store = store.lock().await;
-                                store.write(address, value)
+                                store.client_write(address, value)
                             };
 
                             if success {

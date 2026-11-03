@@ -107,6 +107,55 @@ pub struct RegisterStore {
     /// Used to gate register access (e.g. HR 2071 is read-only for
     /// AC Coupled inverters).
     inverter_type: String,
+    /// A Gateway's own values for [`GATEWAY_OWN_HOLDING`], as last written
+    /// by a Modbus client. Unwritten registers read the listed defaults.
+    gateway_config: std::collections::HashMap<u16, u16>,
+}
+
+/// Holding registers a Gateway keeps its own copy of, with the value each
+/// reads before a client writes it (HEM issue #428).
+///
+/// A capture from a real Gateway + single-AIO install showed the AIO
+/// charging from slot 1 (02:10-04:58, HR 96 armed, reserve 4%, AC limits
+/// 35/45%, EPS on) while the Gateway read HR 94/95/96 as zero, reserve 10%,
+/// limits 100/100%, active power rate 100% and EPS off. So these registers
+/// on a Gateway are not a view of the AIO (the plant state): they read back
+/// what was written to the Gateway, or these defaults. Writes are still
+/// forwarded to the plant, the GivTCP model of the Gateway as the control
+/// point; whether real hardware forwards them is not yet confirmed.
+///
+/// The slot pairs not seen to differ in the capture (slot 2, discharge
+/// slots, pause) belong to the same schedule as slot 1 and are kept with
+/// it. HR 111/112/116 and the extended HR 240-299 bank were not observed
+/// and still mirror the plant.
+const GATEWAY_OWN_HOLDING: &[(u16, u16)] = &[
+    (20, 0),    // enable_charge_target
+    (27, 1),    // battery_power_mode: Eco
+    (31, 0),    // charge slot 2 start
+    (32, 0),    // charge slot 2 end
+    (44, 0),    // discharge slot 2 start
+    (45, 0),    // discharge slot 2 end
+    (50, 100),  // active power rate (%)
+    (56, 0),    // discharge slot 1 start
+    (57, 0),    // discharge slot 1 end
+    (59, 0),    // enable_discharge
+    (94, 0),    // charge slot 1 start
+    (95, 0),    // charge slot 1 end
+    (96, 0),    // enable_charge
+    (110, 10),  // battery SOC reserve (%)
+    (313, 100), // AC charge limit (%)
+    (314, 100), // AC discharge limit (%)
+    (317, 0),   // EPS enable
+    (318, 0),   // battery pause mode
+    (319, 0),   // battery pause slot start
+    (320, 0),   // battery pause slot end
+];
+
+fn gateway_own_default(address: u16) -> Option<u16> {
+    GATEWAY_OWN_HOLDING
+        .iter()
+        .find(|(a, _)| *a == address)
+        .map(|(_, default)| *default)
 }
 
 /// Deterministic per-cell voltage multiplier in [0.99, 1.01] (≤1% noise).
@@ -192,6 +241,7 @@ impl RegisterStore {
             defs,
             previous_ems_block: std::collections::HashMap::new(),
             inverter_type: String::new(),
+            gateway_config: std::collections::HashMap::new(),
         }
     }
 
@@ -248,8 +298,39 @@ impl RegisterStore {
     }
 
     /// A holding-register write from a Modbus client.
+    ///
+    /// Same access control as [`Self::write`]. On a Gateway, an accepted
+    /// write to one of [`GATEWAY_OWN_HOLDING`] is also kept as the
+    /// Gateway's own value, so later projections of the plant don't
+    /// overwrite it. The value kept is the one the register now holds, so
+    /// an ACKed-but-ignored slot time (above 2399) leaves it unchanged.
     pub fn client_write(&mut self, address: u16, value: u16) -> bool {
-        self.write(address, value)
+        if !self.write(address, value) {
+            return false;
+        }
+        if is_gateway_inverter(&self.inverter_type) && gateway_own_default(address).is_some() {
+            let key = address as u32 + HOLDING_OFFSET;
+            if let Some(&stored) = self.values.get(&key) {
+                self.gateway_config.insert(address, stored);
+            }
+        }
+        true
+    }
+
+    /// On a Gateway, put back its own values for [`GATEWAY_OWN_HOLDING`]
+    /// after the plant has been projected over them.
+    fn apply_gateway_config(&mut self) {
+        for &(address, default) in GATEWAY_OWN_HOLDING {
+            let key = address as u32 + HOLDING_OFFSET;
+            if self.values.contains_key(&key) {
+                let value = self
+                    .gateway_config
+                    .get(&address)
+                    .copied()
+                    .unwrap_or(default);
+                self.values.insert(key, value);
+            }
+        }
     }
 
     /// Check whether any RegisterDef exists in the given address range for
@@ -311,6 +392,11 @@ impl RegisterStore {
     pub fn project_from_state(&mut self, state: &sim_models::PlantState) {
         // Track the inverter type for access control gating (e.g. HR 2071
         // is read-only for AC Coupled inverters).
+        if self.inverter_type != state.config.inverter_type {
+            // A re-created plant is a different device; it doesn't inherit
+            // the old Gateway's settings.
+            self.gateway_config.clear();
+        }
         self.inverter_type = state.config.inverter_type.clone();
         // Save the current EMS block before projection so we can carry
         // forward values that aren't re-projected this cycle.
@@ -1989,6 +2075,10 @@ impl RegisterStore {
         // restores any EMS register that was non-zero in the previous cycle
         // but is now 0 (meaning it wasn't re-projected).
         self.carry_forward_ems_block();
+
+        if is_gateway_inverter(&state.config.inverter_type) {
+            self.apply_gateway_config();
+        }
     }
 
     /// Project the GivEnergy Gateway aggregation bank (Input Registers
@@ -2645,6 +2735,10 @@ impl RegisterStore {
         self.write(725, cs5_e);
         self.write(726, ds5_s);
         self.write(727, ds5_e);
+
+        if is_gateway_inverter(inverter_type) {
+            self.apply_gateway_config();
+        }
     }
 
     /// Iterator over all definitions.
@@ -10204,10 +10298,13 @@ mod tests {
             Some(80),
             "gateway projects single-phase charge target SoC"
         );
+        // Except the ones the Gateway keeps its own copy of (HEM #428): no
+        // client wrote HR 94, so it reads the Gateway's default, not the
+        // plant's slot.
         assert_eq!(
             store.read_by_space(94, RegisterSpace::Holding),
-            Some(130),
-            "gateway projects single-phase charge slot 1 start"
+            Some(0),
+            "gateway charge slot 1 start is the Gateway's own, not the plant's"
         );
     }
 
