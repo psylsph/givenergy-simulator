@@ -708,9 +708,10 @@ pub async fn run_modbus_server(
                             let address = u16::from_be_bytes([inner_payload[0], inner_payload[1]]);
                             let value = u16::from_be_bytes([inner_payload[2], inner_payload[3]]);
 
-                            let success = {
+                            let (success, forward) = {
                                 let mut store = store.lock().await;
-                                store.client_write(address, value)
+                                let success = store.client_write(address, value);
+                                (success, store.forwards_to_plant(address))
                             };
 
                             if success {
@@ -726,7 +727,9 @@ pub async fn run_modbus_server(
                                 let resp =
                                     build_response(&serial, slave, inner_func, &resp_payload);
                                 let _ = stream.write_all(&resp).await;
-                                let _ = cmd_tx.send(ModbusCommand { address, value });
+                                if forward {
+                                    let _ = cmd_tx.send(ModbusCommand { address, value });
+                                }
                                 tracing::info!("Modbus write: addr={address}, value={value}");
                             } else {
                                 let resp = build_error_response(

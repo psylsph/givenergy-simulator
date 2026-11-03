@@ -120,9 +120,9 @@ pub struct RegisterStore {
 /// 35/45%, EPS on) while the Gateway read HR 94/95/96 as zero, reserve 10%,
 /// limits 100/100%, active power rate 100% and EPS off. So these registers
 /// on a Gateway are not a view of the AIO (the plant state): they read back
-/// what was written to the Gateway, or these defaults. Writes are still
-/// forwarded to the plant, the GivTCP model of the Gateway as the control
-/// point; whether real hardware forwards them is not yet confirmed.
+/// what was written to the Gateway, or these defaults. Writes to them are
+/// not forwarded to the plant either: a slot saved to the Gateway
+/// (02:10-04:59) read back there while the AIO kept 04:58.
 ///
 /// The slot pairs not seen to differ in the capture (slot 2, discharge
 /// slots, pause) belong to the same schedule as slot 1 and are kept with
@@ -324,8 +324,7 @@ impl RegisterStore {
     /// never reached the AIO (HEM issue #428). Everything else, and every
     /// write on other devices, drives the plant.
     pub fn forwards_to_plant(&self, address: u16) -> bool {
-        let _ = address;
-        true
+        !(is_gateway_inverter(&self.inverter_type) && gateway_own_default(address).is_some())
     }
 
     /// On a Gateway, put back its own values for [`GATEWAY_OWN_HOLDING`]

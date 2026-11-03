@@ -15,8 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   limits (100/100%), power rate (100%) and EPS (off). The Gateway's
   schedule, enable flags, reserve, power rate, AC limits, EPS and pause
   registers now read back what a client wrote to the Gateway, or those
-  defaults; writes are still forwarded to the plant. Settings changed on
-  the plant directly (as on the AIO) no longer show up on the Gateway.
+  defaults. Settings changed on the plant directly (as on the AIO) no
+  longer show up on the Gateway, and writes to those registers stay on
+  the Gateway instead of driving the plant: on the same install, a slot
+  saved to the Gateway read back there but never reached the AIO.
 
 ## [0.18.1] - 2026-11-01
 

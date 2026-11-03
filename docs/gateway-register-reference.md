@@ -41,15 +41,17 @@ and control point.
   power/SOC, energy totals, and relay/voltage state.
 - It is the **control endpoint**. GivTCP's own guidance for parallel-AIO installs:
   *"The Gateway inverter should be the only inverter that is controlled via GivTCP, the
-  individual AIO inverter data treated for information only."* Writes to the Gateway's
-  schedule/SOC registers are authoritative; per-AIO writes are informational.
+  individual AIO inverter data treated for information only."* This is GivTCP's
+  guidance only: the #428 capture below found the AIO acting on its own settings, and
+  a schedule written to the Gateway did not reach it.
 - It keeps **its own copy** of the schedule and battery config holding registers; it
   does not mirror the AIO's. A real Gateway + AIO capture (home-energy-manager #428)
   showed the AIO charging from slot 1 (HR 94/95/96 set, reserve 4%, AC limits 35/45%,
   EPS on) while the Gateway read HR 94/95/96 as zero, reserve 10%, limits 100/100%,
   power rate 100% and EPS off. The simulator models this with `GATEWAY_OWN_HOLDING`
-  in `sim-registers`. Whether a write to the Gateway reaches the AIO is not yet
-  confirmed on hardware; the simulator still forwards it to the plant.
+  in `sim-registers`. A slot written to the Gateway (02:10–04:59) read back from the
+  Gateway but never reached the AIO, which kept 04:58, so the simulator keeps writes to
+  these registers on the Gateway and does not forward them to the plant.
 - A real Gateway has **zero directly-attached batteries** — the batteries live in the AIOs.
   GivTCP logs this explicitly: `"GW2423G192 which is a Gen1 - Gateway with 0 batteries"`.
 - Its **load figure correctly excludes the EV charger**; the AIO's does not. This is why
@@ -457,8 +459,8 @@ Derived from the above. This is the Phase 2 build checklist.
 4. **Zero direct batteries** on the gateway device itself (batteries belong to child AIOs).
 5. **Honour the V1/V2 variant contract** as a single switch: byte order of all `uint32`
    totals *and* the AIO-serial addresses change together, gated on IR(1603).
-6. **Route control writes** (charge/discharge enable, SOC target, slots) to the gateway as
-   authoritative; per-AIO writes accepted but informational.
+6. **Keep schedule and battery config writes on the gateway** (`GATEWAY_OWN_HOLDING`):
+   they read back from the gateway but do not drive the AIO (see §1).
 7. **Exclude EV-charger power from `p_load` / `e_load_*`** — the defining gateway property.
 8. **Error-respond to unmapped banks** rather than serving zeros, so client bounds-checks
    behave.
