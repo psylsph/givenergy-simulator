@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-11-03
+
 ### Fixed
 
+- A Gateway's IR 1616 (`p_ac1`) now carries the metered grid power
+  (+ export, - import), as GivTCP publishes it, instead of a copy of the
+  aggregate AIO power. HEM v1.4.0 reads grid from it.
 - A Gateway no longer mirrors the AIO's schedule and battery settings in
   its own holding registers. A capture from a real Gateway + AIO install
   (home-energy-manager #428) showed the AIO charging from slot 1 while the

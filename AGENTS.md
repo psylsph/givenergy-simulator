@@ -60,6 +60,14 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.2** — Gateway fidelity (home-energy-manager #428). The Gateway keeps
+its own copy of the schedule, enable flags, reserve, power rate, AC limits,
+EPS and pause registers (`GATEWAY_OWN_HOLDING`): they read back what a
+client wrote, or the defaults seen on hardware, and client writes to them
+are ACKed but not forwarded to the plant (`forwards_to_plant`), as proven on
+a real Gateway + AIO. IR 1616 `p_ac1` carries metered grid power. 558 Rust +
+5/5 scenarios green.
+
 **0.18.1** — Dependabot cleanup. `npm audit fix` for the ui toolchain:
 `vite` 6.4.3 → 6.4.5 (dev-server security cluster: cross-origin script
 execution GHSA-9jrq-w75r-8gcw, `server.fs.allow` bypass
