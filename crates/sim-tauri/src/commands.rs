@@ -302,6 +302,7 @@ pub async fn create_plant(
         // This prevents stale persisted state from leaking into the first snapshot.
         s.scheduled_charge = false;
         s.scheduled_discharge = false;
+        s.scheduled_hold = false;
         s
     };
 

@@ -477,7 +477,8 @@ impl From<&PlantState> for PlantStateDto {
             timestamp: state.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string(),
             inverter_mode: format!("{:?}", state.inverter.mode_state.effective),
             battery_mode: {
-                let scheduled_charge = state.scheduled_charge;
+                // A held charge slot is still the schedule's charge period.
+                let scheduled_charge = state.scheduled_charge || state.scheduled_hold;
                 let scheduled_discharge = state.scheduled_discharge;
                 let eco = state.inverter.mode_state.effective == sim_models::InverterMode::Eco;
                 let force_charge =

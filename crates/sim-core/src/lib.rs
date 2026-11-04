@@ -816,6 +816,8 @@ impl DeviceModel for InverterEngine {
             InverterMode::Normal => {
                 if state.scheduled_charge {
                     self.force_charge(state);
+                } else if state.scheduled_hold {
+                    self.hold_battery(state, solar_w, load_w);
                 } else if state.scheduled_discharge {
                     self.force_discharge(state);
                 } else {
@@ -825,6 +827,8 @@ impl DeviceModel for InverterEngine {
             InverterMode::Eco => {
                 if state.scheduled_charge {
                     self.force_charge(state);
+                } else if state.scheduled_hold {
+                    self.hold_battery(state, solar_w, load_w);
                 } else if state.scheduled_discharge {
                     self.force_discharge(state);
                 } else {
@@ -900,6 +904,18 @@ impl InverterEngine {
             state.grid.power_w = from_grid; // positive = import
             state.inverter.ac_power_w = solar_w + from_battery;
         }
+    }
+
+    /// A charge slot whose target is reached: solar surplus still charges
+    /// the battery, but it never discharges; the grid covers any deficit.
+    fn hold_battery(&self, state: &mut PlantState, solar_w: f64, load_w: f64) {
+        if solar_w >= load_w {
+            self.normal_priority(state, solar_w, load_w);
+            return;
+        }
+        state.distribute_battery_power(0.0);
+        state.grid.power_w = load_w - solar_w; // positive = import
+        state.inverter.ac_power_w = solar_w;
     }
 
     /// Export-limited mode: same as Normal but caps grid export.
@@ -1262,32 +1278,42 @@ impl DeviceModel for BatteryEngine {
         let slot_active = state.battery_pause_slot_start != state.battery_pause_slot_end
             && valid_hhmm(state.battery_pause_slot_start)
             && valid_hhmm(state.battery_pause_slot_end);
-        if (pause_charge || pause_discharge) && slot_active {
+        // The single-phase AC has no pause window (GivTCP writes HR 318
+        // alone there), so its mode pauses all day.
+        let mode_only = matches!(
+            state.config.inverter_type.as_str(),
+            "ACCoupled" | "ACCoupled2"
+        );
+        let in_pause_window = if mode_only {
+            true
+        } else if slot_active {
             let start_h = (state.battery_pause_slot_start / 100) as f64
                 + (state.battery_pause_slot_start % 100) as f64 / 60.0;
             let end_h = (state.battery_pause_slot_end / 100) as f64
                 + (state.battery_pause_slot_end % 100) as f64 / 60.0;
-            let in_pause_window = if start_h < end_h {
+            if start_h < end_h {
                 // Normal window: [start, end)
                 hour >= start_h && hour < end_h
             } else {
                 // Wrap-around window: [start, 24:00) U [00:00, end).
                 // This is what the portal writes for "Timed Discharge".
                 hour >= start_h || hour < end_h
-            };
-            if in_pause_window {
-                for b in &mut state.batteries {
-                    if pause_charge && b.power_kw > 0.0 {
-                        b.power_kw = 0.0;
-                    }
-                    if pause_discharge && b.power_kw < 0.0 {
-                        b.power_kw = 0.0;
-                    }
-                }
-                state.sync_battery_from_vec();
-                Self::reconcile_ac_power_flow(state);
-                return;
             }
+        } else {
+            false
+        };
+        if (pause_charge || pause_discharge) && in_pause_window {
+            for b in &mut state.batteries {
+                if pause_charge && b.power_kw > 0.0 {
+                    b.power_kw = 0.0;
+                }
+                if pause_discharge && b.power_kw < 0.0 {
+                    b.power_kw = 0.0;
+                }
+            }
+            state.sync_battery_from_vec();
+            Self::reconcile_ac_power_flow(state);
+            return;
         }
 
         // Apply normalized battery charge/discharge limit percentages.
@@ -2048,6 +2074,7 @@ impl DeviceModel for ScheduleEngine {
         // Reset flags every tick — ScheduleEngine sets them fresh.
         state.scheduled_charge = false;
         state.scheduled_discharge = false;
+        state.scheduled_hold = false;
 
         if !self.enabled {
             return;
@@ -2114,7 +2141,10 @@ impl DeviceModel for ScheduleEngine {
         // Check all charge slots (1-10). HR 96 is an independent gate: a
         // configured window remains stored while charging is disabled. Invalid
         // raw HHMM values are represented as negative parsed hours and must not
-        // participate in simulation physics.
+        // participate in simulation physics. A slot in force whose target is
+        // already reached holds the battery rather than handing it back to
+        // Eco (see `PlantState::scheduled_hold`).
+        let mut hold = false;
         macro_rules! check_charge_slot {
             ($start:expr, $end:expr, $target:expr) => {
                 if self.schedule.enable_charge
@@ -2122,10 +2152,12 @@ impl DeviceModel for ScheduleEngine {
                     && (0.0..24.0).contains(&$end)
                     && $start != $end
                     && in_window($start, $end, hour)
-                    && soc < $target
                 {
-                    state.scheduled_charge = true;
-                    return;
+                    if soc < $target {
+                        state.scheduled_charge = true;
+                        return;
+                    }
+                    hold = true;
                 }
             };
         }
@@ -2179,6 +2211,13 @@ impl DeviceModel for ScheduleEngine {
             self.schedule.charge_end_10,
             self.schedule.charge_target_soc_10
         );
+
+        // A charge period in force keeps the battery from discharging, so it
+        // also outranks a discharge slot that overlaps it.
+        if hold {
+            state.scheduled_hold = true;
+            return;
+        }
 
         // Check all discharge slots (1-10). AC-coupled models are basic
         // single-phase slot devices in the register map (slot 1 at HR 56-57);
@@ -5417,6 +5456,30 @@ mod tests {
     }
 
     #[test]
+    fn ac_coupled_pause_mode_applies_all_day_without_a_window() {
+        // The AC takes HR 318 alone (GivTCP: mode only, no slot), so the
+        // mode pauses whatever HR 319/320 hold.
+        for inverter in ["ACCoupled", "ACCoupled2"] {
+            let mut state = pause_test_state(1, 60, 60, 14, 0);
+            state.config.inverter_type = inverter.to_string();
+            state.batteries[0].power_kw = 2.0;
+            state.sync_battery_from_vec();
+            tick_battery(&mut state, 14, 0);
+            assert_eq!(state.batteries[0].power_kw, 0.0, "{inverter}");
+        }
+    }
+
+    #[test]
+    fn a_pause_without_a_window_does_nothing_off_the_ac() {
+        let mut state = pause_test_state(1, 60, 60, 14, 0);
+        state.config.inverter_type = "AllInOne6".to_string();
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 14, 0);
+        assert!(state.batteries[0].power_kw > 1.0);
+    }
+
+    #[test]
     fn pause_slot_disabled_when_mode_zero() {
         // mode=0 (Disabled) -> nothing paused even with a window set.
         let mut state = pause_test_state(0, 300, 400, 3, 30);
@@ -5513,5 +5576,143 @@ mod tests {
                 check_invariants(&engine.state);
             }
         }
+    }
+
+    // --- Charge slot target reached: the battery holds until the slot ends ---
+    //
+    // On GivEnergy inverters a charge period stays in force after its target
+    // SOC is reached: grid charging stops, but the battery doesn't discharge
+    // either, so the house runs from the grid until the period ends (solar
+    // surplus still charges the battery). Without this the simulator charged
+    // below the target and covered the house from the battery at it, so the
+    // battery flicked between Scheduled Charge and Eco every 1% of SOC.
+
+    fn held_slot_engine(
+        inverter_type: &str,
+        hour: u32,
+        soc: f64,
+        solar_w: f64,
+        load_w: f64,
+        tick_secs: u64,
+    ) -> SimulationEngine {
+        held_slot_engine_with(inverter_type, hour, soc, solar_w, load_w, tick_secs, true)
+    }
+
+    fn held_slot_engine_with(
+        inverter_type: &str,
+        hour: u32,
+        soc: f64,
+        solar_w: f64,
+        load_w: f64,
+        tick_secs: u64,
+        enable_charge: bool,
+    ) -> SimulationEngine {
+        let mut sched = Schedule::default();
+        sched.charge_start = 20.0;
+        sched.charge_end = 0.0; // 20:00-00:00, as written by HEM
+        sched.charge_target_soc = 45.0;
+        sched.enable_charge = enable_charge;
+
+        let mut state = PlantState::new(ts(hour));
+        state.config.inverter_type = inverter_type.to_string();
+        state.inverter.mode_state.set_user(InverterMode::Eco);
+        state.solar_override = Some(solar_w);
+        state.load_override = Some(load_w);
+        state.batteries[0].soc_percent = soc;
+        state.sync_battery_from_vec();
+
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(ScheduleEngine::new(sched)),
+            Box::new(SolarEngine::new(5000.0, 51.5)),
+            Box::new(LoadEngine::new(LoadProfile::Minimal)),
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+            Box::new(crate::EnergyTracker::new()),
+        ];
+        SimulationEngine::new(state, devices, tick_secs)
+    }
+
+    const HELD_MODELS: [&str; 3] = ["ACCoupled", "AllInOne6", "Gen3Hybrid"];
+
+    #[test]
+    fn charge_slot_holds_the_battery_once_its_target_is_reached() {
+        for model in HELD_MODELS {
+            let mut engine = held_slot_engine(model, 21, 45.0, 0.0, 1500.0, 60);
+            engine.tick();
+            let battery_w = engine.state.total_battery_power_kw() * 1000.0;
+            assert!(
+                battery_w.abs() < 1.0,
+                "{model}: the battery should sit idle at the target, got {battery_w} W"
+            );
+            assert!(
+                (engine.state.grid.power_w - 1500.0).abs() < 1.0,
+                "{model}: the grid should cover the house, got {} W",
+                engine.state.grid.power_w
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_battery_still_takes_solar_surplus() {
+        for model in HELD_MODELS {
+            let mut engine = held_slot_engine(model, 21, 45.0, 3000.0, 1000.0, 60);
+            engine.tick();
+            let battery_w = engine.state.total_battery_power_kw() * 1000.0;
+            assert!(
+                (battery_w - 2000.0).abs() < 1.0,
+                "{model}: surplus solar should charge the battery, got {battery_w} W"
+            );
+            assert!(
+                engine.state.grid.power_w.abs() < 1.0,
+                "{model}: nothing should be imported, got {} W",
+                engine.state.grid.power_w
+            );
+        }
+    }
+
+    #[test]
+    fn a_charge_slot_charges_to_its_target_then_never_discharges_in_the_slot() {
+        for model in HELD_MODELS {
+            // 44% at 21:00 with a 1.5 kW house: it charges to 45% and must
+            // then hold, not flick back to covering the house.
+            let mut engine = held_slot_engine(model, 21, 44.0, 0.0, 1500.0, 30);
+            let mut reached = false;
+            for step in 0..120 {
+                engine.tick();
+                let battery_w = engine.state.total_battery_power_kw() * 1000.0;
+                assert!(
+                    battery_w >= -1.0,
+                    "{model}: discharged {battery_w} W inside the charge slot at step {step}"
+                );
+                reached |= engine.state.aggregate_soc() >= 45.0;
+            }
+            assert!(reached, "{model}: should have charged to the target");
+            let soc = engine.state.aggregate_soc();
+            assert!(
+                (45.0..46.0).contains(&soc),
+                "{model}: should hold at the target, got {soc}%"
+            );
+        }
+    }
+
+    #[test]
+    fn eco_covers_the_house_again_once_the_charge_slot_ends() {
+        for model in HELD_MODELS {
+            // 00:00 is the slot's end, so it's no longer in force.
+            let mut engine = held_slot_engine(model, 0, 45.0, 0.0, 1500.0, 60);
+            engine.tick();
+            let battery_w = engine.state.total_battery_power_kw() * 1000.0;
+            assert!(
+                battery_w < -1000.0,
+                "{model}: Eco should discharge to cover the house, got {battery_w} W"
+            );
+        }
+    }
+
+    #[test]
+    fn a_charge_slot_that_is_switched_off_does_not_hold_the_battery() {
+        let mut engine = held_slot_engine_with("ACCoupled", 21, 45.0, 0.0, 1500.0, 60, false);
+        engine.tick();
+        assert!(engine.state.total_battery_power_kw() < -1.0);
     }
 }

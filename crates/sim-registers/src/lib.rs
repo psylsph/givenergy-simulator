@@ -211,6 +211,10 @@ fn is_three_phase_inverter(inverter_type: &str) -> bool {
     sim_models::is_three_phase_inverter_type(inverter_type)
 }
 
+/// Lowest single-phase AC ARM firmware that takes the pause mode (GivTCP's
+/// `AC_PAUSE_MIN_ARM_FW`, confirmed by its users).
+const AC_PAUSE_MIN_ARM_FW: u16 = 200;
+
 fn is_ac_coupled_inverter(inverter_type: &str) -> bool {
     // Narrow single-phase AC-coupled set used by the write guards below
     // (HR 2071 / HR 318-320). Note: ACCoupledThreePhase6kW (0x6001) is
@@ -265,8 +269,9 @@ impl RegisterStore {
     /// Device-type gating (returns `false` → caller emits EC_ILLEGAL_DATA_ADDRESS):
     /// - HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
     ///   inverters — they don't have EMS capability.
-    /// - HR 318-320 (battery pause mode/slot) are not present on single-phase
-    ///   AC Coupled inverters, matching giv_tcp's Model.AC handling.
+    /// - Single-phase AC Coupled inverters take HR 318 (battery pause mode)
+    ///   alone, and only from ARM firmware 200, and refuse the HR 319/320
+    ///   window, matching GivTCP's Model.AC handling.
     /// - The three-phase control bank (HR 1000-1124) only exists on real
     ///   three-phase inverters. A Gateway (and any other non-three-phase
     ///   device) has no registers there, so writes must be rejected —
@@ -275,8 +280,16 @@ impl RegisterStore {
         if address == 2071 && is_ac_coupled_inverter(&self.inverter_type) {
             return false;
         }
-        if (318..=320).contains(&address) && is_ac_coupled_inverter(&self.inverter_type) {
-            return false;
+        if is_ac_coupled_inverter(&self.inverter_type) {
+            // The AC takes the pause mode alone, from ARM firmware 200
+            // (GivTCP `AC_PAUSE_MIN_ARM_FW`); it has no pause window.
+            if (319..=320).contains(&address) {
+                return false;
+            }
+            let arm_fw = self.read_by_space(21, RegisterSpace::Holding).unwrap_or(0);
+            if address == 318 && arm_fw < AC_PAUSE_MIN_ARM_FW {
+                return false;
+            }
         }
         if (1000..=1124).contains(&address) && !is_three_phase_inverter(&self.inverter_type) {
             return false;
@@ -369,8 +382,10 @@ impl RegisterStore {
             (start as u32) < range_end_exclusive && end > range_start
         };
 
-        (overlaps(318, 321) && is_ac_coupled_inverter(&self.inverter_type))
-            || (overlaps(1000, 1125) && !is_three_phase_inverter(&self.inverter_type))
+        // The AC's HR 318-320 pause registers aren't listed here: they sit
+        // inside the HR 300-359 block GivTCP reads on the AC, so they read
+        // as zero and only refuse writes (see `write`).
+        overlaps(1000, 1125) && !is_three_phase_inverter(&self.inverter_type)
     }
 
     /// Save the current EMS plant holding block (HR 2040-2075) so it can be
@@ -8659,17 +8674,36 @@ mod tests {
     }
 
     #[test]
-    fn ac_coupled_has_no_battery_pause_register_bank() {
+    fn ac_coupled_takes_the_pause_mode_but_not_the_window() {
         let mut state = make_state();
         state.config.inverter_type = "ACCoupled".to_string();
         let mut store = RegisterStore::new(default_register_catalogue());
         store.project_from_state(&state);
 
-        assert!(store.holding_range_absent_for_device(318, 3));
-        assert!(store.holding_range_absent_for_device(319, 1));
-        assert!(!store.write(318, 1));
+        // The HR 300-359 block reads (GivTCP polls it on the AC for the AC
+        // charge/discharge limits, and HEM's AC users read EPS and the rates
+        // from it). GivTCP writes the pause mode alone on the AC from ARM
+        // firmware 200 (`AC_PAUSE_MIN_ARM_FW`); the window registers refuse
+        // writes, as field logs show for HR 319/320.
+        assert!(!store.holding_range_absent_for_device(300, 60));
+        assert!(!store.holding_range_absent_for_device(318, 3));
+        assert!(store.read_by_space(21, RegisterSpace::Holding).unwrap() >= 200);
+        assert!(store.write(318, 1));
+        assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(1));
         assert!(!store.write(319, 1200));
         assert!(!store.write(320, 1300));
+    }
+
+    #[test]
+    fn ac_coupled_below_arm_200_refuses_the_pause_mode() {
+        let mut state = make_state();
+        state.config.inverter_type = "ACCoupled2".to_string();
+        state.inverter.arm_firmware_version = 199;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+
+        assert!(!store.write(318, 1));
+        assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(0));
     }
 
     #[test]

@@ -534,9 +534,9 @@ pub async fn run_modbus_server(
                             // Some holding-register banks are model-specific. If the
                             // configured device lacks the bank, return an exception
                             // instead of phantom zeros so clients fall back to the right
-                            // capability set. Examples: HR 1000-1124 only exists on
-                            // three-phase inverters; HR 318-320 battery pause is absent
-                            // on single-phase AC Coupled inverters per giv_tcp Model.AC.
+                            // capability set. Example: HR 1000-1124 only exists on
+                            // three-phase inverters. (The AC's HR 318-320 pause reads
+                            // inside its HR 300 block; it takes HR 318 writes alone.)
                             if inner_func == FC_READ_HOLDING {
                                 let absent = store
                                     .lock()

@@ -1073,6 +1073,13 @@ pub struct PlantState {
     /// Never serialized — resets every tick.
     #[serde(skip)]
     pub scheduled_discharge: bool,
+    /// Set by ScheduleEngine each tick while an enabled charge slot is in
+    /// force but its target SOC is already reached: the battery holds (no
+    /// grid charging, no discharging; solar surplus still charges it) and
+    /// the grid covers the house until the slot ends, as on GivEnergy
+    /// inverters. Never serialized — resets every tick.
+    #[serde(skip)]
+    pub scheduled_hold: bool,
     /// HR20 enable charge target flag.
     #[serde(default)]
     pub enable_charge_target: bool,
@@ -1164,6 +1171,7 @@ impl PlantState {
             calibration: CalibrationState::default(),
             scheduled_charge: false,
             scheduled_discharge: false,
+            scheduled_hold: false,
             enable_charge_target: false,
             active_power_rate_percent: 100.0,
             battery_charge_limit_percent: 100.0,
@@ -1210,6 +1218,7 @@ impl PlantState {
             calibration: CalibrationState::default(),
             scheduled_charge: false,
             scheduled_discharge: false,
+            scheduled_hold: false,
             enable_charge_target: false,
             active_power_rate_percent: 100.0,
             battery_charge_limit_percent: 100.0,
