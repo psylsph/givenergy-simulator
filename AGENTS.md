@@ -60,6 +60,15 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.3** — Charge-slot hold and the AC Coupled's pause
+(home-energy-manager #426). An enabled charge slot at its target SOC holds
+the battery (`scheduled_hold`: no grid charging or discharging, grid covers
+the house, solar surplus still charges). The AC Coupled takes HR 318 only
+from ARM 200 and refuses HR 319/320; its pause mode applies all day
+(AC Coupled and Mk2). `crates/sim-registers/tests/givtcp_contract.rs` holds
+the models to an identical copy of HEM's GivTCP model contract. 568 Rust +
+5/5 scenarios + 49 Playwright green.
+
 **0.18.2** — Gateway fidelity (home-energy-manager #428). The Gateway keeps
 its own copy of the schedule, enable flags, reserve, power rate, AC limits,
 EPS and pause registers (`GATEWAY_OWN_HOLDING`): they read back what a

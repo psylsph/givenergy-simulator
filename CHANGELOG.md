@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-11-04
+
+### Fixed
+
+- A charge slot whose target SOC is already reached now holds the battery
+  until the slot ends, as GivEnergy inverters do: no grid charging and no
+  discharging, with the grid covering the house and surplus solar still
+  charging the battery. Before, the battery discharged into the house
+  inside the slot. HEM's charge cap (home-energy-manager #426) relies on
+  a slot charging to its own target.
+- The AC Coupled now pauses as GivTCP drives it: HR 318 (pause mode) is
+  accepted only from ARM firmware 200, the pause window (HR 319/320) is
+  refused, and the pause mode applies all day on the AC Coupled and AC
+  Coupled Mk2.
+
+### Tests
+
+- `crates/sim-registers/tests/givtcp_contract.rs` checks every model
+  against HEM's GivTCP model contract, an identical copy of
+  `tests/fixtures/givtcp-model-contract.json`. A pause or three-phase
+  difference from GivTCP fails unless the contract records it with an issue
+  and a reason.
+
 ## [0.18.2] - 2026-11-03
 
 ### Fixed
