@@ -435,11 +435,12 @@ async fn hv_battery_cluster_discovery_serves_bms_bcu_and_bmus() {
 }
 
 #[tokio::test]
-async fn ac_coupled_battery_pause_bank_rejected_on_wire() {
-    // giv_tcp treats single-phase AC Coupled (Model.AC) as not having the
-    // battery pause mode/slot registers (HR 318-320). The simulator should
-    // therefore reject reads and writes to that bank instead of ACKing a
-    // capability that the real device family does not expose.
+async fn ac_coupled_takes_the_pause_mode_alone_on_the_wire() {
+    // GivTCP writes the pause mode alone on single-phase AC Coupled
+    // (Model.AC) from ARM firmware 200, and the window registers are
+    // refused. The HR 300-359 block reads — GivTCP polls it on the AC for
+    // the AC charge/discharge limits — so a client's block read doesn't
+    // lose EPS and the rates along with the pause.
     let ts = chrono::NaiveDate::from_ymd_opt(2025, 6, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -452,17 +453,31 @@ async fn ac_coupled_battery_pause_bank_rejected_on_wire() {
     let serial = serial_arr();
     let mut stream = TcpStream::connect(addr).await.expect("connect");
 
+    let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 300, 60);
+    let raw = send_recv(&mut stream, &req).await;
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(
+        func, FC_READ_HOLDING,
+        "the HR 300-359 block reads on the AC"
+    );
+
     let req = build_read_request(&serial, 0x32, FC_READ_HOLDING, 318, 3);
     let raw = send_recv(&mut stream, &req).await;
-    let (_, func, payload) = decode_response(&raw);
-    assert_eq!(func, FC_READ_HOLDING | 0x80);
-    assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(func, FC_READ_HOLDING);
 
     let req = build_write_request(&serial, 0x11, 318, 2);
     let raw = send_recv(&mut stream, &req).await;
-    let (_, func, payload) = decode_response(&raw);
-    assert_eq!(func, FC_WRITE_SINGLE | 0x80);
-    assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
+    let (_, func, _) = decode_response(&raw);
+    assert_eq!(func, FC_WRITE_SINGLE, "the pause mode is taken");
+
+    for window in [319, 320] {
+        let req = build_write_request(&serial, 0x11, window, 1200);
+        let raw = send_recv(&mut stream, &req).await;
+        let (_, func, payload) = decode_response(&raw);
+        assert_eq!(func, FC_WRITE_SINGLE | 0x80, "HR {window} is refused");
+        assert_eq!(payload[10], EC_ILLEGAL_DATA_ADDRESS);
+    }
 
     // Other AC-coupled control registers in the same HR 300 block still work.
     let req = build_write_request(&serial, 0x11, 314, 50);

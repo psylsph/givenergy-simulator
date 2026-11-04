@@ -241,3 +241,58 @@ fn island_two_day_soak_keeps_grid_silent() {
         assert_invariants(&state, &format!("island soak step {step}"));
     }
 }
+
+#[test]
+fn power_balance_holds_while_a_charge_slot_holds_the_battery() {
+    // A charge slot in force (11:00-13:00, active at noon) whose target is
+    // already met at every swept SOC: the battery holds, taking only solar
+    // surplus, and the grid covers the rest. INV-1..3 must still hold, with
+    // the battery never discharging while the grid is up.
+    let schedule = Schedule {
+        charge_start: 11.0,
+        charge_end: 13.0,
+        charge_target_soc: 10.0,
+        enable_charge: true,
+        ..Schedule::default()
+    };
+    let mut checked = 0usize;
+
+    for &connected in &[true, false] {
+        for &solar_w in &[0.0, 1500.0, 4000.0, 8000.0] {
+            for &load_w in &[0.0, 2000.0, 6000.0] {
+                for &limit in &[100.0, 50.0, 0.0] {
+                    for &soc in &[10.0, 50.0, 100.0] {
+                        for &modules in &[1usize, 2] {
+                            let mut state = sweep_state(12, connected, solar_w, load_w, modules);
+                            state.battery_charge_limit_percent = limit;
+                            state.battery_discharge_limit_percent = limit;
+                            for b in &mut state.batteries {
+                                b.soc_percent = soc;
+                                b.min_soc = 5.0;
+                                b.max_soc = 100.0;
+                            }
+                            state.sync_battery_from_vec();
+
+                            run_full_tick(&mut state, &schedule);
+                            let label = format!(
+                                "held slot: connected={connected} solar={solar_w} \
+                                 load={load_w} limit={limit} soc={soc} modules={modules}"
+                            );
+                            assert_invariants(&state, &label);
+                            if connected {
+                                assert!(state.scheduled_hold, "{label}: not held");
+                                assert!(
+                                    state.total_battery_power_kw() >= -TOL_W / 1000.0,
+                                    "{label}: discharged {} kW",
+                                    state.total_battery_power_kw()
+                                );
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 400, "sweep unexpectedly shrank: {checked}");
+}

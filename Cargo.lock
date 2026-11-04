@@ -3136,6 +3136,7 @@ version = "0.18.2"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "sim-models",
 ]
 
