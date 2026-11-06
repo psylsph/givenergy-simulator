@@ -1413,9 +1413,10 @@ impl DeviceModel for BatteryEngine {
             //  90%:  52.0 V
             // 100%:  54.0 V (full)
             // For three-phase / HV inverters (24S modules, 76.8V nominal),
-            // scale by 1.5.
-            let is_tph = sim_models::is_three_phase_inverter_type(&state.config.inverter_type);
-            let tph_scale = if is_tph { 1.5 } else { 1.0 };
+            // scale by 1.5. The HV hybrids include the single-phase 0x81xx /
+            // 0x82xx families (issue #432), which keep the HV curve.
+            let hv_pack = sim_models::battery_voltage_uses_hv_scale(&state.config.inverter_type);
+            let tph_scale = if hv_pack { 1.5 } else { 1.0 };
             b.voltage_v = if b.soc_percent <= 5.0 {
                 // Steep rise from empty
                 tph_scale * (44.0 + (b.soc_percent / 5.0) * (50.5 - 44.0))

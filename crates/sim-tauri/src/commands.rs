@@ -1787,9 +1787,9 @@ impl GridPortPowerFamily {
         // Three-phase family: any device that exposes the TPH 1000-1124 HR
         // block / 1000-1413 IR block and reads/writes `p_export_limit` at
         // HR 1063. This includes ThreePhase*, AC-coupled three-phase
-        // (0x6001), the Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx),
-        // and the commercial AIO (0x4101) — all three-phase per
-        // givenergy-modbus `manifest.py`.
+        // (0x6001) and the commercial AIO (0x4101). The Gen3 HV hybrids
+        // (0x81xx) and AIO hybrids (0x82xx) are physically single-phase and
+        // serve the single-phase map (issue #432).
         if sim_models::is_three_phase_inverter_type(inverter_type) {
             return Self::ThreePhase;
         }
@@ -1888,9 +1888,10 @@ pub async fn get_grid_port_max_power(state: State<'_, AppState>) -> Result<f64, 
 ///   `grid_port_max_power_output`). The single-phase max output comes from
 ///   the plant configuration (`config.max_ac_watts`), not from a writable
 ///   register.
-/// * **Three-phase / HV / AIO three-phase**: enqueues `SetExportLimit` with
-///   the raw watts. The projection in `sim-registers` encodes HR 1063 as
-///   `watts × 10` (C.deci) before serving it to Modbus clients.
+/// * **Three-phase / AIO three-phase**: enqueues `SetExportLimit` with the
+///   raw watts. The projection in `sim-registers` encodes HR 1063 as
+///   `watts × 10` (C.deci) before serving it to Modbus clients. The HV hybrids
+///   (0x81xx/0x82xx) are single-phase and use HR 26 (issue #432).
 /// * **EMS / EmsCommercial / Gateway**: enqueues `SetExportLimit` with the
 ///   raw watts. HR 2071 is encoded verbatim (C.uint16, no scaling).
 ///
@@ -2272,24 +2273,11 @@ mod tests {
             GridPortPowerFamily::from_inverter_type("ACCoupledThreePhase6kW"),
             ThreePhase
         );
-        // Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx), and the commercial
-        // AIO (0x4101) are three-phase per givenergy-modbus manifest.py.
-        for inv in [
-            "Gen3HvHybrid6kW",
-            "Gen3HvHybrid8kW",
-            "Gen3HvHybrid10kW",
-            "AIOHybrid6kW",
-            "AIOHybrid8kW",
-            "AIOHybrid10kW",
-            "AIOHybrid12kW",
-            "CommercialAllInOne30kW",
-        ] {
-            assert_eq!(
-                GridPortPowerFamily::from_inverter_type(inv),
-                ThreePhase,
-                "expected {inv} to be classified as ThreePhase"
-            );
-        }
+        // The commercial AIO (0x4101) is three-phase.
+        assert_eq!(
+            GridPortPowerFamily::from_inverter_type("CommercialAllInOne30kW"),
+            ThreePhase
+        );
 
         // EMS family — EMS, EmsCommercial, and Gateway (the Gateway inherits
         // its export_power_limit / 2071 semantics from EMS per
@@ -2303,11 +2291,19 @@ mod tests {
 
         // Single-phase family — HR 26 is read-only. Includes all the
         // hybrid / polar / AC-coupled / Gen3+ / PV inverter / residential
-        // AIO variants. (0x81xx/0x82xx are three-phase, tested above.)
+        // AIO variants, plus the HV hybrids that GivTCP reads single-phase
+        // (issue #432).
         for inv in [
             "Gen1Hybrid",
             "Gen2Hybrid",
             "Gen3Hybrid",
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
             "Polar5kW",
             "Polar4600",
             "Polar3600",

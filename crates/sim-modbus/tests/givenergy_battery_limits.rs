@@ -304,6 +304,11 @@ async fn gen3_hybrid_battery_limit_3_6kw() {
 async fn aio_10kw_battery_limit_10kw() {
     let mut state = test_state();
     state.config.inverter_type = "Gen3HvHybrid10kW".to_string();
+    // The HV hybrids sit on the single-phase HR 111/112 0-50 scale, where 100%
+    // is 0.5C of the pack (issue #432), so a 20 kWh pack reaches 0.5C = 10 kW
+    // at the hardware ceiling.
+    state.batteries[0].nominal_capacity_kwh = 20.0;
+    state.batteries[0].capacity_kwh = 20.0;
     state.batteries[0].max_charge_kw = 10.0;
     state.sync_battery_from_vec();
 

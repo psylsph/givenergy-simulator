@@ -325,8 +325,9 @@ subset is shown below; the full catalogue lives in the GUI dropdown / CLI help.
 
 DTC 0x2102 is a **4.6 kW** unit ("ALPS HY6.0k-GL/PZ8000 4.6KW" per the GivEnergy
 app v4.0.7 inventory and `_DTC_RATED_POWER`); there is no single-phase 10 kW
-DTC. The 0x81xx family (`Gen3HvHybrid*`) is the three-phase HV
-`GIV-HY-10.0-G3-HV`, not an All-in-One.
+DTC. The 0x81xx family (`Gen3HvHybrid*`) is the HV `GIV-HY-10.0-G3-HV` and the
+0x82xx family (`AIOHybrid*`) the HV All-in-One Hybrid. Both are physically
+single-phase and serve the single-phase register map, as GivTCP reads them.
 
 Battery charge and discharge is capped by both the battery C-rate and the inverter's battery limit — whichever is lower.
 

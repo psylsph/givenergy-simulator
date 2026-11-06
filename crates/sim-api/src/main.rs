@@ -69,9 +69,9 @@ Run a headless simulation with the 'simulate' subcommand (starts Modbus server a
 \n  AllInOne6           DTC 0x8001  6kW AC, 6kW battery\
 \n  AllInOne            DTC 0x8002  3.6kW AC, 3.6kW battery\
 \n  AllInOne5           DTC 0x8003  5kW AC, 5kW battery\
-\n  Gen3HvHybrid6kW     DTC 0x8101  6kW AC, 6kW battery (3-ph HV)\
-\n  Gen3HvHybrid8kW     DTC 0x8102  8kW AC, 8kW battery (3-ph HV)\
-\n  Gen3HvHybrid10kW    DTC 0x8103  10kW AC, 10kW battery (3-ph HV)\
+\n  Gen3HvHybrid6kW     DTC 0x8101  6kW AC, 6kW battery (HV)\
+\n  Gen3HvHybrid8kW     DTC 0x8102  8kW AC, 8kW battery (HV)\
+\n  Gen3HvHybrid10kW    DTC 0x8103  10kW AC, 10kW battery (HV)\
 \n  AIOHybrid6kW        DTC 0x8201  6kW AC, 6kW battery\
 \n  AIOHybrid8kW        DTC 0x8202  8kW AC, 8kW battery\
 \n  AIOHybrid10kW       DTC 0x8203  10kW AC, 10kW battery\

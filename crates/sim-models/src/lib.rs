@@ -89,13 +89,31 @@ pub fn inverter_dtc_for(inverter_type: &str) -> u16 {
 }
 
 /// Whether the device exposes the three-phase HR 1000-1124 / IR 1000-1413 banks.
+///
+/// The HV Gen3 hybrids (0x81xx) and the AIO Hybrid (0x82xx) are HV but
+/// physically single-phase, and read/write the single-phase register map, as
+/// GivTCP does (issue #432): the AIO Hybrid rejects the 1000-range reads
+/// (britkat1980/giv_tcp#621), and the first 0x81xx capture answered them with
+/// zeros (hass#295), which looked like a live but idle plant.
 pub fn is_three_phase_inverter_type(inverter_type: &str) -> bool {
     inverter_type.starts_with("ThreePhase")
         || matches!(
             inverter_type,
-            "CommercialAllInOne30kW"
-                | "ACCoupledThreePhase6kW"
-                | "Gen3HvHybrid6kW"
+            "CommercialAllInOne30kW" | "ACCoupledThreePhase6kW"
+        )
+}
+
+/// Whether the simulated pack uses the 24S HV voltage curve rather than the
+/// 16S LFP one (see `EnergyTracker`'s terminal-voltage estimate).
+///
+/// True for the three-phase layouts and for the HV hybrids that GivTCP reads
+/// as single-phase (0x81xx / 0x82xx). The residential All-in-Ones keep the
+/// single-phase curve they have always used here.
+pub fn battery_voltage_uses_hv_scale(inverter_type: &str) -> bool {
+    is_three_phase_inverter_type(inverter_type)
+        || matches!(
+            inverter_type,
+            "Gen3HvHybrid6kW"
                 | "Gen3HvHybrid8kW"
                 | "Gen3HvHybrid10kW"
                 | "AIOHybrid6kW"
@@ -2356,11 +2374,42 @@ mod tests {
     }
 
     #[test]
+    fn single_phase_hv_hybrids_use_the_dc_rate_scale_and_the_hv_curve() {
+        // Issue #432: the 0x81xx / 0x82xx families keep the single-phase
+        // DC-hybrid HR 111/112 (0-50) rate registers, and still simulate the
+        // 24S HV pack voltage curve.
+        for inv in [
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+        ] {
+            assert!(!is_three_phase_inverter_type(inv), "{inv}");
+            assert!(battery_limit_is_capacity_relative(inv), "{inv}");
+            assert!(battery_voltage_uses_hv_scale(inv), "{inv}");
+        }
+        for inv in [
+            "ThreePhase",
+            "ACCoupledThreePhase6kW",
+            "CommercialAllInOne30kW",
+        ] {
+            assert!(is_three_phase_inverter_type(inv), "{inv}");
+            assert!(!battery_limit_is_capacity_relative(inv), "{inv}");
+            assert!(battery_voltage_uses_hv_scale(inv), "{inv}");
+        }
+        assert!(!battery_voltage_uses_hv_scale("Gen3Hybrid"));
+        assert!(!battery_voltage_uses_hv_scale("AllInOne6"));
+    }
+
+    #[test]
     fn direct_percentage_banks_stay_a_percentage_of_the_inverter_maximum() {
         // AC-coupled HR313/314 and three-phase HR1110/1108 are direct
         // percentages of the inverter maximum (GivTCP `batmaxrate * limit / 100`),
         // whatever the pack size.
-        for inverter_type in ["ACCoupled", "ThreePhase", "Gen3HvHybrid6kW", "Gateway12kW"] {
+        for inverter_type in ["ACCoupled", "ThreePhase", "Gateway12kW"] {
             assert!(!battery_limit_is_capacity_relative(inverter_type));
             let ceiling = battery_limit_ceiling_w(inverter_type, 62.0, 3000.0, 20.0);
             assert!(
@@ -2444,6 +2493,15 @@ mod tests {
             "Hybrid3600",
             "Hybrid4600",
             "Gateway12kW",
+            // The HV hybrids are physically single-phase and use HR 26
+            // (issue #432).
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
         ] {
             assert_eq!(
                 default_export_limit_w_for(inv),
@@ -2471,15 +2529,6 @@ mod tests {
             "ThreePhase10kW",
             "ThreePhase11kW",
             "ACCoupledThreePhase6kW",
-            // Gen3 HV hybrids (0x81xx), AIO hybrids (0x82xx), and the
-            // commercial AIO (0x4101) are three-phase per manifest.py.
-            "Gen3HvHybrid6kW",
-            "Gen3HvHybrid8kW",
-            "Gen3HvHybrid10kW",
-            "AIOHybrid6kW",
-            "AIOHybrid8kW",
-            "AIOHybrid10kW",
-            "AIOHybrid12kW",
             "CommercialAllInOne30kW",
         ] {
             assert_eq!(

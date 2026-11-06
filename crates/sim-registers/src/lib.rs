@@ -9695,6 +9695,71 @@ mod tests {
     }
 
     #[test]
+    fn hv_gen3_and_aio_hybrid_serve_the_single_phase_schedule() {
+        // Issue #432: both families are HV but physically single-phase, so
+        // they write the single-phase slot map (HR 94/95 + HR 96 + HR 116/242)
+        // like any other 10-slot hybrid, and have no three-phase bank.
+        for inv_type in [
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid8kW",
+            "AIOHybrid10kW",
+            "AIOHybrid12kW",
+        ] {
+            let mut store = RegisterStore::new(default_register_catalogue());
+            let sched = sim_models::Schedule {
+                charge_start: 20.0,
+                charge_end: 0.0,
+                charge_target_soc: 50.0,
+                enable_charge: true,
+                ..Default::default()
+            };
+            store.project_schedule_for(&sched, inv_type);
+
+            assert_eq!(
+                store.read_by_space(94, RegisterSpace::Holding),
+                Some(2000),
+                "{inv_type}: charge slot 1 start at HR 94"
+            );
+            assert_eq!(
+                store.read_by_space(95, RegisterSpace::Holding),
+                Some(0),
+                "{inv_type}: charge slot 1 end at HR 95"
+            );
+            assert_eq!(
+                store.read_by_space(96, RegisterSpace::Holding),
+                Some(1),
+                "{inv_type}: enable_charge at HR 96"
+            );
+            assert_eq!(
+                store.read_by_space(116, RegisterSpace::Holding),
+                Some(50),
+                "{inv_type}: global target SOC at HR 116"
+            );
+            assert_eq!(
+                store.read_by_space(242, RegisterSpace::Holding),
+                Some(50),
+                "{inv_type}: slot 1 target SOC at HR 242"
+            );
+
+            // No three-phase bank, and its writes are rejected like any other
+            // single-phase model.
+            assert!(!store.is_three_phase_device(), "{inv_type}");
+            assert!(
+                store.holding_range_absent_for_device(1080, 45),
+                "{inv_type} has no HR 1080-1124"
+            );
+            assert!(store.write(96, 1), "{inv_type} accepts HR 96");
+            assert!(
+                !store.write(1113, 1200),
+                "{inv_type} must reject the three-phase slot map"
+            );
+        }
+    }
+
+    #[test]
     fn all_in_one_uses_gen3_extended_charge_slot_2() {
         // AllInOne, AIO, AIOHybrid models all use Gen3-extended mapping.
         for inv_type in &[

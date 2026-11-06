@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Gen3 HV hybrids (`0x81xx`) and the AIO Hybrid (`0x82xx`) are read and
+  written single-phase, as GivTCP does (home-energy-manager #432): the
+  charge/discharge slots live at HR 94/95, 31/32, 56/57 and 44/45 with
+  `enable_charge` at HR 96, the rate limits are the DC-hybrid HR 111/112
+  scale, and the three-phase HR 1000-1124 bank is refused. Before, a slot
+  saved through the simulator was written to HR 1113/1114, so the AIO Hybrid
+  never charged. They also report one CT clamp instead of three and keep
+  simulating the HV pack voltage.
+
 ## [0.18.3] - 2026-11-04
 
 ### Fixed

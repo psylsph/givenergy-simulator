@@ -46,10 +46,11 @@ pub fn meter_slaves_from_store(
     let family = dtc >> 8;
     // Three-phase device families expose 3 CT clamps (slaves 1-3); all others 1.
     //   0x40 = ThreePhase, 0x41 = Commercial AIO (GIV-PM-30/50),
-    //   0x60 = AC-coupled three-phase,
-    //   0x81 = Gen3 HV hybrid (GIV-HY-10.0-G3-HV),
-    //   0x82 = AIO hybrid (All in One-HY).
-    if matches!(family, 0x40 | 0x41 | 0x60 | 0x81 | 0x82) {
+    //   0x60 = AC-coupled three-phase.
+    // The 0x81 (Gen3 HV hybrid) and 0x82 (AIO hybrid) families are physically
+    // single-phase and serve the single-phase map, so they have one clamp
+    // (issue #432, as GivTCP reads them).
+    if matches!(family, 0x40 | 0x41 | 0x60) {
         1..=3
     } else {
         1..=1
@@ -1128,27 +1129,39 @@ mod tests {
 
     #[test]
     fn meter_slaves_three_phase_families_get_three_cts() {
-        // The renamed/reclassified three-phase families must expose 3 CT
-        // clamps (slaves 1-3), matching real three-phase hardware. Covers
-        // 0x40/0x41/0x60 plus the 0x81 (Gen3 HV hybrid) and 0x82 (AIO
-        // hybrid) families that were previously mis-classified as
-        // single-phase.
+        // The three-phase families expose 3 CT clamps (slaves 1-3), matching
+        // real three-phase hardware: 0x40/0x41/0x60.
         for inv in [
             "ThreePhase",
             "ThreePhase11kW",
             "CommercialAllInOne30kW", // 0x41
             "ACCoupledThreePhase6kW", // 0x60
-            "Gen3HvHybrid6kW",        // 0x81
-            "Gen3HvHybrid8kW",
-            "Gen3HvHybrid10kW",
-            "AIOHybrid6kW", // 0x82
-            "AIOHybrid12kW",
         ] {
             let store = store_for(inv);
             assert_eq!(
                 meter_slaves_from_store(&store),
                 1..=3,
-                "{inv} (0x81/0x82/0x41/0x60/0x40 family) must report 3 CTs"
+                "{inv} (0x41/0x60/0x40 family) must report 3 CTs"
+            );
+        }
+    }
+
+    #[test]
+    fn meter_slaves_hv_hybrids_get_one_ct() {
+        // The HV Gen3 (0x81xx) and AIO Hybrid (0x82xx) are physically
+        // single-phase and serve the single-phase map (issue #432).
+        for inv in [
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid12kW",
+        ] {
+            let store = store_for(inv);
+            assert_eq!(
+                meter_slaves_from_store(&store),
+                1..=1,
+                "{inv} is single-phase and must report 1 CT"
             );
         }
     }
