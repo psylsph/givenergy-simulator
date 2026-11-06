@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `simulate` now builds the plant at the instant its wall-clock anchor will
+  project, so the day-counter seed and the first tick agree. It seeded at
+  midnight of `--date` (zero), and the first anchored tick then jumped the
+  clock to today's date, which the midnight rollover read as a new day — so
+  every `today_*` register read 0 kWh and a client such as home-energy-manager
+  showed "No energy recorded yet today".
+- `simulate --date` is honoured again in the default (anchored) mode: the
+  plant and the anchor both use `--date` with the host's time-of-day.
+  `--date` is now optional — omitted, the host's date is used (as before in
+  practice); with `--fast` it still defaults to 2025-06-21 and day-burns from
+  midnight.
+- `simulate` waits out the last seconds before midnight when reading the host
+  clock, so the seed and the engine's first tick can't straddle a date change.
+
+### Tests
+
+- `SimulateClock` (start instant + clock mode) is unit-tested, including the
+  seed→anchor→tick sequence `simulate` runs; `sim-core` pins the tracker's
+  rollover contract for fresh, same-date and restored (`serve-config`) plants.
+
 ## [0.18.4] - 2026-11-06
 
 ### Fixed

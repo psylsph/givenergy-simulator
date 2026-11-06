@@ -3770,6 +3770,84 @@ mod tests {
         );
     }
 
+    /// A bare engine (tracker only, so no power flows) whose plant starts at
+    /// `start` with a recognisable non-zero day-total seed. Every assertion
+    /// below is therefore an exact equality: any change is a reset.
+    fn engine_with_seeded_totals(
+        start: chrono::NaiveDateTime,
+        tracker: EnergyTracker,
+    ) -> SimulationEngine {
+        let mut state = PlantState::new(start);
+        state.energy_totals = EnergyTotals::non_zero_test_fixture();
+        SimulationEngine::new(state, vec![Box::new(tracker)], 1)
+    }
+
+    fn totals_json(engine: &SimulationEngine) -> serde_json::Value {
+        serde_json::to_value(&engine.state.energy_totals).unwrap()
+    }
+
+    // A pinned anchor fixes the calendar date no matter what the host clock
+    // reads, so these three tests are deterministic (the time-of-day is
+    // irrelevant to the date, hence to the tracker's midnight rollover).
+
+    #[test]
+    fn day_totals_reset_when_the_anchor_jumps_the_plant_to_another_date() {
+        // The `simulate` bug shape: the plant is seeded at midnight of one
+        // date, then the first anchored tick lands on another. The tracker
+        // reads that as a new calendar day and zeroes every bucket.
+        let seeded_on = NaiveDate::from_ymd_opt(2025, 6, 21).unwrap();
+        let anchored_to = NaiveDate::from_ymd_opt(2025, 6, 22).unwrap();
+        let start = seeded_on.and_hms_opt(0, 0, 0).unwrap();
+        let mut engine =
+            engine_with_seeded_totals(start, EnergyTracker::new().with_last_reset_date(seeded_on));
+        engine.anchor_to_wall_clock(Some(anchored_to));
+        // The tracker sees the pre-tick timestamp: tick 1 still reads the
+        // seed date, tick 2 reads the jumped one and rolls over.
+        engine.run_for(2);
+        assert_eq!(engine.state.energy_totals.load_consumption_kwh, 0.0);
+        assert_eq!(engine.state.energy_totals.solar_generation_kwh, 0.0);
+    }
+
+    #[test]
+    fn day_totals_survive_when_the_plant_starts_on_the_anchored_date() {
+        // The fixed shape: the plant starts on the date the anchor will
+        // project, so the first tick is a same-day no-op and the seed holds.
+        let date = NaiveDate::from_ymd_opt(2025, 6, 21).unwrap();
+        let start = date.and_hms_opt(14, 52, 7).unwrap();
+        let seed = serde_json::to_value(EnergyTotals::non_zero_test_fixture()).unwrap();
+        let mut engine =
+            engine_with_seeded_totals(start, EnergyTracker::new().with_last_reset_date(date));
+        engine.anchor_to_wall_clock(Some(date));
+        engine.run_for(3);
+        assert_eq!(totals_json(&engine), seed);
+    }
+
+    #[test]
+    fn restored_plant_keeps_todays_totals_but_rolls_over_stale_ones() {
+        // `serve_config` builds `EnergyTracker::new()` (no seed date) for a
+        // plant restored from disk. The first tick records the date, so a
+        // plant saved on the anchored date keeps its totals; one saved on an
+        // earlier day carries yesterday's buckets, which roll over once the
+        // anchored clock reaches today — correct, not a loss.
+        let today = NaiveDate::from_ymd_opt(2025, 6, 25).unwrap();
+        let seed = serde_json::to_value(EnergyTotals::non_zero_test_fixture()).unwrap();
+
+        let mut same_day =
+            engine_with_seeded_totals(today.and_hms_opt(9, 0, 0).unwrap(), EnergyTracker::new());
+        same_day.anchor_to_wall_clock(Some(today));
+        same_day.run_for(3);
+        assert_eq!(totals_json(&same_day), seed);
+
+        let yesterday = NaiveDate::from_ymd_opt(2025, 6, 24).unwrap();
+        let mut stale = engine_with_seeded_totals(
+            yesterday.and_hms_opt(9, 0, 0).unwrap(),
+            EnergyTracker::new(),
+        );
+        stale.anchor_to_wall_clock(Some(today));
+        stale.run_for(3);
+        assert_eq!(stale.state.energy_totals.load_consumption_kwh, 0.0);
+    }
+
     // --- Thermal Model ---
 
     #[test]

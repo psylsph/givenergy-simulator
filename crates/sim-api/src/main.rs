@@ -191,8 +191,9 @@ enum Commands {
         /// Start date (YYYY-MM-DD).
         ///
         /// Season affects solar generation (summer = longer days, winter = shorter).
-        #[arg(long, default_value = "2025-06-21")]
-        date: String,
+        /// Omitted: the host's current date, or 2025-06-21 with `--fast`.
+        #[arg(long)]
+        date: Option<String>,
 
         /// Simulation tick interval in seconds.
         ///
@@ -646,7 +647,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &load_profile,
                 &weather,
                 latitude,
-                &date,
+                date.as_deref(),
                 tick_interval,
                 modbus,
                 output.as_deref(),
@@ -715,6 +716,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Season used by `simulate --fast` when `--date` is not given.
+const DEFAULT_SIMULATE_DATE: (i32, u32, u32) = (2025, 6, 21);
+
+/// Where the `simulate` plant starts, and how its clock is driven.
+///
+/// `--fast` day-burns from midnight of `--date` (default 2025-06-21) with a
+/// fixed-step clock. Otherwise the clock is anchored to the host wall clock,
+/// and the plant is built at the instant the anchor will project — the host's
+/// time-of-day on `--date` when given, else the host's date and time. The
+/// day-total seed, the tracker's seed date and the first anchored tick then
+/// all agree; seeding at midnight of another date made the first tick jump the
+/// calendar day and the midnight rollover zero every `today_*` register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SimulateClock {
+    start_ts: chrono::NaiveDateTime,
+    mode: ClockMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockMode {
+    /// Fixed step per tick (`--fast`).
+    Fixed,
+    /// Locked to the host wall clock; the date, when given, is the calendar
+    /// day to project the real time-of-day onto.
+    Anchored(Option<NaiveDate>),
+}
+
+impl SimulateClock {
+    fn plan(date: Option<NaiveDate>, fast: bool, wall_now: chrono::NaiveDateTime) -> Self {
+        use chrono::Timelike;
+        if fast {
+            let (y, m, d) = DEFAULT_SIMULATE_DATE;
+            let day = date.unwrap_or_else(|| NaiveDate::from_ymd_opt(y, m, d).unwrap());
+            return Self {
+                start_ts: day.and_hms_opt(0, 0, 0).unwrap(),
+                mode: ClockMode::Fixed,
+            };
+        }
+        // Same truncation as the engine's anchored `target_now`.
+        let start_ts = match date {
+            Some(d) => d
+                .and_hms_opt(wall_now.hour(), wall_now.minute(), wall_now.second())
+                .unwrap_or(wall_now),
+            None => wall_now,
+        };
+        Self {
+            start_ts,
+            mode: ClockMode::Anchored(date),
+        }
+    }
+
+    /// Applies the clock mode to a freshly built engine.
+    fn apply(&self, engine: &mut SimulationEngine) {
+        if let ClockMode::Anchored(pin) = self.mode {
+            engine.anchor_to_wall_clock(pin);
+        }
+    }
+}
+
+/// The host wall clock, nudged clear of midnight. `simulate` reads the clock
+/// once to build the plant and the engine reads it again on its first tick;
+/// straddling midnight would put them on different dates and zero the seed.
+async fn wall_now_clear_of_midnight() -> chrono::NaiveDateTime {
+    use chrono::Timelike;
+    let now = chrono::Local::now().naive_local();
+    if now.time().num_seconds_from_midnight() >= 86_400 - 3 {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        return chrono::Local::now().naive_local();
+    }
+    now
+}
+
 /// Start a headless simulation from CLI parameters.
 ///
 /// Creates a plant with the given configuration and starts ticking.
@@ -731,7 +804,7 @@ async fn simulate(
     load_profile: &str,
     weather: &str,
     latitude: f64,
-    date: &str,
+    date: Option<&str>,
     tick_interval: u64,
     modbus_addr: SocketAddr,
     output_dir: Option<&std::path::Path>,
@@ -755,8 +828,11 @@ async fn simulate(
         );
     }
 
-    let start_date = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
-    let start_ts = start_date.and_hms_opt(0, 0, 0).unwrap();
+    let pinned_date = date
+        .map(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d"))
+        .transpose()?;
+    let clock = SimulateClock::plan(pinned_date, fast, wall_now_clear_of_midnight().await);
+    let start_ts = clock.start_ts;
 
     // Build battery modules (SoH, capacity, history and power limits all
     // come from the shared `BatteryState::apply_soh`, same as the GUI).
@@ -844,9 +920,7 @@ async fn simulate(
     // By default lock the sim clock to the host wall clock so the served
     // inverter time matches the computer's time (no drift). --fast keeps the
     // original fixed-step behaviour for quick day-burns.
-    if !fast {
-        engine.anchor_to_wall_clock(None);
-    }
+    clock.apply(&mut engine);
     let mut schedule_opt: Option<sim_models::Schedule> = Some(initial_schedule);
 
     let reg_cat = sim_registers::default_register_catalogue();
@@ -881,7 +955,7 @@ async fn simulate(
     }
     tracing::info!("  Weather:        {:?}", parse_weather(weather));
     tracing::info!("  Latitude:       {latitude}°");
-    tracing::info!("  Start date:     {date}");
+    tracing::info!("  Start date:     {}", start_ts.date());
     tracing::info!("  Tick interval:  {tick_interval}s");
     if let Some(t) = inverter_temperature {
         tracing::info!("  Inv temp:       {t:.0}°C (pinned, thermal model off)");
@@ -1522,6 +1596,9 @@ async fn serve_config(
         Box::new(InverterEngine::new()),
         Box::new(FaultEngine::new()),
         Box::new(BatteryEngine::new()),
+        // No seed date: the first tick records the restored plant's date, so
+        // totals saved today are kept and ones saved on an earlier day roll
+        // over (see `restored_plant_keeps_todays_totals_but_rolls_over_stale_ones`).
         Box::new(sim_core::EnergyTracker::new()),
     ];
 
@@ -1777,6 +1854,118 @@ mod tests {
         );
         assert!(batts.iter().all(|b| b.soc_percent == 100.0));
         assert!(batts.iter().all(|b| b.soh == sim_models::BATTERY_MIN_SOH));
+    }
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    fn wall() -> chrono::NaiveDateTime {
+        d(2026, 11, 6).and_hms_opt(14, 52, 7).unwrap()
+    }
+
+    #[test]
+    fn clock_default_starts_at_the_host_instant_and_anchors_unpinned() {
+        let c = SimulateClock::plan(None, false, wall());
+        assert_eq!(c.start_ts, wall());
+        assert_eq!(c.mode, ClockMode::Anchored(None));
+    }
+
+    #[test]
+    fn clock_explicit_date_is_honoured_with_the_host_time_of_day() {
+        // --date must not be dropped: plant and anchor both land on it.
+        let c = SimulateClock::plan(Some(d(2025, 12, 21)), false, wall());
+        assert_eq!(c.start_ts, d(2025, 12, 21).and_hms_opt(14, 52, 7).unwrap());
+        assert_eq!(c.mode, ClockMode::Anchored(Some(d(2025, 12, 21))));
+    }
+
+    #[test]
+    fn clock_start_date_always_matches_the_anchored_date() {
+        // The invariant behind "No energy recorded yet today": the seed date
+        // (start_ts.date()) is the date the first anchored tick will project.
+        for date in [None, Some(d(2025, 6, 21)), Some(d(2024, 2, 29))] {
+            let c = SimulateClock::plan(date, false, wall());
+            let ClockMode::Anchored(pin) = c.mode else {
+                panic!("not anchored");
+            };
+            assert_eq!(c.start_ts.date(), pin.unwrap_or(wall().date()));
+        }
+    }
+
+    #[test]
+    fn clock_fast_day_burns_from_midnight_unanchored() {
+        let c = SimulateClock::plan(Some(d(2025, 12, 21)), true, wall());
+        assert_eq!(c.start_ts, d(2025, 12, 21).and_hms_opt(0, 0, 0).unwrap());
+        assert_eq!(c.mode, ClockMode::Fixed);
+        // No --date: the original 2025-06-21 season.
+        let c = SimulateClock::plan(None, true, wall());
+        assert_eq!(c.start_ts, d(2025, 6, 21).and_hms_opt(0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn clock_pinned_at_midnight_wall_keeps_the_pinned_date() {
+        // Wall time 00:00:00 on another day still lands on --date.
+        let midnight = d(2026, 11, 7).and_hms_opt(0, 0, 0).unwrap();
+        let c = SimulateClock::plan(Some(d(2025, 6, 21)), false, midnight);
+        assert_eq!(c.start_ts, d(2025, 6, 21).and_hms_opt(0, 0, 0).unwrap());
+    }
+
+    /// Drives the real seed -> engine -> `clock.apply` sequence `simulate`
+    /// uses and returns the day totals before and after three ticks.
+    fn seed_then_tick(clock: SimulateClock) -> (serde_json::Value, serde_json::Value) {
+        let mut state = PlantState::new(clock.start_ts);
+        state.energy_totals = sim_models::EnergyTotals::non_zero_test_fixture();
+        let seed = serde_json::to_value(&state.energy_totals).unwrap();
+        let devices: Vec<Box<dyn DeviceModel>> = vec![Box::new(
+            sim_core::EnergyTracker::new().with_last_reset_date(clock.start_ts.date()),
+        )];
+        let mut engine = SimulationEngine::new(state, devices, 1);
+        clock.apply(&mut engine);
+        engine.run_for(3);
+        (
+            seed,
+            serde_json::to_value(&engine.state.energy_totals).unwrap(),
+        )
+    }
+
+    #[test]
+    fn simulate_with_an_explicit_date_keeps_its_seeded_day_totals() {
+        // A pinned date keeps the calendar day fixed whatever the host clock
+        // says, so this is deterministic. Reverting the start to midnight of a
+        // different date (the old bug) zeroes the totals and fails here.
+        let clock = SimulateClock::plan(Some(d(2025, 6, 21)), false, wall());
+        let (seed, after) = seed_then_tick(clock);
+        assert_eq!(after, seed);
+    }
+
+    #[test]
+    fn simulate_fast_keeps_its_seeded_day_totals() {
+        let clock = SimulateClock::plan(Some(d(2025, 6, 21)), true, wall());
+        let (seed, after) = seed_then_tick(clock);
+        assert_eq!(after, seed);
+    }
+
+    #[test]
+    fn simulate_with_a_midnight_start_on_another_date_would_lose_the_seed() {
+        // Documents the old shape: plant at midnight of --date, anchored to
+        // a different date.
+        let mut clock = SimulateClock::plan(Some(d(2025, 6, 22)), false, wall());
+        clock.start_ts = d(2025, 6, 21).and_hms_opt(0, 0, 0).unwrap();
+        let (seed, after) = seed_then_tick(clock);
+        assert_ne!(after, seed);
+    }
+
+    #[test]
+    fn simulate_date_flag_is_optional() {
+        use clap::Parser;
+        let none = Cli::try_parse_from(["giv-sim", "simulate"]).unwrap();
+        let some = Cli::try_parse_from(["giv-sim", "simulate", "--date", "2025-12-21"]).unwrap();
+        let date_of = |c: Cli| match c.command {
+            Commands::Simulate { date, .. } => date,
+            _ => panic!("not simulate"),
+        };
+        assert_eq!(date_of(none), None);
+        assert_eq!(date_of(some).as_deref(), Some("2025-12-21"));
     }
 
     #[test]
