@@ -60,6 +60,14 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.4** — The Gen3 HV hybrids (`0x81xx`) and the AIO Hybrid (`0x82xx`) are
+read and written single-phase, as GivTCP does (home-energy-manager #432):
+slots at HR 94/95, 31/32, 56/57 and 44/45 with `enable_charge` at HR 96, the
+DC-hybrid HR 111/112 rate scale, and the three-phase HR 1000-1124 bank
+refused. They report one CT clamp and keep the HV pack voltage curve. The
+GivTCP contract copy drops their three-phase deviations. 571 Rust +
+5/5 scenarios + 49 Playwright green.
+
 **0.18.3** — Charge-slot hold and the AC Coupled's pause
 (home-energy-manager #426). An enabled charge slot at its target SOC holds
 the battery (`scheduled_hold`: no grid charging or discharging, grid covers

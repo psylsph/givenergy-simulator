@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-06
+
 ### Fixed
 
 - The Gen3 HV hybrids (`0x81xx`) and the AIO Hybrid (`0x82xx`) are read and
