@@ -60,6 +60,17 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.5** — `simulate` day-counter seed fix (home-energy-manager "No energy
+recorded yet today"). The plant was seeded at midnight of `--date`, then the
+first wall-clock-anchored tick jumped the clock to the host's date and the
+`EnergyTracker` midnight rollover zeroed every `today_*` register. A new
+`SimulateClock` (`sim-api`) builds the plant at the instant the anchor
+projects and pins `--date` when given, so `--date` is honoured again in the
+default mode (and is now optional: omitted = host date, or 2025-06-21 with
+`--fast`). The host clock is read clear of midnight. `sim-core` pins the
+tracker's rollover contract (fresh, same-date and `serve-config` restored
+plants). 583 Rust + 5/5 scenarios green.
+
 **0.18.4** — The Gen3 HV hybrids (`0x81xx`) and the AIO Hybrid (`0x82xx`) are
 read and written single-phase, as GivTCP does (home-energy-manager #432):
 slots at HR 94/95, 31/32, 56/57 and 44/45 with `enable_charge` at HR 96, the
