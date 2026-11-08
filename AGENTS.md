@@ -60,6 +60,11 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.6** — GivTCP model contract sync with home-energy-manager v1.10.0 (#433
+there). Test fixture only: HEM's `hem_deviations` for the Gen 1, Gen 2, Gen 3
+and AC models are gone, and the simulator's copy is identical again. No
+simulator behaviour changed.
+
 **0.18.5** — `simulate` day-counter seed fix (home-energy-manager "No energy
 recorded yet today"). The plant was seeded at midnight of `--date`, then the
 first wall-clock-anchored tick jumped the clock to the host's date and the

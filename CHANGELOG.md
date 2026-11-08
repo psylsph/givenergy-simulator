@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-11-08
+
+### Tests
+
+- The GivTCP model contract is synced with home-energy-manager v1.10.0, which
+  now pauses the Gen 1 (ARM 187+, mode only), Gen 2, Gen 3 on any firmware and
+  both AC models (ARM 200+) as GivTCP does. Only HEM's side of the contract
+  changed; the simulator's own recorded differences (the pause on the Gen 1
+  window, Gen 4, three-phase and EMS) are as before.
+
 ## [0.18.5] - 2026-11-06
 
 ### Fixed
