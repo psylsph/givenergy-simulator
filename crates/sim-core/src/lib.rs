@@ -1278,12 +1278,17 @@ impl DeviceModel for BatteryEngine {
         let slot_active = state.battery_pause_slot_start != state.battery_pause_slot_end
             && valid_hhmm(state.battery_pause_slot_start)
             && valid_hhmm(state.battery_pause_slot_end);
-        // The single-phase AC has no pause window (GivTCP writes HR 318
-        // alone there), so its mode pauses all day.
-        let mode_only = matches!(
-            state.config.inverter_type.as_str(),
-            "ACCoupled" | "ACCoupled2"
-        );
+        // A model that takes the mode alone (single-phase AC, Gen1) has no
+        // pause window on the wire, so its mode pauses all day whatever
+        // HR 319/320 hold: those registers refuse writes there, so a client
+        // cannot clear a leftover window, and a window left by a scenario, a
+        // command or a plant-type switch must not stop a lone HR 318 pausing
+        // (home-energy-manager #433). The rule for who takes what is shared
+        // with the register store, so the two agree.
+        let mode_only = sim_models::pause_support(
+            &state.config.inverter_type,
+            state.inverter.arm_firmware_version,
+        ) == sim_models::PauseSupport::ModeOnly;
         let in_pause_window = if mode_only {
             true
         } else if slot_active {
@@ -5545,6 +5550,78 @@ mod tests {
             state.sync_battery_from_vec();
             tick_battery(&mut state, 14, 0);
             assert_eq!(state.batteries[0].power_kw, 0.0, "{inverter}");
+        }
+    }
+
+    #[test]
+    fn gen1_pause_mode_applies_all_day_without_a_window() {
+        // The Gen1 takes HR 318 alone too (GivTCP `GEN1_PAUSE_MIN_ARM_FW`),
+        // so its mode pauses whatever HR 319/320 hold (home-energy-manager
+        // #433: the charge cap wrote the mode and charging carried on).
+        let mut state = pause_test_state(1, 60, 60, 14, 0);
+        state.config.inverter_type = "Gen1Hybrid".to_string();
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 14, 0);
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+    }
+
+    #[test]
+    fn a_mode_only_model_pauses_all_day_whatever_window_is_left() {
+        // The mode-only models refuse HR 319/320, so a client cannot clear a
+        // stale window; a lone HR 318 must still pause outside it.
+        for inverter in ["Gen1Hybrid", "ACCoupled", "ACCoupled2"] {
+            for (start, end, hour) in [(1200, 1400, 15), (1200, 1400, 13), (400, 300, 3)] {
+                let mut state = pause_test_state(1, start, end, hour, 0);
+                state.config.inverter_type = inverter.to_string();
+                state.batteries[0].power_kw = 2.0;
+                state.sync_battery_from_vec();
+                tick_battery(&mut state, hour, 0);
+                assert_eq!(
+                    state.batteries[0].power_kw, 0.0,
+                    "{inverter} window {start}-{end} at {hour}:00"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_gen1_below_arm_187_has_no_all_day_pause() {
+        // No pause registers there (GivTCP `GEN1_PAUSE_MIN_ARM_FW`), so the
+        // mode does not widen to all day.
+        let mut state = pause_test_state(1, 60, 60, 14, 0);
+        state.config.inverter_type = "Gen1Hybrid".to_string();
+        state.inverter.arm_firmware_version = 186;
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 14, 0);
+        assert!(state.batteries[0].power_kw > 1.0);
+
+        state.inverter.arm_firmware_version = 187;
+        tick_battery(&mut state, 14, 0);
+        assert_eq!(state.batteries[0].power_kw, 0.0);
+    }
+
+    #[test]
+    fn an_ac_below_arm_200_has_no_all_day_pause() {
+        let mut state = pause_test_state(1, 60, 60, 14, 0);
+        state.config.inverter_type = "ACCoupled".to_string();
+        state.inverter.arm_firmware_version = 199;
+        state.batteries[0].power_kw = 2.0;
+        state.sync_battery_from_vec();
+        tick_battery(&mut state, 14, 0);
+        assert!(state.batteries[0].power_kw > 1.0);
+    }
+
+    #[test]
+    fn pause_discharge_mode_applies_all_day_on_a_mode_only_model() {
+        for mode in [2, 3] {
+            let mut state = pause_test_state(mode, 60, 60, 14, 0);
+            state.config.inverter_type = "Gen1Hybrid".to_string();
+            state.batteries[0].power_kw = -2.0;
+            state.sync_battery_from_vec();
+            tick_battery(&mut state, 14, 0);
+            assert_eq!(state.batteries[0].power_kw, 0.0, "mode {mode}");
         }
     }
 

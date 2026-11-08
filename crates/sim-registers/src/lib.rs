@@ -211,10 +211,6 @@ fn is_three_phase_inverter(inverter_type: &str) -> bool {
     sim_models::is_three_phase_inverter_type(inverter_type)
 }
 
-/// Lowest single-phase AC ARM firmware that takes the pause mode (GivTCP's
-/// `AC_PAUSE_MIN_ARM_FW`, confirmed by its users).
-const AC_PAUSE_MIN_ARM_FW: u16 = 200;
-
 fn is_ac_coupled_inverter(inverter_type: &str) -> bool {
     // Narrow single-phase AC-coupled set used by the write guards below
     // (HR 2071 / HR 318-320). Note: ACCoupledThreePhase6kW (0x6001) is
@@ -269,9 +265,13 @@ impl RegisterStore {
     /// Device-type gating (returns `false` → caller emits EC_ILLEGAL_DATA_ADDRESS):
     /// - HR 2071 (`ems_export_power_limit`) is read-only for AC Coupled
     ///   inverters — they don't have EMS capability.
-    /// - Single-phase AC Coupled inverters take HR 318 (battery pause mode)
-    ///   alone, and only from ARM firmware 200, and refuse the HR 319/320
-    ///   window, matching GivTCP's Model.AC handling.
+    /// - The battery pause registers (HR 318-320) follow GivTCP per model
+    ///   (`sim_models::pause_support`, an allowlist): the models with the
+    ///   window take all three; the single-phase AC (ARM 200+) and the Gen1
+    ///   (ARM 187+) take HR 318 alone and refuse HR 319/320; every other
+    ///   model (Polar, Gen3 Plus, Gen4, three-phase hybrids, EMS, PV) refuses
+    ///   all three. A store nothing has projected yet has no model, so it
+    ///   gates nothing.
     /// - The three-phase control bank (HR 1000-1124) only exists on real
     ///   three-phase inverters. A Gateway (and any other non-three-phase
     ///   device) has no registers there, so writes must be rejected —
@@ -280,14 +280,16 @@ impl RegisterStore {
         if address == 2071 && is_ac_coupled_inverter(&self.inverter_type) {
             return false;
         }
-        if is_ac_coupled_inverter(&self.inverter_type) {
-            // The AC takes the pause mode alone, from ARM firmware 200
-            // (GivTCP `AC_PAUSE_MIN_ARM_FW`); it has no pause window.
-            if (319..=320).contains(&address) {
-                return false;
-            }
+        // An empty type is a store nothing has projected yet: no model to
+        // gate on, so the write is not refused for want of one.
+        if (318..=320).contains(&address) && !self.inverter_type.is_empty() {
             let arm_fw = self.read_by_space(21, RegisterSpace::Holding).unwrap_or(0);
-            if address == 318 && arm_fw < AC_PAUSE_MIN_ARM_FW {
+            let allowed = match sim_models::pause_support(&self.inverter_type, arm_fw) {
+                sim_models::PauseSupport::None => false,
+                sim_models::PauseSupport::ModeOnly => address == 318,
+                sim_models::PauseSupport::ModeAndWindow => true,
+            };
+            if !allowed {
                 return false;
             }
         }
@@ -1178,20 +1180,10 @@ impl RegisterStore {
                 // If the user has set a non-zero arm_firmware_version override
                 // (e.g. via the set_arm_firmware command), honour that instead.
                 "ge_hr_arm_firmware" => {
-                    let fw = if state.inverter.arm_firmware_version != 0 {
-                        state.inverter.arm_firmware_version
-                    } else if is_three_phase_inverter(&state.config.inverter_type) {
-                        612
-                    } else {
-                        match state.config.inverter_type.as_str() {
-                            "Gen1Hybrid" => 252, // century 2 → Gen1
-                            "Gen2Hybrid" => 852, // century 8 → Gen2
-                            "Gen3Hybrid" => 318, // century 3 → Gen3 (D318-A318 26-Aug-2025)
-                            "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
-                            | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
-                            _ => 318,
-                        }
-                    };
+                    let fw = sim_models::effective_arm_firmware(
+                        &state.config.inverter_type,
+                        state.inverter.arm_firmware_version,
+                    );
                     self.values.insert(key, fw);
                     continue;
                 }
@@ -1924,19 +1916,10 @@ impl RegisterStore {
                     continue;
                 }
                 "tph_ir_arm_firmware_version" => {
-                    let fw = if state.inverter.arm_firmware_version != 0 {
-                        state.inverter.arm_firmware_version
-                    } else if is_three_phase_inverter(&state.config.inverter_type) {
-                        612
-                    } else {
-                        match state.config.inverter_type.as_str() {
-                            "Gen1Hybrid" => 252,
-                            "Gen2Hybrid" => 852,
-                            "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
-                            | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
-                            _ => 318,
-                        }
-                    };
+                    let fw = sim_models::effective_arm_firmware(
+                        &state.config.inverter_type,
+                        state.inverter.arm_firmware_version,
+                    );
                     self.values.insert(key, fw);
                     continue;
                 }
@@ -8683,7 +8666,7 @@ mod tests {
         // The HR 300-359 block reads (GivTCP polls it on the AC for the AC
         // charge/discharge limits, and HEM's AC users read EPS and the rates
         // from it). GivTCP writes the pause mode alone on the AC from ARM
-        // firmware 200 (`AC_PAUSE_MIN_ARM_FW`); the window registers refuse
+        // firmware 200 (`sim_models::AC_PAUSE_MIN_ARM_FW`); the window registers refuse
         // writes, as field logs show for HR 319/320.
         assert!(!store.holding_range_absent_for_device(300, 60));
         assert!(!store.holding_range_absent_for_device(318, 3));
@@ -8704,6 +8687,124 @@ mod tests {
 
         assert!(!store.write(318, 1));
         assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(0));
+    }
+
+    /// The store for one inverter type at one ARM firmware, projected once.
+    fn store_at(inverter_type: &str, arm_fw: u16) -> RegisterStore {
+        let mut state = make_state();
+        state.config.inverter_type = inverter_type.to_string();
+        state.inverter.arm_firmware_version = arm_fw;
+        let mut store = RegisterStore::new(default_register_catalogue());
+        store.project_from_state(&state);
+        store
+    }
+
+    #[test]
+    fn gen1_takes_the_pause_mode_alone_from_arm_187() {
+        // GivTCP `GEN1_PAUSE_MIN_ARM_FW`: the Gen1 takes HR 318 alone, as the
+        // AC does, and refuses the window (home-energy-manager #433).
+        let mut store = store_at("Gen1Hybrid", 252);
+        assert!(store.write(318, 1));
+        assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(1));
+        assert!(!store.write(319, 1200));
+        assert!(!store.write(320, 1300));
+
+        let mut edge = store_at("Gen1Hybrid", 187);
+        assert!(edge.write(318, 1), "187 is the first firmware with it");
+    }
+
+    #[test]
+    fn gen1_below_arm_187_has_no_pause_registers() {
+        let mut store = store_at("Gen1Hybrid", 186);
+        assert!(!store.write(318, 1));
+        assert!(!store.write(319, 1200));
+        assert!(!store.write(320, 1300));
+        assert_eq!(store.read_by_space(318, RegisterSpace::Holding), Some(0));
+    }
+
+    #[test]
+    fn a_store_nothing_has_projected_yet_does_not_refuse_the_pause() {
+        // No model to gate on, and no HR 21 to read: not "too old".
+        let mut store = RegisterStore::new(default_register_catalogue());
+        assert!(store.write(318, 1));
+        assert!(store.write(319, 1200));
+        assert!(store.write(320, 1300));
+    }
+
+    #[test]
+    fn the_pause_firmware_gate_reads_the_projected_default_when_unset() {
+        // `arm_firmware_version` 0 projects the per-type default into HR 21
+        // (252 on a Gen1, past the 187 minimum), so the pause is taken.
+        let mut store = store_at("Gen1Hybrid", 0);
+        assert!(store.write(318, 1));
+        let mut ac = store_at("ACCoupled", 0);
+        assert!(ac.write(318, 1));
+    }
+
+    #[test]
+    fn the_0x2002_and_0x2003_hybrids_follow_their_firmware_century() {
+        // givenergy-modbus `resolve_model`: century 3 -> Gen3, 8/9 -> Gen2
+        // (window); any other -> Gen1 (mode alone from ARM 187).
+        for model in ["Hybrid4600", "Hybrid3600"] {
+            let mut gen3 = store_at(model, 318);
+            assert!(gen3.write(318, 2) && gen3.write(319, 1200) && gen3.write(320, 1300));
+
+            let mut gen1 = store_at(model, 252);
+            assert!(gen1.write(318, 1), "{model} Gen1 takes the mode");
+            assert!(!gen1.write(319, 1200), "{model} Gen1 refuses the window");
+
+            let mut old = store_at(model, 186);
+            assert!(!old.write(318, 1), "{model} below ARM 187");
+        }
+    }
+
+    #[test]
+    fn polar_and_gen3_plus_have_no_pause_registers() {
+        // Not in GivTCP's `PAUSE_MODELS`; the contract has no simulator row
+        // for them, so `tests/givtcp_contract.rs` covers them by name.
+        for model in ["Polar5kW", "Gen3Plus5kW", "Gen3Plus8kW", "PVInverter5kW"] {
+            let mut store = store_at(model, 452);
+            for (address, value) in [(318, 1), (319, 1200), (320, 1300)] {
+                assert!(!store.write(address, value), "{model} HR {address}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_models_givtcp_gives_no_pause_refuse_all_three_registers() {
+        for model in [
+            "Gen4Hybrid6kW",
+            "ThreePhase",
+            "ThreePhase8kW",
+            "ThreePhase10kW",
+            "ThreePhase11kW",
+            "EMS",
+        ] {
+            let mut store = store_at(model, 612);
+            for (address, value) in [(318, 1), (319, 1200), (320, 1300)] {
+                assert!(!store.write(address, value), "{model} HR {address}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_models_givtcp_gives_the_window_still_take_it() {
+        // The AC three-phase stays: HEM serves Timed Discharge there, a
+        // recorded deviation from GivTCP.
+        for (model, arm_fw) in [
+            ("Gen2Hybrid", 852),
+            ("Gen3Hybrid", 318),
+            ("AllInOne6", 620),
+            ("Gen3HvHybrid6kW", 612),
+            ("AIOHybrid6kW", 612),
+            ("Gateway12kW", 612),
+            ("ACCoupledThreePhase6kW", 612),
+        ] {
+            let mut store = store_at(model, arm_fw);
+            assert!(store.write(318, 2), "{model} HR 318");
+            assert!(store.write(319, 1200), "{model} HR 319");
+            assert!(store.write(320, 1300), "{model} HR 320");
+        }
     }
 
     #[test]

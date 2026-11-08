@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.7] - 2026-11-08
+
+### Changed
+
+- The battery pause registers (HR 318-320) now follow GivTCP per model, and
+  the rule lives in one place, `sim_models::pause_support`, used by both the
+  register store and the battery engine so they cannot disagree
+  (home-energy-manager #433). It is an allowlist like GivTCP's
+  `PAUSE_MODELS`: the All-in-One, Gateway, Gen 2, Gen 3, Gen 3 HV and AIO
+  Hybrid take the mode and the window; the single-phase AC (ARM 200+) and the
+  Gen 1 (ARM 187+) take the mode alone; the Polar, Gen 3 Plus, Gen 4,
+  three-phase hybrids, EMS and PV inverters refuse all three registers. The AC
+  three-phase keeps the window (HEM serves Timed Discharge there). The
+  0x2002/0x2003 hybrids, which the contract has no row for, are resolved by
+  ARM firmware century as givenergy-modbus `resolve_model` does for every
+  "20" hybrid: century 3 (Gen3) and 8/9 (Gen2) take the window, any other
+  (Gen1) takes the mode alone from ARM 187. Writes to the
+  models that lose the registers now return illegal-address where they were
+  ACKed before. This supersedes the 0.18.6 note that the simulator's recorded
+  pause differences (Gen 1 window, Gen 4, three-phase, EMS) remain: they are
+  gone, and the contract fixture no longer lists them.
+- A mode-only model (Gen 1, single-phase AC) pauses all day whatever
+  HR 319/320 hold: those registers refuse writes there, so a client cannot
+  clear a leftover window, and a lone HR 318 must still pause. Below the
+  model's minimum firmware the mode does not pause all day.
+- One helper, `sim_models::effective_arm_firmware` (the override, else the
+  type default), now supplies the ARM firmware to HR 21, the three-phase ARM
+  version register, the GUI value and the pause rule. They were three copies,
+  and the GUI one showed 318 on three-phase models whose registers say 612.
+- A register store nothing has projected yet no longer refuses the pause
+  registers for want of a model.
+
+### Known limitations
+
+- HEM's "all-day" pause window is 0000-2359 with an exclusive end, so the
+  last minute of the day (23:59) is not paused on models that take the window.
+  Not changed: whether real inverters treat 2359 as inclusive is unconfirmed.
+
+### Tests
+
+- `sim-models` pins the allowlist (every model, the inclusive firmware
+  minimums, firmware 0); `sim-registers` covers the Gen 1, unprojected stores
+  and Polar/Gen 3 Plus/PV; the contract test checks the models without a
+  fixture row against `PAUSE_MODELS`.
+- `sim-api/tests/pause_contract.rs` walks every contract row through the
+  store and the battery engine for charge, discharge and both modes, requires
+  every pause row to be walked, and checks the GivTCP no-pause rows refuse the
+  writes. Mutation-checked by reverting the engine's mode-only rule.
+
 ## [0.18.6] - 2026-11-08
 
 ### Tests

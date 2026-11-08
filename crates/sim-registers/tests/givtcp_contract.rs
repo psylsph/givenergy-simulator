@@ -104,3 +104,44 @@ fn the_simulator_matches_givtcp_except_where_the_contract_says_why() {
     assert!(checked >= 18, "only {checked} rows name a simulator model");
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
 }
+
+/// Simulator models the contract has no row for, with the GivTCP model each
+/// one is. GivTCP gives the pause only to `constants.PAUSE_MODELS`, so these
+/// (none of which are in it) must refuse all three registers.
+const MODELS_WITHOUT_A_ROW: [(&str, &str); 16] = [
+    ("Polar5kW", "POLAR"),
+    ("Polar4600", "POLAR"),
+    ("Polar3600", "POLAR"),
+    ("Polar6kW", "POLAR"),
+    ("Polar7kW", "POLAR"),
+    ("Polar8kW", "POLAR"),
+    ("Gen3Plus5kW", "HYBRID_GEN3_PLUS"),
+    ("Gen3Plus4600", "HYBRID_GEN3_PLUS"),
+    ("Gen3Plus3600", "HYBRID_GEN3_PLUS"),
+    ("Gen3Plus6kW", "HYBRID_GEN3_PLUS"),
+    ("Gen3Plus7kW", "HYBRID_GEN3_PLUS"),
+    ("Gen3Plus8kW", "HYBRID_GEN3_PLUS"),
+    ("PVInverter5kW", "PV"),
+    ("PVInverter4600", "PV"),
+    ("PVInverter3600", "PV"),
+    ("PVInverter6kW", "PV"),
+];
+
+#[test]
+fn models_outside_givtcps_pause_list_refuse_the_pause() {
+    let contract = contract();
+    let pause_models: Vec<&str> = contract["constants"]["PAUSE_MODELS"]
+        .as_array()
+        .expect("PAUSE_MODELS")
+        .iter()
+        .map(|m| m.as_str().expect("a model name"))
+        .collect();
+    for (sim, givtcp_model) in MODELS_WITHOUT_A_ROW {
+        assert!(
+            !pause_models.contains(&givtcp_model),
+            "{givtcp_model} is in PAUSE_MODELS now; {sim} should take the pause"
+        );
+        let facts = sim_facts(sim, 452);
+        assert_eq!(facts["pause"], json!("none"), "{sim}");
+    }
+}

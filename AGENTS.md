@@ -60,6 +60,18 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.7** — Battery pause (HR 318-320) per model, as GivTCP gives it
+(home-energy-manager #433). One allowlist, `sim_models::pause_support`, now
+decides who has the registers and is used by both the register store and
+`BatteryEngine`, so a model cannot take the write and carry on charging. The
+Polar, Gen 3 Plus, Gen 4, three-phase hybrids, EMS and PV models refuse
+HR 318-320; the Gen 1 (ARM 187+) and single-phase AC (ARM 200+) take HR 318
+alone and pause all day whatever window is left; the 0x2002/0x2003 hybrids
+follow `resolve_model`'s firmware century. `sim_models::effective_arm_firmware`
+is now the single source of the ARM firmware (HR 21, the GUI and the pause
+rule). Known limitation: the HEM 0000-2359 window leaves 23:59 unpaused.
+603+ Rust + 5/5 scenarios + 49 Playwright green.
+
 **0.18.6** — GivTCP model contract sync with home-energy-manager v1.10.0 (#433
 there). Test fixture only: HEM's `hem_deviations` for the Gen 1, Gen 2, Gen 3
 and AC models are gone, and the simulator's copy is identical again. No
@@ -533,6 +545,22 @@ window set to the **complement/inverse** of the slot, which **wraps midnight**
 - `start == end`: disabled / empty window (covers our `60` sentinel and
   givenergy-modbus's `0`). givenergy-modbus's valid range is `(0, 2359)` and
   it uses `0` to disable; our internal PlantState defaults use `60`.
+
+**Which models have the registers** is `sim_models::pause_support` (an
+allowlist matching GivTCP's `PAUSE_MODELS`; used by both the register store
+and `BatteryEngine`, so they cannot disagree): All-in-One, Gateway, Gen2, Gen3,
+Gen3 HV, AIO Hybrid and (HEM deviation) AC three-phase take the mode and the
+window; the single-phase AC (ARM 200+) and Gen1 (ARM 187+) take HR 318 alone,
+refuse HR 319/320, and pause all day whatever window is left; Polar, Gen3 Plus,
+Gen4, three-phase hybrids, EMS and PV refuse all three. ARM firmware 0 (the
+per-type default, via `sim_models::effective_arm_firmware`, the one source of
+the ARM firmware for HR 21, the GUI and this rule) never counts as too old; an
+unprojected store gates nothing. The
+0x2002/0x2003 hybrids (no contract row) follow `resolve_model`'s firmware
+century: 3xx/8xx/9xx take the window, any other century is a Gen1 (mode alone
+from ARM 187). The 0x2001 hybrids are keyed by type name
+(`Gen1Hybrid`/`Gen2Hybrid`/`Gen3Hybrid`), so overriding their ARM firmware
+does not change their generation here.
 
 Modbus writes to HR 318/319/320 are reconciled into one `SetBatteryPause`
 command that preserves whichever fields weren't written this cycle (Tauri:

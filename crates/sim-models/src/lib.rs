@@ -158,6 +158,129 @@ pub fn is_ac_coupled_inverter_type(inverter_type: &str) -> bool {
     )
 }
 
+/// Lowest single-phase AC ARM firmware that takes the pause mode (GivTCP's
+/// `AC_PAUSE_MIN_ARM_FW`, confirmed by its users).
+pub const AC_PAUSE_MIN_ARM_FW: u16 = 200;
+
+/// Lowest Gen1 ARM firmware that takes the pause mode (GivTCP's
+/// `GEN1_PAUSE_MIN_ARM_FW`).
+pub const GEN1_PAUSE_MIN_ARM_FW: u16 = 187;
+
+/// The ARM firmware (HR 21) a model reports when none is overridden. Its
+/// century (fw / 100) is what clients use to tell the 0x2001 hybrids apart:
+/// 2xx Gen1, 3xx Gen3, 8xx Gen2.
+pub fn default_arm_firmware_for(inverter_type: &str) -> u16 {
+    if is_three_phase_inverter_type(inverter_type) {
+        return 612;
+    }
+    match inverter_type {
+        "Gen1Hybrid" => 252,
+        "Gen2Hybrid" => 852,
+        // D318-A318, 26-Aug-2025.
+        "Gen3Hybrid" => 318,
+        "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW" | "Gen3Plus7kW"
+        | "Gen3Plus8kW" => 452,
+        _ => 318,
+    }
+}
+
+/// The ARM firmware a model reports: the override when `arm_fw` is non-zero
+/// (see `InverterState::arm_firmware_version`), else the type default. This
+/// is the one place HR 21, IR 1000-range ARM version, the GUI and the pause
+/// rule all get their firmware from, so none can drift from another.
+pub fn effective_arm_firmware(inverter_type: &str, arm_fw: u16) -> u16 {
+    if arm_fw != 0 {
+        arm_fw
+    } else {
+        default_arm_firmware_for(inverter_type)
+    }
+}
+
+/// Which of the battery pause registers (HR 318-320) a model has.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PauseSupport {
+    /// No pause registers: HR 318-320 refuse writes.
+    None,
+    /// HR 318 (the mode) alone; the window registers refuse writes and the
+    /// mode pauses all day.
+    ModeOnly,
+    /// HR 318 plus the HR 319/320 window.
+    ModeAndWindow,
+}
+
+/// The pause registers a model has, as GivTCP gives them (the contract in
+/// `sim-registers/tests/fixtures/givtcp-model-contract.json`). This is the
+/// one place that rule lives: the register store uses it to accept or refuse
+/// a write, and the battery engine to decide whether a mode pauses all day,
+/// so the two cannot disagree (home-energy-manager #433).
+///
+/// It is an allowlist, as GivTCP's `PAUSE_MODELS` is:
+///
+/// - the All-in-One, Gateway, Gen2, Gen3, Gen3 HV and AIO Hybrid take the
+///   mode and the window;
+/// - the single-phase AC (ARM 200+) and the Gen1 (ARM 187+) take the mode
+///   alone;
+/// - everything else (Polar, Gen3 Plus, Gen4, three-phase hybrids, EMS, PV
+///   and any unrecognised type) has none.
+///
+/// Where the simulator knowingly differs from GivTCP:
+///
+/// - the AC three-phase takes the window, because HEM serves Timed Discharge
+///   there;
+/// - the 0x2002/0x2003 hybrids, which the contract has no row for, are
+///   resolved by ARM firmware century as givenergy-modbus `resolve_model`
+///   does for every "20" hybrid (3xx Gen3 and 8xx/9xx Gen2 take the window,
+///   any other century is a Gen1). The 0x2001 hybrids are keyed by their type
+///   name (`Gen1Hybrid`/`Gen2Hybrid`/`Gen3Hybrid`) and only the minimum
+///   firmware is read, so overriding the ARM firmware does not change which
+///   generation they are;
+/// - the bare `"Gen3"` is `PlantConfig`'s legacy default, a generic Gen3-style
+///   hybrid.
+///
+/// `arm_fw` is resolved with [`effective_arm_firmware`], so 0 is the type's
+/// default and never counts as too old.
+pub fn pause_support(inverter_type: &str, arm_fw: u16) -> PauseSupport {
+    let arm_fw = effective_arm_firmware(inverter_type, arm_fw);
+    // A Gen1 takes the mode alone from ARM 187.
+    let gen1_pause = |arm_fw: u16| {
+        if arm_fw >= GEN1_PAUSE_MIN_ARM_FW {
+            PauseSupport::ModeOnly
+        } else {
+            PauseSupport::None
+        }
+    };
+    match inverter_type {
+        "ACCoupled" | "ACCoupled2" => {
+            if arm_fw >= AC_PAUSE_MIN_ARM_FW {
+                PauseSupport::ModeOnly
+            } else {
+                PauseSupport::None
+            }
+        }
+        "Gen1Hybrid" => gen1_pause(arm_fw),
+        "Hybrid4600" | "Hybrid3600" => match arm_fw {
+            300..=399 | 800..=999 => PauseSupport::ModeAndWindow,
+            _ => gen1_pause(arm_fw),
+        },
+        "Gen3"
+        | "Gen2Hybrid"
+        | "Gen3Hybrid"
+        | "AllInOne6"
+        | "AllInOne"
+        | "AllInOne5"
+        | "Gateway12kW"
+        | "Gen3HvHybrid6kW"
+        | "Gen3HvHybrid8kW"
+        | "Gen3HvHybrid10kW"
+        | "AIOHybrid6kW"
+        | "AIOHybrid8kW"
+        | "AIOHybrid10kW"
+        | "AIOHybrid12kW"
+        | "ACCoupledThreePhase6kW" => PauseSupport::ModeAndWindow,
+        _ => PauseSupport::None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UK EREC G98 / G99 standard grid-export limits
 // ---------------------------------------------------------------------------
@@ -2225,6 +2348,143 @@ impl Default for Schedule {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn pause_is_an_allowlist_of_the_models_givtcp_gives_it() {
+        use PauseSupport::{ModeAndWindow, ModeOnly, None as NoPause};
+        // GivTCP `PAUSE_MODELS` (window), plus the AC and Gen1 (mode only).
+        for model in [
+            "Gen3", // PlantConfig's legacy default
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "AllInOne6",
+            "AllInOne",
+            "AllInOne5",
+            "Gateway12kW",
+            "Gen3HvHybrid6kW",
+            "Gen3HvHybrid8kW",
+            "Gen3HvHybrid10kW",
+            "AIOHybrid6kW",
+            "AIOHybrid12kW",
+            // The one knowing difference: HEM serves Timed Discharge here.
+            "ACCoupledThreePhase6kW",
+        ] {
+            assert_eq!(pause_support(model, 612), ModeAndWindow, "{model}");
+        }
+        // Not in `PAUSE_MODELS`: Polar, Gen3 Plus, Gen4, three-phase, EMS, PV.
+        for model in [
+            "Polar5kW",
+            "Polar4600",
+            "Polar3600",
+            "Polar6kW",
+            "Polar7kW",
+            "Polar8kW",
+            "Gen3Plus5kW",
+            "Gen3Plus4600",
+            "Gen3Plus3600",
+            "Gen3Plus6kW",
+            "Gen3Plus7kW",
+            "Gen3Plus8kW",
+            "Gen4Hybrid6kW",
+            "ThreePhase",
+            "ThreePhase8kW",
+            "ThreePhase10kW",
+            "ThreePhase11kW",
+            "CommercialAllInOne30kW",
+            "EMS",
+            "EmsCommercial",
+            "PVInverter5kW",
+            "PVInverter4600",
+            "PVInverter3600",
+            "PVInverter6kW",
+            "SomethingUnknown",
+        ] {
+            assert_eq!(pause_support(model, 612), NoPause, "{model}");
+        }
+        assert_eq!(pause_support("ACCoupled", 200), ModeOnly);
+        assert_eq!(pause_support("ACCoupled2", 200), ModeOnly);
+        assert_eq!(pause_support("Gen1Hybrid", 252), ModeOnly);
+    }
+
+    #[test]
+    fn pause_firmware_minimums_are_inclusive() {
+        use PauseSupport::{ModeOnly, None as NoPause};
+        assert_eq!(pause_support("ACCoupled", 199), NoPause);
+        assert_eq!(pause_support("ACCoupled", 200), ModeOnly);
+        assert_eq!(pause_support("Gen1Hybrid", 186), NoPause);
+        assert_eq!(pause_support("Gen1Hybrid", 187), ModeOnly);
+    }
+
+    #[test]
+    fn effective_arm_firmware_is_the_override_or_the_type_default() {
+        assert_eq!(effective_arm_firmware("Gen1Hybrid", 0), 252);
+        assert_eq!(effective_arm_firmware("Gen2Hybrid", 0), 852);
+        assert_eq!(effective_arm_firmware("Gen3Hybrid", 0), 318);
+        assert_eq!(effective_arm_firmware("Gen3Plus5kW", 0), 452);
+        assert_eq!(effective_arm_firmware("Gen3Plus8kW", 0), 452);
+        assert_eq!(effective_arm_firmware("ThreePhase", 0), 612);
+        assert_eq!(effective_arm_firmware("ACCoupledThreePhase6kW", 0), 612);
+        assert_eq!(effective_arm_firmware("ACCoupled", 0), 318);
+        assert_eq!(effective_arm_firmware("Hybrid4600", 0), 318);
+        assert_eq!(effective_arm_firmware("Gen3", 0), 318);
+        // A non-zero override always wins.
+        assert_eq!(effective_arm_firmware("Gen1Hybrid", 852), 852);
+        assert_eq!(effective_arm_firmware("ThreePhase", 99), 99);
+    }
+
+    #[test]
+    fn pause_uses_the_effective_firmware_for_firmware_zero() {
+        // 0 resolves to the type default before the minimums apply, so the
+        // result is the same as passing that default explicitly.
+        for model in [
+            "Gen1Hybrid",
+            "Gen2Hybrid",
+            "Gen3Hybrid",
+            "Hybrid4600",
+            "Hybrid3600",
+            "ACCoupled",
+            "ACCoupled2",
+            "Polar5kW",
+            "ThreePhase",
+        ] {
+            assert_eq!(
+                pause_support(model, 0),
+                pause_support(model, effective_arm_firmware(model, 0)),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_0x2002_and_0x2003_hybrids_are_resolved_by_firmware_century() {
+        // givenergy-modbus `resolve_model` files every "20" hybrid by ARM
+        // firmware century: 3 -> Gen3, 8/9 -> Gen2, anything else -> Gen1.
+        use PauseSupport::{ModeAndWindow, ModeOnly, None as NoPause};
+        for model in ["Hybrid4600", "Hybrid3600"] {
+            // Gen3 / Gen2: the window, whatever the minor version.
+            for fw in [300, 318, 399, 800, 852, 999] {
+                assert_eq!(pause_support(model, fw), ModeAndWindow, "{model} {fw}");
+            }
+            // Gen1 (any other century): the mode alone from 187.
+            for fw in [187, 252, 452, 612] {
+                assert_eq!(pause_support(model, fw), ModeOnly, "{model} {fw}");
+            }
+            for fw in [1, 186] {
+                assert_eq!(pause_support(model, fw), NoPause, "{model} {fw}");
+            }
+            // Firmware 0 is the type default (318, century 3).
+            assert_eq!(pause_support(model, 0), ModeAndWindow, "{model} default");
+        }
+    }
+
+    #[test]
+    fn pause_firmware_zero_means_the_model_default_not_too_old() {
+        // `arm_firmware_version` 0 is "the per-type default" (or a register
+        // store nothing has projected yet), never a real firmware.
+        assert_eq!(pause_support("Gen1Hybrid", 0), PauseSupport::ModeOnly);
+        assert_eq!(pause_support("ACCoupled", 0), PauseSupport::ModeOnly);
+        assert_eq!(pause_support("ACCoupled2", 0), PauseSupport::ModeOnly);
+    }
 
     #[test]
     fn apply_soh_new_pack_has_zero_history() {

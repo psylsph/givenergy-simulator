@@ -521,18 +521,10 @@ impl From<&PlantState> for PlantStateDto {
             } else {
                 state.battery_discharge_limit_percent
             },
-            arm_firmware_version: if state.inverter.arm_firmware_version != 0 {
-                state.inverter.arm_firmware_version
-            } else {
-                match state.config.inverter_type.as_str() {
-                    "Gen1Hybrid" => 252,
-                    "Gen2Hybrid" => 852,
-                    "Gen3Hybrid" => 318,
-                    "Gen3Plus5kW" | "Gen3Plus4600" | "Gen3Plus3600" | "Gen3Plus6kW"
-                    | "Gen3Plus7kW" | "Gen3Plus8kW" => 452,
-                    _ => 318,
-                }
-            },
+            arm_firmware_version: sim_models::effective_arm_firmware(
+                &state.config.inverter_type,
+                state.inverter.arm_firmware_version,
+            ),
             dsp_firmware_version: state.inverter.dsp_firmware_version,
             aggregate_soc: state.aggregate_soc(),
             battery_power_kw: state.total_battery_power_kw(),
