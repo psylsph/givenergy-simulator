@@ -1441,7 +1441,8 @@ impl PlantState {
     /// remaining (Wh) but used it as a *power* cap (W) — a units mismatch that
     /// throttled charging far too early (e.g. a 10 kWh bank at 80% SOC has
     /// 2 kWh of headroom, which the old code read as a 2 kW charge cap). The
-    /// `BatteryEngine` already clamps SOC to `[min_soc, max_soc]`, so only the
+    /// `BatteryEngine` keeps SOC inside `[min_soc, max_soc]` once it is there
+    /// (a SOC already outside the band is held, not moved), so only the
     /// boundary needs guarding here.
     ///
     /// Does NOT include the inverter AC throughput cap — callers apply that.

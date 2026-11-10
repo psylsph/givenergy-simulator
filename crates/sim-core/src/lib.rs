@@ -1350,6 +1350,20 @@ impl DeviceModel for BatteryEngine {
                 b.power_kw = b.power_kw.max(-max_discharge_kw);
             }
 
+            // A module whose SOC sits on its reserve (discharging) or its
+            // limit (charging) cannot move, so no power flows: reporting it
+            // would feed the house, the throughput count and the heat model
+            // with energy that never left the module. The grid reconciliation
+            // below then covers the difference. While the user's SOC hold is
+            // active the SOC is frozen on purpose, so power keeps flowing.
+            if state.manual_soc_hold_ticks == 0 {
+                let held_charging = b.power_kw > 0.0 && b.soc_percent >= b.max_soc;
+                let held_discharging = b.power_kw < 0.0 && b.soc_percent <= b.min_soc;
+                if held_charging || held_discharging {
+                    b.power_kw = 0.0;
+                }
+            }
+
             // Apply thermal derating
             let derated_power = self.derate_power(b.power_kw, b.temperature_celsius);
             b.power_kw = derated_power;
@@ -1371,9 +1385,14 @@ impl DeviceModel for BatteryEngine {
             // duration by N.
             if state.manual_soc_hold_ticks == 0 {
                 let delta_soc = (effective_power_kw * ctx.dt_hours) / b.capacity_kwh * 100.0;
+                let before = b.soc_percent;
                 b.soc_percent += delta_soc;
-                // Clamp to min/max SOC
-                b.soc_percent = b.soc_percent.clamp(b.min_soc, b.max_soc);
+                // Clamp to min/max SOC. A reserve above the SOC (or a limit
+                // below it) stops the battery where it is, as on a real
+                // inverter; it never moves the SOC to the limit by itself.
+                let floor = b.min_soc.min(before);
+                let ceiling = b.max_soc.max(before);
+                b.soc_percent = b.soc_percent.clamp(floor, ceiling).clamp(0.0, 100.0);
             }
 
             // Thermal model
@@ -2871,6 +2890,204 @@ mod tests {
         };
         bat.update(&ctx, &mut state);
         assert_eq!(state.batteries[0].soc_percent, 10.0);
+    }
+
+    #[test]
+    fn a_reserve_above_the_soc_holds_it_rather_than_lifting_it() {
+        // HEM pauses discharge with reserve = 100 (Intelligent Octopus Go
+        // hold): the SOC must stay put, not jump to 100.
+        let mut state = PlantState::new(ts(12));
+        state.batteries[0].soc_percent = 40.0;
+        state.batteries[0].power_kw = 0.0;
+        state.batteries[0].capacity_kwh = 10.0;
+        state.batteries[0].min_soc = 100.0;
+        state.sync_battery_from_vec();
+        let mut bat = BatteryEngine::new();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        bat.update(&ctx, &mut state);
+        assert_eq!(state.batteries[0].soc_percent, 40.0);
+
+        // Charging under it still raises the SOC as normal.
+        state.batteries[0].power_kw = 3.6;
+        state.sync_battery_from_vec();
+        bat.update(&ctx, &mut state);
+        let soc = state.batteries[0].soc_percent;
+        assert!(soc > 40.0 && soc < 41.0, "{soc}");
+    }
+
+    fn soc_after_one_second(soc: f64, power_kw: f64, min_soc: f64, max_soc: f64) -> f64 {
+        let mut state = PlantState::new(ts(12));
+        state.batteries[0].soc_percent = soc;
+        state.batteries[0].power_kw = power_kw;
+        state.batteries[0].capacity_kwh = 10.0;
+        state.batteries[0].min_soc = min_soc;
+        state.batteries[0].max_soc = max_soc;
+        state.sync_battery_from_vec();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        BatteryEngine::new().update(&ctx, &mut state);
+        state.batteries[0].soc_percent
+    }
+
+    #[test]
+    fn a_reserve_above_the_soc_holds_it_while_discharging() {
+        assert_eq!(soc_after_one_second(40.0, -3.6, 100.0, 100.0), 40.0);
+    }
+
+    #[test]
+    fn a_limit_below_the_soc_holds_it_rather_than_dropping_it() {
+        assert_eq!(soc_after_one_second(90.0, 0.0, 4.0, 80.0), 90.0);
+        // Charging past the limit does not push it further...
+        assert_eq!(soc_after_one_second(90.0, 3.6, 4.0, 80.0), 90.0);
+        // ...but discharging below it still works.
+        let soc = soc_after_one_second(90.0, -3.6, 4.0, 80.0);
+        assert!(soc < 90.0 && soc > 89.0, "{soc}");
+    }
+
+    #[test]
+    fn a_soc_below_the_reserve_is_not_lifted_but_can_charge_up() {
+        assert_eq!(soc_after_one_second(5.0, 0.0, 10.0, 100.0), 5.0);
+        let soc = soc_after_one_second(5.0, 3.6, 10.0, 100.0);
+        assert!(soc > 5.0 && soc < 6.0, "{soc}");
+    }
+
+    #[test]
+    fn inverted_limits_do_not_panic_the_clamp() {
+        // min_soc > max_soc used to be a clamp() panic risk.
+        assert_eq!(soc_after_one_second(50.0, 0.0, 80.0, 20.0), 50.0);
+    }
+
+    fn battery_power_after_one_second(soc: f64, power_kw: f64, min_soc: f64, max_soc: f64) -> f64 {
+        let mut state = PlantState::new(ts(12));
+        state.batteries[0].soc_percent = soc;
+        state.batteries[0].power_kw = power_kw;
+        state.batteries[0].capacity_kwh = 10.0;
+        state.batteries[0].min_soc = min_soc;
+        state.batteries[0].max_soc = max_soc;
+        state.sync_battery_from_vec();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 3600.0,
+        };
+        BatteryEngine::new().update(&ctx, &mut state);
+        state.batteries[0].power_kw
+    }
+
+    #[test]
+    fn a_module_held_by_its_reserve_reports_no_discharge_power() {
+        // The SOC cannot move, so no power may flow either: it would reach
+        // the house with no energy leaving the module.
+        assert_eq!(
+            battery_power_after_one_second(40.0, -3.6, 100.0, 100.0),
+            0.0
+        );
+        // Sitting exactly on the reserve.
+        assert_eq!(battery_power_after_one_second(10.0, -3.6, 10.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn a_module_held_by_its_limit_reports_no_charge_power() {
+        assert_eq!(battery_power_after_one_second(90.0, 3.6, 4.0, 80.0), 0.0);
+        assert_eq!(battery_power_after_one_second(80.0, 3.6, 4.0, 80.0), 0.0);
+    }
+
+    #[test]
+    fn a_module_moving_away_from_its_limit_keeps_its_power() {
+        assert_eq!(battery_power_after_one_second(90.0, -2.0, 4.0, 80.0), -2.0);
+        assert_eq!(battery_power_after_one_second(5.0, 2.0, 10.0, 100.0), 2.0);
+        assert_eq!(battery_power_after_one_second(50.0, 2.0, 4.0, 100.0), 2.0);
+    }
+
+    #[test]
+    fn a_held_module_does_not_wear_or_heat() {
+        let mut state = PlantState::new(ts(12));
+        state.batteries[0].soc_percent = 40.0;
+        state.batteries[0].power_kw = -3.6;
+        state.batteries[0].capacity_kwh = 10.0;
+        state.batteries[0].min_soc = 100.0;
+        let before = state.batteries[0].throughput_kwh;
+        state.sync_battery_from_vec();
+        let ctx = TickContext {
+            now: ts(12),
+            dt_hours: 1.0 / 60.0,
+        };
+        BatteryEngine::new().update(&ctx, &mut state);
+        assert_eq!(state.batteries[0].throughput_kwh, before);
+    }
+
+    // --- CalibrationEngine against the clamp ---
+
+    fn calibration_engine(stage: CalibrationStage, soc: f64, min_soc: f64) -> SimulationEngine {
+        let mut state = PlantState::with_battery_count(ts(12), 2);
+        for b in &mut state.batteries {
+            b.soc_percent = soc;
+            b.min_soc = min_soc;
+            b.max_soc = 100.0;
+            b.capacity_kwh = 10.0;
+            b.nominal_capacity_kwh = 10.0;
+        }
+        state.sync_battery_from_vec();
+        state.calibration = CalibrationState {
+            stage,
+            module: None,
+            stage_elapsed_secs: 0.0,
+            total_elapsed_secs: 0.0,
+        };
+        let devices: Vec<Box<dyn DeviceModel>> = vec![
+            Box::new(InverterEngine::new()),
+            Box::new(BatteryEngine::new()),
+        ];
+        SimulationEngine::new(state, devices, 60)
+    }
+
+    #[test]
+    fn calibration_discharge_stops_at_the_reserve() {
+        let mut engine = calibration_engine(CalibrationStage::DischargeToEmpty, 50.0, 10.0);
+        for _ in 0..2000 {
+            engine.tick();
+            if engine.state.calibration.stage == CalibrationStage::Complete {
+                break;
+            }
+        }
+        assert_eq!(engine.state.calibration.stage, CalibrationStage::Complete);
+        for b in &engine.state.batteries {
+            assert!(
+                b.soc_percent >= 10.0 - 1e-9 && b.soc_percent <= 10.5,
+                "{}",
+                b.soc_percent
+            );
+        }
+    }
+
+    #[test]
+    fn calibration_discharge_with_a_reserve_above_the_soc_completes_without_moving_it() {
+        let mut engine = calibration_engine(CalibrationStage::DischargeToEmpty, 40.0, 100.0);
+        engine.tick();
+        assert_eq!(engine.state.calibration.stage, CalibrationStage::Complete);
+        for b in &engine.state.batteries {
+            assert_eq!(b.soc_percent, 40.0);
+            assert_eq!(b.power_kw, 0.0);
+        }
+    }
+
+    #[test]
+    fn calibration_charge_to_full_reaches_the_holding_stage() {
+        let mut engine = calibration_engine(CalibrationStage::ChargeToFull, 90.0, 10.0);
+        for _ in 0..2000 {
+            engine.tick();
+            if engine.state.calibration.stage != CalibrationStage::ChargeToFull {
+                break;
+            }
+        }
+        assert_eq!(
+            engine.state.calibration.stage,
+            CalibrationStage::HoldingFull
+        );
     }
 
     // --- InverterEngine ---

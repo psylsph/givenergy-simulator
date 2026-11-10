@@ -60,6 +60,15 @@ ui/              — Web frontend (Vite + vanilla JS, served by Tauri on port 14
 
 ## Version
 
+**0.18.8** — A reserve above the SOC holds it instead of lifting it
+(home-energy-manager pauses discharge with reserve = 100; the SOC used to
+jump to 100%). `BatteryEngine` clamps to `[min(min_soc, soc), max(max_soc,
+soc)]`, so a SOC outside its band stays put until charge or discharge moves it
+back in, and a module pinned on its reserve (discharging) or limit (charging)
+reports zero power, the grid covering the difference (skipped during the
+slider's `manual_soc_hold_ticks`). The first `CalibrationEngine` tests landed:
+the clamp change does not affect calibration. 600+ Rust + 5/5 scenarios green.
+
 **0.18.7** — Battery pause (HR 318-320) per model, as GivTCP gives it
 (home-energy-manager #433). One allowlist, `sim_models::pause_support`, now
 decides who has the registers and is used by both the register store and

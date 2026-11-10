@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.8] - 2026-11-10
+
+### Fixed
+
+- A battery reserve above the SOC (or a charge limit below it) no longer moves
+  the SOC to the limit. `BatteryEngine` holds the SOC where it is, as an
+  inverter does; home-energy-manager pauses discharge with reserve = 100 and
+  the SOC used to jump to 100%. A SOC already outside the band now stays put
+  until charging or discharging moves it back in.
+- A module whose SOC sits on its reserve (discharging) or its limit
+  (charging) now reports no power, instead of feeding the house, throughput
+  count and heat model with energy that never left it; the grid covers the
+  difference.
+
+### Tests
+
+- Battery clamp cases (reserve above/limit below the SOC, inverted limits)
+  and the first `CalibrationEngine` tests: discharge stops at the reserve,
+  completes untouched under a reserve above the SOC, charge reaches the hold.
+
 ## [0.18.7] - 2026-11-08
 
 ### Changed
